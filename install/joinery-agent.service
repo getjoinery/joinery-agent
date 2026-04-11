@@ -1,0 +1,16 @@
+[Unit]
+Description=Joinery Agent - Remote server management executor
+After=postgresql.service network.target
+Wants=postgresql.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/joinery-agent
+EnvironmentFile=-/etc/joinery-agent/joinery-agent.env
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
