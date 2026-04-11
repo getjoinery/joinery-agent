@@ -1,8 +1,37 @@
 # Joinery Agent
 
-A generic job executor for the Joinery Server Manager plugin. The agent polls a PostgreSQL job queue for pending work, executes steps via SSH/SCP/local commands, and writes output back to the database.
+A generic job executor for the [Joinery](https://github.com/getjoinery/joinery) Server Manager plugin. The agent polls a PostgreSQL job queue for pending work, executes steps via SSH/SCP/local commands, and writes output back to the database.
 
 The agent has no knowledge of job types. All intelligence about what commands to run lives in the PHP plugin's `JobCommandBuilder` class. Adding a new operation (e.g., "restart Apache") requires only a new PHP method -- no Go changes, no agent redeployment.
+
+## How It Works With Joinery
+
+[Joinery](https://github.com/getjoinery/joinery) is a PHP membership and event management platform. Its **Server Manager** plugin (`plugins/server_manager/`) provides a web-based admin interface for managing remote Joinery instances -- backups, database operations, updates, and health monitoring.
+
+The plugin handles all the decision-making: an admin triggers an operation from the web UI, and the plugin's `JobCommandBuilder` translates that into an ordered array of shell commands. These are written to the `mjb_management_jobs` table as a JSON step list with status `pending`. That's where the PHP side ends and this Go agent takes over.
+
+The agent runs as a systemd service on the same server, polling the job table every few seconds. When it finds a pending job, it claims it, executes each step in order (SSH into a remote host, transfer files via SCP, or run local commands), writes output back to the database after each step, and marks the job completed or failed. The plugin's admin UI polls for status updates and streams the output in real time.
+
+**Supported operations** (all defined in PHP, not Go):
+
+| Operation | What it does |
+|-----------|-------------|
+| Test Connection | SSH echo to verify node reachability |
+| Check Status | Collects disk, memory, uptime, PostgreSQL stats, error logs |
+| Backup Database | Runs `pg_dump` on the remote node with optional encryption |
+| Backup Project | Archives the remote Joinery installation files |
+| Fetch Backup | SCP downloads a backup file from a remote node |
+| Copy Database | Dumps source DB, transfers to target node, restores (with auto-safety backup) |
+| Restore Database | Restores a database from a backup file (with auto-safety backup) |
+| Apply Update | Runs `upgrade.php` on a remote node to apply a Joinery version update |
+| Publish Upgrade | Runs `publish_upgrade.php` locally to package a new release |
+| Discover Nodes | Probes a remote host via SSH to find Joinery instances (Docker and bare metal) |
+
+**Key database tables:**
+
+- `mjb_management_jobs` -- Job queue with status tracking, step JSON, and output
+- `mgn_managed_nodes` -- Remote server inventory with SSH credentials and health data
+- `ahb_agent_heartbeats` -- Agent liveness tracking (the admin dashboard shows online/offline based on heartbeat age)
 
 ## Architecture
 
@@ -41,7 +70,7 @@ Plugin (PHP)                          Agent (Go)
 - Go 1.22+ (build only)
 - PostgreSQL access to the Joinery control plane database
 - SSH key access to managed servers (the agent runs SSH commands using keys configured on each node)
-- The `server_manager` Joinery plugin must be installed and activated
+- The `server_manager` [Joinery](https://github.com/getjoinery/joinery) plugin must be installed and activated
 
 ## Install
 
@@ -176,3 +205,7 @@ DB_NAME=joinerytest DB_PASSWORD=xxx ./joinery-agent
 # Check version
 ./joinery-agent --version
 ```
+
+## License
+
+[PolyForm Noncommercial 1.0.0](LICENSE) -- free for noncommercial use. Contact [Joinery](https://getjoinery.com) for commercial licensing.
