@@ -39,6 +39,13 @@ type Step struct {
 	LocalPath       string `json:"local_path,omitempty"`
 	ContinueOnError bool   `json:"continue_on_error,omitempty"`
 	Timeout         int    `json:"timeout,omitempty"`
+
+	// Fields specific to the `api` step type
+	Method       string            `json:"method,omitempty"`
+	Endpoint     string            `json:"endpoint,omitempty"`
+	ExpectStatus int               `json:"expect_status,omitempty"`
+	Query        map[string]string `json:"query,omitempty"`
+	Body         interface{}       `json:"body,omitempty"`
 }
 
 // DB wraps the database connection and provides job queue operations.
@@ -290,6 +297,46 @@ func (d *DB) GetNodeConnInfo(nodeID int64) (*NodeConnInfo, error) {
 	}
 	if containerUser.Valid {
 		info.ContainerUser = containerUser.String
+	}
+
+	return &info, nil
+}
+
+// GetNodeAPIInfo returns management-API connection info for a managed node.
+// Returns an error — NOT just empty strings — if credentials aren't configured,
+// so the api step fails with a clear message instead of silently doing nothing.
+func (d *DB) GetNodeAPIInfo(nodeID int64) (*NodeAPIInfo, error) {
+	row := d.conn.QueryRow(`
+		SELECT mgn_id, mgn_site_url, mgn_api_public_key, mgn_api_secret_key,
+		       COALESCE(mgn_tls_insecure, false)
+		FROM mgn_managed_nodes
+		WHERE mgn_id = $1
+	`, nodeID)
+
+	var info NodeAPIInfo
+	var siteURL, publicKey, secretKey sql.NullString
+
+	err := row.Scan(&info.ID, &siteURL, &publicKey, &secretKey, &info.TLSInsecure)
+	if err == sql.ErrNoRows {
+		return nil, fmt.Errorf("node #%d not found in mgn_managed_nodes", nodeID)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("loading API info for node #%d: %w", nodeID, err)
+	}
+
+	if siteURL.Valid {
+		info.SiteURL = siteURL.String
+	}
+	if publicKey.Valid {
+		info.PublicKey = publicKey.String
+	}
+	if secretKey.Valid {
+		info.SecretKey = secretKey.String
+	}
+
+	if info.SiteURL == "" || info.PublicKey == "" || info.SecretKey == "" {
+		return nil, fmt.Errorf("node #%d has no management API credentials configured "+
+			"(mgn_site_url, mgn_api_public_key, mgn_api_secret_key)", nodeID)
 	}
 
 	return &info, nil

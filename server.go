@@ -15,3 +15,14 @@ type NodeConnInfo struct {
 func (n *NodeConnInfo) IsContainer() bool {
 	return n.ContainerName != ""
 }
+
+// NodeAPIInfo holds the management-API credentials/URL for a managed node.
+// Separate from NodeConnInfo because SSH and API are orthogonal transports;
+// a node may have one, both, or neither configured.
+type NodeAPIInfo struct {
+	ID           int64
+	SiteURL      string
+	PublicKey    string
+	SecretKey    string
+	TLSInsecure  bool
+}

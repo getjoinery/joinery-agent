@@ -95,8 +95,10 @@ func (r *Runner) executeStep(job *Job, step *Step, timeout time.Duration) (strin
 		return r.executeSCP(ctx, job, step)
 	case "local":
 		return r.executeLocal(ctx, step)
+	case "api":
+		return r.executeAPI(ctx, job, step)
 	default:
-		return "", fmt.Errorf("unknown step type %q — valid types are: ssh, scp, local", step.Type)
+		return "", fmt.Errorf("unknown step type %q — valid types are: ssh, scp, local, api", step.Type)
 	}
 }
 
