@@ -1,4 +1,4 @@
-VERSION ?= dev
+VERSION ?= 0.2.0
 
 .PHONY: build test clean release
 

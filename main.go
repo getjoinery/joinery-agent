@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-var version = "dev"
+var version = "0.2.0"
 
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "--version" {
@@ -40,15 +40,20 @@ func main() {
 	}
 	log.Printf("schema validated — all required tables present")
 
-	// Recover stale running jobs on startup
-	recovered, err := db.RecoverStaleJobs()
+	runner := NewRunner(db)
+
+	// Recover stale running jobs on startup, then replay their teardown
+	// steps — those jobs never reached teardown and never will otherwise.
+	stale, err := db.RecoverStaleJobs()
 	if err != nil {
 		log.Printf("WARNING: failed to recover stale jobs: %v", err)
-	} else if recovered > 0 {
-		log.Printf("recovered %d stale running job(s) — marked as failed", recovered)
+	} else if len(stale) > 0 {
+		log.Printf("recovered %d stale running job(s) — marked as failed", len(stale))
+		for _, job := range stale {
+			log.Printf("replaying teardown for stale job #%d", job.ID)
+			runner.ReplayTeardown(job)
+		}
 	}
-
-	runner := NewRunner(db)
 
 	// Signal handling
 	sigCh := make(chan os.Signal, 1)

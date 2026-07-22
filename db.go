@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -39,6 +40,7 @@ type Step struct {
 	LocalPath       string `json:"local_path,omitempty"`
 	ContinueOnError bool   `json:"continue_on_error,omitempty"`
 	Timeout         int    `json:"timeout,omitempty"`
+	Teardown        bool   `json:"teardown,omitempty"`
 
 	// Fields specific to the `api` step type
 	Method       string            `json:"method,omitempty"`
@@ -231,21 +233,43 @@ func (d *DB) FailJob(jobID int64, errorMsg string) error {
 	return err
 }
 
-// RecoverStaleJobs marks any jobs stuck in 'running' state as failed.
-func (d *DB) RecoverStaleJobs() (int, error) {
-	result, err := d.conn.Exec(`
+// RecoverStaleJobs marks any jobs stuck in 'running' state as failed and
+// returns them so their teardown steps can be replayed. A job whose commands
+// no longer parse is still marked failed; it is just omitted from the result.
+func (d *DB) RecoverStaleJobs() ([]*Job, error) {
+	rows, err := d.conn.Query(`
 		UPDATE mjb_management_jobs
 		SET mjb_status = 'failed',
 		    mjb_error_message = 'Agent restarted while job was running. Job may have partially completed. Check job output for details, then use Re-run if needed.',
 		    mjb_completed_time = now(),
 		    mjb_update_time = now()
 		WHERE mjb_status = 'running'
+		RETURNING mjb_id, mjb_mgn_node_id, mjb_job_type, mjb_commands, COALESCE(mjb_current_step, 0)
 	`)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	affected, _ := result.RowsAffected()
-	return int(affected), nil
+	defer rows.Close()
+
+	var jobs []*Job
+	for rows.Next() {
+		var job Job
+		var nodeID sql.NullInt64
+		var commandsJSON string
+		if err := rows.Scan(&job.ID, &nodeID, &job.JobType, &commandsJSON, &job.CurrentStep); err != nil {
+			return jobs, err
+		}
+		if nodeID.Valid {
+			job.NodeID = nodeID.Int64
+		}
+		if err := json.Unmarshal([]byte(commandsJSON), &job.Commands); err != nil {
+			log.Printf("WARNING: stale job #%d has unparseable commands — teardown not replayed: %v", job.ID, err)
+			continue
+		}
+		job.Status = "failed"
+		jobs = append(jobs, &job)
+	}
+	return jobs, rows.Err()
 }
 
 // UpdateHeartbeat inserts or updates the agent's heartbeat record.

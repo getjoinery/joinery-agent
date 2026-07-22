@@ -6,6 +6,10 @@
 #
 # Output:
 #   joinery-agent-installer.sh
+#
+# The generated installer supervises the agent with systemd where available,
+# and falls back to cron supervision (@reboot + a once-a-minute keepalive) on
+# hosts without systemd — e.g. Docker containers running a control plane.
 
 set -euo pipefail
 
@@ -57,10 +61,12 @@ INSTALLER_HEADER
 echo "INSTALLER_VERSION=\"${VERSION}\""
 
 cat <<'INSTALLER_BODY'
-
 BINARY_PATH="/usr/local/bin/joinery-agent"
+SUPERVISE_PATH="/usr/local/bin/joinery-agent-supervise"
 SERVICE_NAME="joinery-agent"
 SERVICE_FILE="/etc/systemd/system/joinery-agent.service"
+CRON_FILE="/etc/cron.d/joinery-agent"
+LOG_FILE="/var/log/joinery-agent.log"
 ENV_DIR="/etc/joinery-agent"
 ENV_FILE="${ENV_DIR}/joinery-agent.env"
 STAGE_DIR="$(mktemp -d)"
@@ -69,10 +75,16 @@ cleanup() { rm -rf "$STAGE_DIR"; }
 trap cleanup EXIT
 
 VERBOSE=false
+CONFIG_PATH=""
+prev_arg=""
 for arg in "$@"; do
+    case "$prev_arg" in
+        --config) CONFIG_PATH="$arg" ;;
+    esac
     case "$arg" in
         --verbose|-v) VERBOSE=true ;;
     esac
+    prev_arg="$arg"
 done
 
 log()         { echo "$@"; }
@@ -80,6 +92,14 @@ log_verbose() { [ "$VERBOSE" = true ] && echo "  $*" || true; }
 die()         { echo "ERROR: $*" >&2; exit 1; }
 
 [ "$(id -u)" -eq 0 ] || die "Must be run as root."
+
+# Supervision mode: systemd where it is actually running (PID 1), cron
+# otherwise (Docker containers, minimal hosts).
+if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+    INIT_MODE="systemd"
+else
+    INIT_MODE="cron"
+fi
 
 extract_payload() {
     local payload_line
@@ -100,49 +120,137 @@ else
 fi
 
 log ""
-log "joinery-agent installer v${INSTALLER_VERSION} (${MODE})"
+log "joinery-agent installer v${INSTALLER_VERSION} (${MODE}, ${INIT_MODE} supervision)"
 log ""
+
+write_supervise_script() {
+    cat > "$SUPERVISE_PATH" <<'SUPERVISE'
+#!/bin/sh
+# joinery-agent cron keepalive: start the agent if it is not running.
+# Installed by joinery-agent-installer.sh on hosts without systemd.
+if ! pgrep -x joinery-agent >/dev/null 2>&1; then
+    set -a
+    [ -f /etc/joinery-agent/joinery-agent.env ] && . /etc/joinery-agent/joinery-agent.env
+    set +a
+    nohup /usr/local/bin/joinery-agent >> /var/log/joinery-agent.log 2>&1 &
+fi
+SUPERVISE
+    chmod 755 "$SUPERVISE_PATH"
+}
+
+write_cron_file() {
+    cat > "$CRON_FILE" <<CRON
+# joinery-agent supervision (no systemd on this host). The keepalive script
+# starts the agent if it is not running; logs go to ${LOG_FILE}.
+@reboot root ${SUPERVISE_PATH}
+* * * * * root ${SUPERVISE_PATH}
+CRON
+    chmod 644 "$CRON_FILE"
+}
+
+stop_agent() {
+    if [ "$INIT_MODE" = "systemd" ]; then
+        systemctl stop "$SERVICE_NAME" 2>/dev/null || true
+    else
+        pkill -x joinery-agent 2>/dev/null || true
+        sleep 1
+    fi
+}
+
+start_agent() {
+    if [ "$INIT_MODE" = "systemd" ]; then
+        systemctl start "$SERVICE_NAME"
+    else
+        "$SUPERVISE_PATH"
+    fi
+}
+
+agent_running() {
+    if [ "$INIT_MODE" = "systemd" ]; then
+        systemctl is-active --quiet "$SERVICE_NAME"
+    else
+        pgrep -x joinery-agent >/dev/null 2>&1
+    fi
+}
+
+stamp_config_path() {
+    # --config PATH: record the Globalvars_site.php location in the env file
+    # so the agent finds the right site without manual editing.
+    if [ -n "$CONFIG_PATH" ]; then
+        [ -f "$CONFIG_PATH" ] || die "--config path not found: $CONFIG_PATH"
+        if grep -q '^JOINERY_CONFIG=' "$ENV_FILE" 2>/dev/null; then
+            sed -i "s|^JOINERY_CONFIG=.*|JOINERY_CONFIG=${CONFIG_PATH}|" "$ENV_FILE"
+        else
+            echo "JOINERY_CONFIG=${CONFIG_PATH}" >> "$ENV_FILE"
+        fi
+        log_verbose "JOINERY_CONFIG set to ${CONFIG_PATH}"
+    fi
+}
 
 if [ "$MODE" = "install" ]; then
     mkdir -p "$ENV_DIR"
     install -m 755 "${STAGE_DIR}/joinery-agent" "$BINARY_PATH"
-    install -m 644 "${STAGE_DIR}/joinery-agent.service" "$SERVICE_FILE"
 
     if [ ! -f "$ENV_FILE" ]; then
         install -m 640 "${STAGE_DIR}/joinery-agent.env.example" "$ENV_FILE"
     fi
+    stamp_config_path
 
-    systemctl daemon-reload
-    systemctl enable "$SERVICE_NAME" >/dev/null
-    log "Installed joinery-agent v${INSTALLER_VERSION}"
+    if [ "$INIT_MODE" = "systemd" ]; then
+        install -m 644 "${STAGE_DIR}/joinery-agent.service" "$SERVICE_FILE"
+        systemctl daemon-reload
+        systemctl enable "$SERVICE_NAME" >/dev/null
+        log "Installed joinery-agent v${INSTALLER_VERSION}"
+        log ""
+        log "DB credentials are read automatically from Globalvars_site.php."
+        log "Start the agent:"
+        log "  sudo systemctl start ${SERVICE_NAME}"
+    else
+        write_supervise_script
+        write_cron_file
+        start_agent
+        sleep 2
+        if agent_running; then
+            log "Installed joinery-agent v${INSTALLER_VERSION} — running under cron supervision."
+            log "Logs: ${LOG_FILE}"
+        else
+            die "Agent failed to start. Check ${LOG_FILE}"
+        fi
+    fi
     log ""
-    log "DB credentials are read automatically from Globalvars_site.php."
-    log "Start the agent:"
-    log "  sudo systemctl start ${SERVICE_NAME}"
-    log ""
-    log "If your Joinery install is not at /var/www/html/joinerytest/, edit"
-    log "  ${ENV_FILE}"
-    log "and set JOINERY_CONFIG to the correct Globalvars_site.php path."
+    log "If your Joinery install is not at /var/www/html/joinerytest/, set"
+    log "JOINERY_CONFIG in ${ENV_FILE} (or re-run with --config PATH)."
     log ""
 else
     cp "$BINARY_PATH" "${BINARY_PATH}.bak"
-    systemctl stop "$SERVICE_NAME" 2>/dev/null || true
+    stop_agent
     install -m 755 "${STAGE_DIR}/joinery-agent" "$BINARY_PATH"
-    install -m 644 "${STAGE_DIR}/joinery-agent.service" "$SERVICE_FILE"
-    systemctl daemon-reload
+    stamp_config_path
 
-    systemctl start "$SERVICE_NAME"
+    if [ "$INIT_MODE" = "systemd" ]; then
+        install -m 644 "${STAGE_DIR}/joinery-agent.service" "$SERVICE_FILE"
+        systemctl daemon-reload
+    else
+        write_supervise_script
+        write_cron_file
+    fi
+
+    start_agent
     sleep 2
 
-    if systemctl is-active --quiet "$SERVICE_NAME"; then
+    if agent_running; then
         rm -f "${BINARY_PATH}.bak"
         log "Upgrade to v${INSTALLER_VERSION} successful."
     else
-        log "Service failed to start — rolling back..."
+        log "Agent failed to start — rolling back..."
         install -m 755 "${BINARY_PATH}.bak" "$BINARY_PATH"
         rm -f "${BINARY_PATH}.bak"
-        systemctl start "$SERVICE_NAME" || true
-        die "Upgrade failed. Check: journalctl -u ${SERVICE_NAME}"
+        start_agent || true
+        if [ "$INIT_MODE" = "systemd" ]; then
+            die "Upgrade failed. Check: journalctl -u ${SERVICE_NAME}"
+        else
+            die "Upgrade failed. Check: ${LOG_FILE}"
+        fi
     fi
 fi
 
@@ -159,3 +267,4 @@ echo "  Installer: $OUTPUT ($(du -sh "$OUTPUT" | cut -f1))"
 echo ""
 echo "Install locally:"
 echo "  sudo bash joinery-agent-installer.sh --verbose"
+echo "Container/no-systemd hosts are auto-detected (cron supervision)."
