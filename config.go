@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -20,6 +21,11 @@ type Config struct {
 	PollInterval      time.Duration
 	HeartbeatInterval time.Duration
 	AgentName         string
+
+	// AgentDistDir is where platform releases deliver the shipped agent
+	// artifact (manifest.json + signed binaries). Derived from the site tree
+	// that JOINERY_CONFIG points into; override with AGENT_DIST_DIR.
+	AgentDistDir string
 }
 
 // Default path to the Joinery config file. Override with JOINERY_CONFIG env var.
@@ -73,6 +79,15 @@ func LoadConfig() (*Config, error) {
 	}
 	if v := os.Getenv("AGENT_NAME"); v != "" {
 		cfg.AgentName = v
+	}
+
+	// agent_dist lives inside the public_html tree of the site whose config
+	// we read: {site root}/config/Globalvars_site.php →
+	// {site root}/public_html/plugins/server_manager/agent_dist
+	siteRoot := filepath.Dir(filepath.Dir(configPath))
+	cfg.AgentDistDir = filepath.Join(siteRoot, "public_html", "plugins", "server_manager", "agent_dist")
+	if v := os.Getenv("AGENT_DIST_DIR"); v != "" {
+		cfg.AgentDistDir = v
 	}
 	if d, err := time.ParseDuration(os.Getenv("POLL_INTERVAL")); err == nil {
 		cfg.PollInterval = d

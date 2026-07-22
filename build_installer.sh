@@ -24,10 +24,13 @@ VERSION="${1:-dev}"
 VERSION="${VERSION#v}"
 echo "Building installer for joinery-agent v${VERSION}..."
 
-# Build binary
+# Build binary. PUBKEY (base64 Ed25519, optional) enables self-update
+# verification in the built agent — pass the control plane's
+# config/agent_signing_key.pub contents.
 echo "  Compiling..."
 go build \
-    -ldflags "-X main.version=${VERSION}" \
+    -trimpath \
+    -ldflags "-X main.version=${VERSION} -X main.updatePubKeyB64=${PUBKEY:-}" \
     -o "${STAGE_DIR}/joinery-agent" \
     "${SCRIPT_DIR}"
 BINARY_SIZE="$(du -sh "${STAGE_DIR}/joinery-agent" | cut -f1)"

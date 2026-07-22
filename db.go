@@ -272,17 +272,34 @@ func (d *DB) RecoverStaleJobs() ([]*Job, error) {
 	return jobs, rows.Err()
 }
 
-// UpdateHeartbeat inserts or updates the agent's heartbeat record.
-func (d *DB) UpdateHeartbeat(agentName, agentVersion string) error {
+// UpdateHeartbeat inserts or updates the agent's heartbeat record, including
+// what the shipped agent_dist offers (bundled version) and the self-update
+// state. Falls back to the legacy column set when the schema predates the
+// release channel — the agent binary and the tree upgrade independently, and
+// a heartbeat must never be lost to that ordering.
+func (d *DB) UpdateHeartbeat(agentName, agentVersion, bundledVersion, updateState string) error {
 	_, err := d.conn.Exec(`
-		INSERT INTO ahb_agent_heartbeats (ahb_agent_name, ahb_last_heartbeat, ahb_agent_version, ahb_status, ahb_create_time)
-		VALUES ($1, now(), $2, 'running', now())
+		INSERT INTO ahb_agent_heartbeats (ahb_agent_name, ahb_last_heartbeat, ahb_agent_version, ahb_bundled_version, ahb_update_state, ahb_status, ahb_create_time)
+		VALUES ($1, now(), $2, $3, $4, 'running', now())
 		ON CONFLICT (ahb_agent_name)
 		DO UPDATE SET ahb_last_heartbeat = now(),
 		              ahb_agent_version = $2,
+		              ahb_bundled_version = $3,
+		              ahb_update_state = $4,
 		              ahb_status = 'running',
 		              ahb_update_time = now()
-	`, agentName, agentVersion)
+	`, agentName, agentVersion, bundledVersion, updateState)
+	if err != nil && strings.Contains(err.Error(), "ahb_bundled_version") {
+		_, err = d.conn.Exec(`
+			INSERT INTO ahb_agent_heartbeats (ahb_agent_name, ahb_last_heartbeat, ahb_agent_version, ahb_status, ahb_create_time)
+			VALUES ($1, now(), $2, 'running', now())
+			ON CONFLICT (ahb_agent_name)
+			DO UPDATE SET ahb_last_heartbeat = now(),
+			              ahb_agent_version = $2,
+			              ahb_status = 'running',
+			              ahb_update_time = now()
+		`, agentName, agentVersion)
+	}
 	return err
 }
 
