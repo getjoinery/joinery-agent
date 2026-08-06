@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-var version = "0.3.1"
+var version = "0.4.1"
 
 // How often the idle loop looks at the shipped agent_dist manifest. Update
 // checks never run while a job is executing.
@@ -61,7 +61,7 @@ func main() {
 	// Fully initialised: a just-installed binary is now proven good.
 	updater.ConfirmHealthy()
 
-	runner := NewRunner(db)
+	runner := NewRunner(db, cfg.SecretBoxKey)
 
 	// Recover stale running jobs on startup, then replay their teardown
 	// steps — those jobs never reached teardown and never will otherwise.

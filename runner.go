@@ -20,20 +20,33 @@ type runnerStore interface {
 	FailJob(jobID int64, errorMsg string) error
 	GetNodeConnInfo(nodeID int64) (*NodeConnInfo, error)
 	GetNodeAPIInfo(nodeID int64) (*NodeAPIInfo, error)
+	GetBackupTargetCredentials(targetID int64) (string, error)
+	GetBackupTargetNodeCredentials(targetID int64) (string, error)
 }
 
 // Runner executes jobs by processing their steps sequentially.
 type Runner struct {
 	db      runnerStore
 	sshPool *SSHPool
+	// secretBoxKey unseals backup-target credentials for __SM_CREDS_<id>__
+	// placeholder resolution. Decoded once at construction; nil if unset or
+	// malformed (placeholder resolution then fails loudly for sealed targets).
+	secretBoxKey *[32]byte
 	// exec runs a single step. Overridable in tests.
 	exec func(job *Job, step *Step, timeout time.Duration) (string, error)
 }
 
-func NewRunner(db *DB) *Runner {
+func NewRunner(db *DB, secretBoxKey string) *Runner {
 	r := &Runner{
 		db:      db,
 		sshPool: NewSSHPool(),
+	}
+	if secretBoxKey != "" {
+		if key, err := decodeSecretBoxKey(secretBoxKey); err != nil {
+			log.Printf("WARNING: secret_box_key present but unusable (%v) — encrypted backup-target credentials will not resolve", err)
+		} else {
+			r.secretBoxKey = key
+		}
 	}
 	r.exec = r.executeStep
 	return r
@@ -171,6 +184,16 @@ func (r *Runner) ReplayTeardown(job *Job) {
 	r.runTeardown(job, teardownSteps, job.CurrentStep)
 }
 
+// resolveCmd substitutes any credential placeholders (__SM_CREDS_<id>__ for
+// the main slot, __SM_NODE_CREDS_<id>__ for the node-facing write-only slot)
+// in a command with the target's real (unsealed) credentials, in memory, just
+// before the command runs. A command with no placeholder is returned
+// unchanged; a lookup or unseal failure aborts the step.
+func (r *Runner) resolveCmd(cmd string) (string, error) {
+	return substituteCredPlaceholders(cmd, r.secretBoxKey,
+		r.db.GetBackupTargetCredentials, r.db.GetBackupTargetNodeCredentials)
+}
+
 // executeStep dispatches a step to the appropriate handler.
 func (r *Runner) executeStep(job *Job, step *Step, timeout time.Duration) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
@@ -207,7 +230,10 @@ func (r *Runner) executeSSH(ctx context.Context, job *Job, step *Step) (string, 
 		return "", err
 	}
 
-	cmd := step.Cmd
+	cmd, err := r.resolveCmd(step.Cmd)
+	if err != nil {
+		return "", err
+	}
 
 	// Wrap in docker exec if node is a container (unless on_host is set)
 	if info.IsContainer() && !step.OnHost {
@@ -257,7 +283,12 @@ func (r *Runner) executeLocal(ctx context.Context, step *Step) (string, error) {
 		return "", fmt.Errorf("local step %q has no command to run", step.Label)
 	}
 
-	cmd := exec.CommandContext(ctx, "bash", "-c", step.Cmd)
+	resolved, err := r.resolveCmd(step.Cmd)
+	if err != nil {
+		return "", err
+	}
+
+	cmd := exec.CommandContext(ctx, "bash", "-c", resolved)
 	output, err := cmd.CombinedOutput()
 
 	if ctx.Err() == context.DeadlineExceeded {

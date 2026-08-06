@@ -35,6 +35,12 @@ func (f *fakeStore) GetNodeConnInfo(nodeID int64) (*NodeConnInfo, error) {
 func (f *fakeStore) GetNodeAPIInfo(nodeID int64) (*NodeAPIInfo, error) {
 	return nil, errors.New("no api info in tests")
 }
+func (f *fakeStore) GetBackupTargetCredentials(targetID int64) (string, error) {
+	return "", errors.New("no backup target creds in tests")
+}
+func (f *fakeStore) GetBackupTargetNodeCredentials(targetID int64) (string, error) {
+	return "", errors.New("no backup target node creds in tests")
+}
 
 // testRunner returns a Runner whose step execution is the given stub.
 // executed collects the labels of every step the stub was asked to run.

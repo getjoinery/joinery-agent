@@ -22,6 +22,13 @@ type Config struct {
 	HeartbeatInterval time.Duration
 	AgentName         string
 
+	// SecretBoxKey is the site's secret_box_key (base64, 32 bytes) read from
+	// Globalvars_site.php. Used to unseal backup-target credentials resolved
+	// from __SM_CREDS_<id>__ placeholders at step-execution time. Empty on a
+	// site that has no key configured — placeholder resolution then works only
+	// for legacy plaintext targets and fails loudly for encrypted ones.
+	SecretBoxKey string
+
 	// AgentDistDir is where platform releases deliver the shipped agent
 	// artifact (manifest.json + signed binaries). Derived from the site tree
 	// that JOINERY_CONFIG points into; override with AGENT_DIST_DIR.
@@ -58,6 +65,9 @@ func LoadConfig() (*Config, error) {
 		}
 		if v, ok := phpSettings["dbpassword"]; ok {
 			cfg.DBPassword = v
+		}
+		if v, ok := phpSettings["secret_box_key"]; ok {
+			cfg.SecretBoxKey = v
 		}
 	}
 

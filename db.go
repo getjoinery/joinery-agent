@@ -383,6 +383,41 @@ func (d *DB) GetNodeAPIInfo(nodeID int64) (*NodeAPIInfo, error) {
 	return &info, nil
 }
 
+// GetBackupTargetCredentials returns the raw bkt_credentials value (a JSON
+// string — either a legacy plaintext credential object or the sealed
+// {"enc":"..."} shape) for a backup target. Used to resolve __SM_CREDS_<id>__
+// placeholders at step-execution time.
+func (d *DB) GetBackupTargetCredentials(targetID int64) (string, error) {
+	return d.backupTargetColumn(targetID, "bkt_credentials", "credentials")
+}
+
+// GetBackupTargetNodeCredentials returns the raw bkt_node_credentials value —
+// the write-only credential handed to nodes — for __SM_NODE_CREDS_<id>__
+// placeholders. The builder only emits that token when the slot is filled, so
+// an empty slot here means it was cleared after the job was built: fail the
+// step rather than fall back to the more powerful main credential.
+func (d *DB) GetBackupTargetNodeCredentials(targetID int64) (string, error) {
+	return d.backupTargetColumn(targetID, "bkt_node_credentials", "node credentials")
+}
+
+func (d *DB) backupTargetColumn(targetID int64, column, label string) (string, error) {
+	var creds sql.NullString
+	err := d.conn.QueryRow(
+		`SELECT `+column+` FROM bkt_backup_targets WHERE bkt_id = $1 AND bkt_delete_time IS NULL`,
+		targetID,
+	).Scan(&creds)
+	if err == sql.ErrNoRows {
+		return "", fmt.Errorf("backup target #%d not found (or deleted)", targetID)
+	}
+	if err != nil {
+		return "", fmt.Errorf("loading %s for backup target #%d: %w", label, targetID, err)
+	}
+	if !creds.Valid || creds.String == "" || creds.String == "null" || creds.String == "{}" || creds.String == "[]" {
+		return "", fmt.Errorf("backup target #%d has no %s configured", targetID, label)
+	}
+	return creds.String, nil
+}
+
 // nowUTC returns current time formatted for PostgreSQL.
 func nowUTC() string {
 	return time.Now().UTC().Format("2006-01-02 15:04:05")

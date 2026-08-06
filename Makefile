@@ -1,4 +1,4 @@
-VERSION ?= 0.3.1
+VERSION ?= 0.4.1
 # Base64 Ed25519 public key for self-update verification. Builds without it
 # never self-update. The platform publisher (publish_upgrade.php) always
 # injects the key from the control plane's config/agent_signing_key.pub.
