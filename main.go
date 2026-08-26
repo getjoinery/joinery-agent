@@ -14,7 +14,12 @@ import (
 	"joinery-agent/primitives"
 )
 
-var version = "0.5.0"
+// Version numbering note: agents deployed before the 2026-07 repo reset carry
+// the old 1.x line (1.1.0 in the field, no self-updater). The shipped version
+// must stay ABOVE 1.1.0 forever - install_agent.sh's downgrade guard sorts
+// with sort -V and refuses to replace a "newer" binary, so anything below
+// 1.1.0 strands those agents permanently.
+var version = "1.2.0"
 
 // How often the idle loop looks at the shipped agent_dist manifest. Update
 // checks never run while a job is executing.
