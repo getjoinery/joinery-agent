@@ -39,12 +39,10 @@ type Config struct {
 	// filesystem holding it, which is the one a site operator cares about.
 	WebRoot string
 
-	// PlaneURL and PairingToken drive first-run enrollment in node posture. Both
-	// come from the env file; the token is single-use and is stripped from that
-	// file as soon as it has been spent.
-	PlaneURL     string
-	PairingToken string
-	// PlaneTLSInsecure is for a plane behind a self-signed certificate.
+	// PlaneTLSInsecure is for a management node behind a self-signed
+	// certificate (dev networks). Enrollment itself carries no configuration
+	// here: it is the node-initiated join, driven from the local admin page,
+	// and shares no secret (A6).
 	PlaneTLSInsecure bool
 
 	// PolicyPath is the root-owned acceptance policy (§3.3).
@@ -130,8 +128,6 @@ func LoadConfig() (*Config, error) {
 	if v := os.Getenv("AGENT_DIST_DIR"); v != "" {
 		cfg.AgentDistDir = v
 	}
-	cfg.PlaneURL = strings.TrimRight(os.Getenv("JOINERY_PLANE_URL"), "/")
-	cfg.PairingToken = os.Getenv("JOINERY_PAIRING_TOKEN")
 	cfg.PlaneTLSInsecure = os.Getenv("JOINERY_PLANE_TLS_INSECURE") == "1"
 	cfg.PolicyPath = getEnv("AGENT_POLICY_PATH", primitives.DefaultPolicyPath)
 	if os.Getenv("AGENT_LOCAL_JOBS") == "0" {

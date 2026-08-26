@@ -63,7 +63,6 @@ const (
 // the opposite direction (plane calls into a node's web tier) and is pinned
 // status-only by §3.5.4.
 const (
-	pathPair   = "/api/v1/agent/pair"
 	pathClaim  = "/api/v1/agent/claim"
 	pathResult = "/api/v1/agent/result"
 )
@@ -382,63 +381,6 @@ func readCappedEnvelope(resp *http.Response, url string) (json.RawMessage, error
 	return envelope.Data, nil
 }
 
-// Pair performs enrollment: the agent mints its own keypair, presents the
-// one-time pairing token, and hands the plane the public half only.
-func Pair(ctx context.Context, planeURL, token string, tlsInsecure bool, agentVersion, hostname string) (*NodeIdentity, error) {
-	pub, priv, err := GenerateIdentityKeys()
-	if err != nil {
-		return nil, err
-	}
-
-	body, _ := json.Marshal(map[string]interface{}{
-		"pairing_token":    token,
-		"agent_public_key": pub,
-		"agent_version":    agentVersion,
-		"hostname":         hostname,
-	})
-
-	url := strings.TrimRight(planeURL, "/") + pathPair
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := newPlaneClient(tlsInsecure).Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("could not reach the control plane at %s: %w", planeURL, err)
-	}
-	defer resp.Body.Close()
-
-	data, err := readCappedEnvelope(resp, url)
-	if err != nil {
-		return nil, err
-	}
-
-	var paired struct {
-		NodeID       int64  `json:"node_id"`
-		NodeSlug     string `json:"node_slug"`
-		PollInterval int    `json:"poll_interval"`
-	}
-	if err := json.Unmarshal(data, &paired); err != nil {
-		return nil, fmt.Errorf("plane sent an unreadable pairing response: %w", err)
-	}
-	if paired.NodeID <= 0 {
-		return nil, fmt.Errorf("plane paired without naming a node")
-	}
-
-	identity := &NodeIdentity{
-		PlaneURL:    strings.TrimRight(planeURL, "/"),
-		NodeID:      paired.NodeID,
-		NodeSlug:    paired.NodeSlug,
-		PublicKey:   pub,
-		PrivateKey:  priv,
-		PairedTime:  nowRFC3339(),
-		PollSeconds: paired.PollInterval,
-		TLSInsecure: tlsInsecure,
-	}
-	if err := identity.hydrate(); err != nil {
-		return nil, err
-	}
-	return identity, nil
-}
+// Enrollment lives in join.go: the node-initiated join (Phase 1.5, A6). No
+// token-based Pair exists — the agent generates its keypair when the local
+// admin names a management node, and approval over there is the binding.

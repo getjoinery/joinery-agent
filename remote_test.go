@@ -42,23 +42,23 @@ func testSource(t *testing.T, id *NodeIdentity) *RemoteSource {
 // The plane-supplied poll interval is a number from the wire like any other.
 // A hostile plane must not be able to set 0 (a hot loop against its own
 // endpoint) or an hour (a channel that is dead but looks configured).
-// A freshly paired identity must be able to sign immediately. It could not:
-// Pair() filled the stored base64 private key but never decoded it into the
-// signing key, so the very first claim after pairing panicked on a zero-length
-// key. Every test until this one built its identity by hand and hydrated it as
-// a side effect, which is exactly how a gap like this survives a green suite.
-func TestFreshlyPairedIdentityCanSignImmediately(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		w.Write([]byte(`{"api_version":"1.0","data":{"node_id":42,"node_slug":"fresh","poll_interval":15}}`))
-	}))
-	defer server.Close()
-
-	id, err := Pair(context.Background(), server.URL, "a-token", false, "0.0.0-test", "host")
+// A freshly enrolled identity must be able to sign immediately. The token-era
+// enrollment once filled the stored base64 private key but never decoded it
+// into the signing key, so the very first claim after enrolling panicked on a
+// zero-length key. identityFromApproval carries the hydrate() that prevents it.
+func TestFreshlyEnrolledIdentityCanSignImmediately(t *testing.T) {
+	pub, priv, err := GenerateIdentityKeys()
 	if err != nil {
-		t.Fatalf("pairing: %v", err)
+		t.Fatal(err)
+	}
+	staged := &stagedIdentity{PlaneURL: "https://mn.example", PublicKey: pub, PrivateKey: priv}
+	id, err := identityFromApproval("https://mn.example", staged,
+		&joinStatusResponse{Status: "approved", NodeID: 42, NodeSlug: "fresh", PollInterval: 15}, false)
+	if err != nil {
+		t.Fatalf("approval: %v", err)
 	}
 	if id.NodeID != 42 {
-		t.Fatalf("paired as node %d, want 42", id.NodeID)
+		t.Fatalf("enrolled as node %d, want 42", id.NodeID)
 	}
 
 	signature := id.Sign("POST", pathClaim, "1756180000", "n", "h")
@@ -66,35 +66,37 @@ func TestFreshlyPairedIdentityCanSignImmediately(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	pub, _ := base64.StdEncoding.DecodeString(id.PublicKey)
+	rawPub, _ := base64.StdEncoding.DecodeString(id.PublicKey)
 	message := SigningMessage("POST", pathClaim, 42, "1756180000", "n", "h")
-	if !ed25519.Verify(ed25519.PublicKey(pub), []byte(message), sig) {
-		t.Fatal("a freshly paired identity produced a signature its own public half does not verify")
+	if !ed25519.Verify(ed25519.PublicKey(rawPub), []byte(message), sig) {
+		t.Fatal("a freshly enrolled identity produced a signature its own public half does not verify")
 	}
 }
 
-// The clamp only protects anything if the plane's value actually reaches it.
-// It did not: Pair() parsed poll_interval and discarded it, so every agent ran
-// the compiled default and the clamp guarded a number that never arrived.
-func TestPlaneSuppliedPollIntervalIsCarriedAndClamped(t *testing.T) {
+// The clamp only protects anything if the management node's value actually
+// reaches it. The enrollment once parsed poll_interval and discarded it, so
+// every agent ran the compiled default and the clamp guarded a number that
+// never arrived.
+func TestApprovalSuppliedPollIntervalIsCarriedAndClamped(t *testing.T) {
 	cases := []struct {
 		supplied int
 		want     time.Duration
 	}{
 		{30, 30 * time.Second},
-		{0, defaultPollInterval}, // unset by the plane — the compiled default
+		{0, defaultPollInterval}, // unset — the compiled default
 		{1, minPollInterval},     // hostile: a hot loop
 		{86400, maxPollInterval}, // hostile: a channel that is dead but looks configured
 	}
+	pub, priv, err := GenerateIdentityKeys()
+	if err != nil {
+		t.Fatal(err)
+	}
+	staged := &stagedIdentity{PublicKey: pub, PrivateKey: priv}
 	for _, c := range cases {
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-			w.Write([]byte(`{"api_version":"1.0","data":{"node_id":1,"node_slug":"n","poll_interval":` +
-				strconv.Itoa(c.supplied) + `}}`))
-		}))
-		id, err := Pair(context.Background(), server.URL, "t", false, "v", "h")
-		server.Close()
+		id, err := identityFromApproval("https://mn.example", staged,
+			&joinStatusResponse{Status: "approved", NodeID: 1, NodeSlug: "n", PollInterval: c.supplied}, false)
 		if err != nil {
-			t.Fatalf("pairing with poll_interval %d: %v", c.supplied, err)
+			t.Fatalf("approval with poll_interval %d: %v", c.supplied, err)
 		}
 		if id.PollSeconds != c.supplied {
 			t.Errorf("identity kept poll_seconds %d, want %d", id.PollSeconds, c.supplied)
@@ -391,31 +393,3 @@ func TestIdentityRoundTripsAt0600(t *testing.T) {
 	}
 }
 
-// A spent pairing token must not be left lying in a group-readable env file.
-func TestSpentPairingTokenIsStrippedFromTheEnvFile(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "joinery-agent.env")
-	body := "JOINERY_CONFIG=/var/www/site/config/Globalvars_site.php\n" +
-		"JOINERY_PAIRING_TOKEN=abc123\n" +
-		"JOINERY_PLANE_URL=https://plane.example\n"
-	if err := os.WriteFile(path, []byte(body), 0o640); err != nil {
-		t.Fatal(err)
-	}
-	stripPairingTokenFromEnvFile(path)
-
-	after, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(after), "JOINERY_PAIRING_TOKEN") {
-		t.Error("the spent token is still in the env file")
-	}
-	for _, keep := range []string{"JOINERY_CONFIG=", "JOINERY_PLANE_URL="} {
-		if !strings.Contains(string(after), keep) {
-			t.Errorf("stripping the token removed %s as well", keep)
-		}
-	}
-	info, _ := os.Stat(path)
-	if info.Mode().Perm() != 0o640 {
-		t.Errorf("env file mode changed to %04o", info.Mode().Perm())
-	}
-}

@@ -1,14 +1,11 @@
 package main
 
 import (
-	"bufio"
-	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,13 +24,11 @@ import (
 // words ("the plane stores only a verifier") while crossing the plane on every
 // single poll, through any TLS-terminating proxy and into any request log.
 //
-// The honest cell in this picture is the PAIRING TOKEN. For the length of its
-// TTL it is a plane-held credential, and whoever reads it can pair AS this node
-// before the real node does. It is bounded by being single-use, short-lived and
-// unguessable, and pairing is recorded visibly on the node row (paired time,
-// shown in the admin UI) so a stolen-token pairing is seen rather than silent.
-// It is not bounded by anything else, and it is the reason the agent strips the
-// token from its env file the moment pairing succeeds.
+// Enrollment shares no secret at all (Phase 1.5, decision A6): the join is
+// node-initiated — this agent generates the keypair when the local admin names
+// a management node, sends only the public half, and a human over there
+// approves the request after comparing key fingerprints across the two admin
+// panels. Nothing that could enroll anyone ever exists outside this machine.
 
 const (
 	// identityFileName holds the node's own credential. Root-owned 0600: only
@@ -185,42 +180,6 @@ func GenerateIdentityKeys() (pub, priv string, err error) {
 	}
 	return base64.StdEncoding.EncodeToString(publicKey),
 		base64.StdEncoding.EncodeToString(privateKey), nil
-}
-
-// stripPairingTokenFromEnvFile removes JOINERY_PAIRING_TOKEN from the agent env
-// file once it has been spent. The plane has already burned it, so what is left
-// is inert — but the env file is group-readable, and leaving a spent credential
-// lying in it teaches the wrong habit and makes an audit read wrong.
-func stripPairingTokenFromEnvFile(path string) {
-	f, err := os.Open(path)
-	if err != nil {
-		return
-	}
-	var kept bytes.Buffer
-	found := false
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if strings.HasPrefix(strings.TrimSpace(line), "JOINERY_PAIRING_TOKEN=") {
-			found = true
-			continue
-		}
-		kept.WriteString(line)
-		kept.WriteByte('\n')
-	}
-	f.Close()
-	if !found || scanner.Err() != nil {
-		return
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		return
-	}
-	if err := os.WriteFile(path, kept.Bytes(), info.Mode().Perm()); err != nil {
-		log.Printf("WARNING: paired successfully but could not remove the spent pairing token from %s: %v", path, err)
-		return
-	}
-	log.Printf("removed the spent pairing token from %s", path)
 }
 
 func nowRFC3339() string {

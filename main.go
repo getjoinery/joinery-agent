@@ -19,7 +19,7 @@ import (
 // must stay ABOVE 1.1.0 forever - install_agent.sh's downgrade guard sorts
 // with sort -V and refuses to replace a "newer" binary, so anything below
 // 1.1.0 strands those agents permanently.
-var version = "1.2.0"
+var version = "1.3.0"
 
 // How often the idle loop looks at the shipped agent_dist manifest. Update
 // checks never run while a job is executing.
@@ -37,41 +37,23 @@ func fatalInit(updater *Updater, err error) {
 	os.Exit(1)
 }
 
-// startRemoteSource brings up node posture: pair if a token is waiting, then
-// poll the paired plane for primitive jobs. Returns nil when this agent has no
-// node identity, which is the normal state of a control-plane-only agent.
+// startRemoteSource brings up node posture: poll the joined management node
+// for primitive jobs. Returns nil when this agent has no node identity, which
+// is the normal state of an agent that has never been connected to one.
+//
+// Enrollment itself is NOT here: it is the node-initiated join (join.go),
+// driven by the local admin page — no env-file credential exists (A6).
 //
 // Every failure here is a log line and a nil return, never a fatal: an agent
-// that cannot reach its plane must keep serving its local job queue.
+// that cannot reach its management node must keep serving its local job queue.
 func startRemoteSource(cfg *Config, db *DB, jobLock *sync.Mutex, agentVersion string) *RemoteSource {
-	identityPath := IdentityPath()
-
-	identity, err := LoadIdentity(identityPath)
+	identity, err := LoadIdentity(IdentityPath())
 	if err != nil {
 		log.Printf("ERROR: node identity unusable, so this agent takes no remote work: %v", err)
 		return nil
 	}
-
 	if identity == nil {
-		if cfg.PlaneURL == "" || cfg.PairingToken == "" {
-			return nil
-		}
-		hostname, _ := os.Hostname()
-		log.Printf("pairing with control plane %s", cfg.PlaneURL)
-		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-		identity, err = Pair(ctx, cfg.PlaneURL, cfg.PairingToken, cfg.PlaneTLSInsecure, agentVersion, hostname)
-		cancel()
-		if err != nil {
-			log.Printf("ERROR: pairing failed, so this agent takes no remote work: %v", err)
-			return nil
-		}
-		if err := identity.Save(identityPath); err != nil {
-			log.Printf("ERROR: paired but could not store the identity at %s: %v", identityPath, err)
-			return nil
-		}
-		log.Printf("paired as node #%d (%s) — credential stored at %s",
-			identity.NodeID, identity.NodeSlug, identityPath)
-		stripPairingTokenFromEnvFile(envFilePath())
+		return nil
 	}
 
 	policy, err := primitives.LoadPolicy(cfg.PolicyPath)
@@ -93,14 +75,6 @@ func startRemoteSource(cfg *Config, db *DB, jobLock *sync.Mutex, agentVersion st
 	source := NewRemoteSource(identity, policy, env, jobLock)
 	go source.Run(context.Background())
 	return source
-}
-
-// envFilePath is the agent env file the installer writes.
-func envFilePath() string {
-	if v := os.Getenv("AGENT_ENV_FILE"); v != "" {
-		return v
-	}
-	return "/etc/joinery-agent/joinery-agent.env"
 }
 
 func main() {
@@ -143,11 +117,14 @@ func main() {
 	// was built expecting the other.
 	var jobLock sync.Mutex
 
-	// Node posture. An agent with no identity and no pairing token is a
-	// control-plane-only agent, which is every agent today; it simply has no
-	// remote source and the loop below is unchanged for it.
+	// Node posture. An agent with an identity polls its management node; one
+	// without watches for the local admin page to name one (the node-initiated
+	// join, Phase 1.5) — either way the local loop below is unchanged.
 	if remote := startRemoteSource(cfg, db, &jobLock, version); remote != nil {
 		log.Printf("node posture active — remote job source polling %s", remote.identity.PlaneURL)
+	} else {
+		watcher := &JoinWatcher{cfg: cfg, db: db, jobLock: &jobLock, agentVersion: version}
+		go watcher.Run(context.Background())
 	}
 
 	// Recover stale running jobs on startup, then replay their teardown
