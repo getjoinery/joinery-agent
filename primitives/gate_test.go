@@ -1,0 +1,246 @@
+package primitives
+
+import (
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"testing"
+)
+
+// pinnedVocabulary is the complete vocabulary this agent ships with, written
+// out by hand.
+//
+// It is a pin in the same sense as the server_initiated_write caller list: the
+// point is not that the list is correct, it is that the list cannot CHANGE
+// without a human editing this file. A primitive that arrives without a line
+// here fails the build's tests, so "the fleet quietly gained a capability" is
+// not a thing that can happen between releases.
+var pinnedVocabulary = map[string]Class{
+	"check_status": ClassObserve,
+}
+
+func TestVocabularyIsPinned(t *testing.T) {
+	for _, name := range Names() {
+		if _, pinned := pinnedVocabulary[name]; !pinned {
+			t.Errorf("primitive %q is registered but not pinned in gate_test.go — "+
+				"add it here deliberately, or it does not ship", name)
+			continue
+		}
+		p, _ := Lookup(name)
+		if want := pinnedVocabulary[name]; p.Class != want {
+			t.Errorf("primitive %q is registered as class %q but pinned as %q — "+
+				"a class change moves what nodes accept unattended", name, p.Class, want)
+		}
+	}
+	for name := range pinnedVocabulary {
+		if _, ok := Lookup(name); !ok {
+			t.Errorf("primitive %q is pinned but not registered — it was removed without updating the pin", name)
+		}
+	}
+}
+
+// TestThereIsNoExecClass is the spec's central claim (A1) as an assertion: the
+// class set is exactly three, and none of them is an escape hatch.
+func TestThereIsNoExecClass(t *testing.T) {
+	got := Classes()
+	want := []Class{ClassDestructive, ClassObserve, ClassOperate} // sorted
+	if len(got) != len(want) {
+		t.Fatalf("class set is %v, want exactly %v — a fourth class is a change to the security model", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("class set is %v, want %v", got, want)
+		}
+	}
+	for _, c := range got {
+		lower := strings.ToLower(string(c))
+		for _, banned := range []string{"exec", "command", "shell", "run"} {
+			if strings.Contains(lower, banned) {
+				t.Errorf("class %q reads like arbitrary execution — no such class may exist (A1)", c)
+			}
+		}
+	}
+}
+
+// packageSourceFiles returns the non-test .go files of this package.
+func packageSourceFiles(t *testing.T) []string {
+	t.Helper()
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatalf("reading package directory: %v", err)
+	}
+	var files []string
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		files = append(files, name)
+	}
+	if len(files) < 3 {
+		t.Fatalf("found only %d source files — the scanner is looking in the wrong place", len(files))
+	}
+	return files
+}
+
+// TestOnlyScriptFileStartsProcesses is the structural half of "no exec class".
+// Absence is not enough: the vocabulary has to live somewhere a new escape
+// hatch cannot be added quietly. Exactly one file here may start a process —
+// the one that refuses to run anything it has not verified against the signed
+// release manifest.
+//
+// os/exec is the obvious way and not the only one. A primitive could shell out
+// through syscall.ForkExec or os.StartProcess without importing os/exec at all,
+// so those are caught at the CALL site rather than the import site: syscall
+// itself is legitimately imported here for statfs and for the policy file's
+// ownership check, and banning the package would ban those too.
+func TestOnlyScriptFileStartsProcesses(t *testing.T) {
+	const allowed = "script.go"
+
+	bannedImports := map[string]bool{
+		"os/exec": true,
+	}
+	// package → member. Every way the standard library hands you a new process.
+	bannedCalls := map[string]map[string]bool{
+		"syscall": {"Exec": true, "ForkExec": true, "StartProcess": true, "CreateProcess": true},
+		"os":      {"StartProcess": true},
+		"exec":    {"Command": true, "CommandContext": true, "LookPath": true},
+	}
+
+	fset := token.NewFileSet()
+	for _, file := range packageSourceFiles(t) {
+		parsed, err := parser.ParseFile(fset, file, nil, 0)
+		if err != nil {
+			t.Fatalf("parsing %s: %v", file, err)
+		}
+
+		for _, imp := range parsed.Imports {
+			path, err := strconv.Unquote(imp.Path.Value)
+			if err != nil {
+				continue
+			}
+			if bannedImports[path] && file != allowed {
+				t.Errorf("%s imports %q — only %s may start a process, and only after manifest "+
+					"verification. If this file genuinely needs to run something, it belongs behind a ScriptSpec.",
+					file, path, allowed)
+			}
+		}
+
+		if file == allowed {
+			continue
+		}
+		ast.Inspect(parsed, func(n ast.Node) bool {
+			sel, ok := n.(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+			pkg, ok := sel.X.(*ast.Ident)
+			if !ok {
+				return true
+			}
+			if members, watched := bannedCalls[pkg.Name]; watched && members[sel.Sel.Name] {
+				t.Errorf("%s:%d calls %s.%s — that starts a process. Only %s may do that, "+
+					"and only after the target verifies against the signed release manifest.",
+					file, fset.Position(sel.Pos()).Line, pkg.Name, sel.Sel.Name, allowed)
+			}
+			return true
+		})
+	}
+}
+
+// TestNoShellInvocation bans the one construction that turns a validated
+// parameter back into a command: handing a string to a shell. Argv is passed to
+// the kernel as a list, so a parameter containing a semicolon stays a
+// parameter; "-c" is what would undo that.
+//
+// String literals only — a comment cannot execute anything, and scanning raw
+// text would make the package's own documentation unwritable.
+func TestNoShellInvocation(t *testing.T) {
+	fset := token.NewFileSet()
+	for _, file := range packageSourceFiles(t) {
+		parsed, err := parser.ParseFile(fset, file, nil, 0)
+		if err != nil {
+			t.Fatalf("parsing %s: %v", file, err)
+		}
+		ast.Inspect(parsed, func(n ast.Node) bool {
+			lit, ok := n.(*ast.BasicLit)
+			if !ok || lit.Kind != token.STRING {
+				return true
+			}
+			value, err := strconv.Unquote(lit.Value)
+			if err != nil {
+				return true
+			}
+			trimmed := strings.TrimSpace(value)
+			if trimmed == "-c" || strings.Contains(value, "sh -c") {
+				t.Errorf("%s:%d contains the string literal %q — a shell would re-parse validated "+
+					"parameters as syntax. Use a fixed argv template instead.",
+					file, fset.Position(lit.Pos()).Line, value)
+			}
+			if trimmed == "system" || strings.Contains(value, "eval ") {
+				t.Errorf("%s:%d contains %q", file, fset.Position(lit.Pos()).Line, value)
+			}
+			return true
+		})
+	}
+}
+
+// TestPrimitiveExecutionEnvIsExplicit pins the fields a primitive can reach.
+// Widening it is how a collector would grow the ability to read arbitrary files
+// or run arbitrary SQL, both of which §3.5.3 refuses outright.
+func TestPrimitiveExecutionEnvIsExplicit(t *testing.T) {
+	want := map[string]bool{"SiteRoot": true, "WebRoot": true, "DB": true, "Manifest": true}
+
+	fset := token.NewFileSet()
+	parsed, err := parser.ParseFile(fset, "dispatch.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parsing dispatch.go: %v", err)
+	}
+	found := map[string]bool{}
+	ast.Inspect(parsed, func(n ast.Node) bool {
+		ts, ok := n.(*ast.TypeSpec)
+		if !ok || ts.Name.Name != "ExecEnv" {
+			return true
+		}
+		st, ok := ts.Type.(*ast.StructType)
+		if !ok {
+			return true
+		}
+		for _, field := range st.Fields.List {
+			for _, name := range field.Names {
+				found[name.Name] = true
+			}
+		}
+		return false
+	})
+	for name := range found {
+		if !want[name] {
+			t.Errorf("ExecEnv gained field %q — a primitive can now reach something it could not before. "+
+				"That is a change to the read side of the promise boundary (§3.5); pin it here deliberately.", name)
+		}
+	}
+	for name := range want {
+		if !found[name] {
+			t.Errorf("ExecEnv lost field %q", name)
+		}
+	}
+}
+
+func TestPackageLayoutIsFlat(t *testing.T) {
+	// A subdirectory would be a second place primitives could live, and the
+	// scanners above only read this one.
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			t.Errorf("primitives/%s exists — the gate scanners only read the package's own directory, "+
+				"so a primitive hidden in a subdirectory would be unpinned", filepath.Base(e.Name()))
+		}
+	}
+}

@@ -92,6 +92,12 @@ func (d *DB) Close() error {
 	return d.conn.Close()
 }
 
+// SQL exposes the connection for collectors that read local state. Handed to a
+// primitive through ExecEnv.DB, which is the only way a primitive reaches it.
+func (d *DB) SQL() *sql.DB {
+	return d.conn
+}
+
 // ValidateSchema checks that the required plugin tables exist.
 // Called on startup to fail fast with a clear message instead of
 // crashing later with cryptic SQL errors.
@@ -134,6 +140,7 @@ func (d *DB) ClaimNextJob() (*Job, error) {
 		FROM mjb_management_jobs
 		WHERE mjb_status = 'pending'
 		  AND mjb_delete_time IS NULL
+		  AND NOT jsonb_exists(mjb_commands, 'primitive')
 		ORDER BY mjb_id ASC
 		LIMIT 1
 	`)
@@ -244,6 +251,7 @@ func (d *DB) RecoverStaleJobs() ([]*Job, error) {
 		    mjb_completed_time = now(),
 		    mjb_update_time = now()
 		WHERE mjb_status = 'running'
+		  AND NOT jsonb_exists(mjb_commands, 'primitive')
 		RETURNING mjb_id, mjb_mgn_node_id, mjb_job_type, mjb_commands, COALESCE(mjb_current_step, 0)
 	`)
 	if err != nil {

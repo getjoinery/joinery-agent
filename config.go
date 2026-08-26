@@ -9,6 +9,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"joinery-agent/primitives"
 )
 
 type Config struct {
@@ -29,6 +31,32 @@ type Config struct {
 	// for legacy plaintext targets and fails loudly for encrypted ones.
 	SecretBoxKey string
 
+	// SiteRoot is the directory holding config/ and public_html/ — the tree a
+	// script-invoking primitive's paths resolve against, and the tree the signed
+	// release manifest describes.
+	SiteRoot string
+	// WebRoot is the public_html directory. The disk collector reports the
+	// filesystem holding it, which is the one a site operator cares about.
+	WebRoot string
+
+	// PlaneURL and PairingToken drive first-run enrollment in node posture. Both
+	// come from the env file; the token is single-use and is stripped from that
+	// file as soon as it has been spent.
+	PlaneURL     string
+	PairingToken string
+	// PlaneTLSInsecure is for a plane behind a self-signed certificate.
+	PlaneTLSInsecure bool
+
+	// PolicyPath is the root-owned acceptance policy (§3.3).
+	PolicyPath string
+
+	// LocalJobs is whether this agent also serves the plane-local job queue in
+	// its own database. True everywhere by default. A node that is purely a
+	// managed node — no control plane on it — has no plane-local work, and
+	// turning this off makes that explicit rather than leaving the agent
+	// polling a queue that is not its business.
+	LocalJobs bool
+
 	// AgentDistDir is where platform releases deliver the shipped agent
 	// artifact (manifest.json + signed binaries). Derived from the site tree
 	// that JOINERY_CONFIG points into; override with AGENT_DIST_DIR.
@@ -47,6 +75,7 @@ func LoadConfig() (*Config, error) {
 		AgentName:         "joinery-agent",
 		PollInterval:      5 * time.Second,
 		HeartbeatInterval: 30 * time.Second,
+		LocalJobs:         true,
 	}
 
 	// Step 1: Try to read DB credentials from Globalvars_site.php
@@ -95,10 +124,20 @@ func LoadConfig() (*Config, error) {
 	// we read: {site root}/config/Globalvars_site.php →
 	// {site root}/public_html/plugins/server_manager/agent_dist
 	siteRoot := filepath.Dir(filepath.Dir(configPath))
+	cfg.SiteRoot = siteRoot
+	cfg.WebRoot = filepath.Join(siteRoot, "public_html")
 	cfg.AgentDistDir = filepath.Join(siteRoot, "public_html", "plugins", "server_manager", "agent_dist")
 	if v := os.Getenv("AGENT_DIST_DIR"); v != "" {
 		cfg.AgentDistDir = v
 	}
+	cfg.PlaneURL = strings.TrimRight(os.Getenv("JOINERY_PLANE_URL"), "/")
+	cfg.PairingToken = os.Getenv("JOINERY_PAIRING_TOKEN")
+	cfg.PlaneTLSInsecure = os.Getenv("JOINERY_PLANE_TLS_INSECURE") == "1"
+	cfg.PolicyPath = getEnv("AGENT_POLICY_PATH", primitives.DefaultPolicyPath)
+	if os.Getenv("AGENT_LOCAL_JOBS") == "0" {
+		cfg.LocalJobs = false
+	}
+
 	if d, err := time.ParseDuration(os.Getenv("POLL_INTERVAL")); err == nil {
 		cfg.PollInterval = d
 	}
