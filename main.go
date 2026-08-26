@@ -19,7 +19,7 @@ import (
 // must stay ABOVE 1.1.0 forever - install_agent.sh's downgrade guard sorts
 // with sort -V and refuses to replace a "newer" binary, so anything below
 // 1.1.0 strands those agents permanently.
-var version = "1.4.0"
+var version = "1.5.0"
 
 // How often the idle loop looks at the shipped agent_dist manifest. Update
 // checks never run while a job is executing.
@@ -77,6 +77,48 @@ func startRemoteSource(cfg *Config, db *DB, jobLock *sync.Mutex, agentVersion st
 	return source
 }
 
+// resolveLocalJobs decides whether this machine has plane-local work of its
+// own, and returns the line explaining the decision.
+//
+// The job queue and the heartbeat table belong to server_manager, which lives
+// on a control plane. A plain managed node has neither, and that is not a fault
+// to fail on: its work arrives from the management node it joined, over the
+// channel, and needs nothing from those tables. Asking the database — rather
+// than trusting a default or an env file — is what lets one binary serve both
+// kinds of machine with no per-node configuration.
+//
+// A probe that errors is treated as no local queue. The alternative is polling
+// a queue we could not confirm exists, which produces an error every tick and
+// tells the operator nothing they can act on.
+func resolveLocalJobs(probe func() ([]string, error)) (bool, string) {
+	missing, err := probe()
+	switch {
+	case err != nil:
+		return false, fmt.Sprintf("WARNING: could not check for a local job queue (%v) — serving node work only", err)
+	case len(missing) > 0:
+		return false, fmt.Sprintf("no local job queue on this machine (no %s) — serving node work only",
+			strings.Join(missing, ", "))
+	}
+	return true, "schema validated — all required tables present"
+}
+
+// attemptUpdate runs one self-update check unless a job is running, and reports
+// whether a new binary went in (in which case the caller exits so the
+// supervisor restarts into it).
+//
+// The lock is the whole point. A binary must never be swapped out from under a
+// running job, and sharing the one job lock is what extends that promise to
+// remote work — the local poll loop used to get it for free by checking in the
+// same goroutine that ran the job, which never covered jobs the remote source
+// was running in its own.
+func attemptUpdate(jobLock *sync.Mutex, check func() bool) bool {
+	if !jobLock.TryLock() {
+		return false
+	}
+	defer jobLock.Unlock()
+	return check()
+}
+
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "--version" {
 		fmt.Printf("joinery-agent %s\n", version)
@@ -101,11 +143,11 @@ func main() {
 
 	log.Printf("connected to PostgreSQL %s/%s", cfg.DBHost, cfg.DBName)
 
-	// Verify the plugin schema exists before doing anything else
-	if err := db.ValidateSchema(); err != nil {
-		fatalInit(updater, err)
+	if cfg.LocalJobs {
+		var reason string
+		cfg.LocalJobs, reason = resolveLocalJobs(db.MissingLocalJobTables)
+		log.Print(reason)
 	}
-	log.Printf("schema validated — all required tables present")
 
 	// Fully initialised: a just-installed binary is now proven good.
 	updater.ConfirmHealthy()
@@ -153,14 +195,32 @@ func main() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 
-	// Heartbeat goroutine
-	go func() {
-		for {
-			bundled, updateState := updater.HeartbeatInfo()
-			if err := db.UpdateHeartbeat(cfg.AgentName, version, bundled, updateState); err != nil {
-				log.Printf("WARNING: heartbeat update failed: %v", err)
+	// Heartbeat goroutine. Plane-local, like the queue it reports alongside:
+	// the row lands in server_manager's table for its dashboard. A node-posture
+	// agent has no such table, and the management node learns its liveness from
+	// the polling itself, so there is nothing here for it to write.
+	if cfg.LocalJobs {
+		go func() {
+			for {
+				bundled, updateState := updater.HeartbeatInfo()
+				if err := db.UpdateHeartbeat(cfg.AgentName, version, bundled, updateState); err != nil {
+					log.Printf("WARNING: heartbeat update failed: %v", err)
+				}
+				time.Sleep(cfg.HeartbeatInterval)
 			}
-			time.Sleep(cfg.HeartbeatInterval)
+		}()
+	}
+
+	// Self-update, on its own clock. Every agent moves forward with the fleet,
+	// whether or not it serves a local queue — this used to hang off the local
+	// poll loop, where an agent doing only node work would never have checked.
+	go func() {
+		ticker := time.NewTicker(updateCheckInterval)
+		defer ticker.Stop()
+		for range ticker.C {
+			if attemptUpdate(&jobLock, updater.CheckAndApply) {
+				os.Exit(0)
+			}
 		}
 	}()
 
@@ -173,7 +233,6 @@ func main() {
 	// Main poll loop
 	ticker := time.NewTicker(cfg.PollInterval)
 	defer ticker.Stop()
-	lastUpdateCheck := time.Time{}
 
 	for {
 		select {
@@ -183,15 +242,6 @@ func main() {
 		case <-ticker.C:
 			if !cfg.LocalJobs {
 				continue
-			}
-			// Self-update check runs between jobs only. A swap exits cleanly;
-			// the supervisor (systemd Restart=always, or the cron keepalive)
-			// restarts into the new binary.
-			if time.Since(lastUpdateCheck) >= updateCheckInterval {
-				lastUpdateCheck = time.Now()
-				if updater.CheckAndApply() {
-					os.Exit(0)
-				}
 			}
 
 			jobLock.Lock()

@@ -49,10 +49,11 @@ type Config struct {
 	PolicyPath string
 
 	// LocalJobs is whether this agent also serves the plane-local job queue in
-	// its own database. True everywhere by default. A node that is purely a
-	// managed node — no control plane on it — has no plane-local work, and
-	// turning this off makes that explicit rather than leaving the agent
-	// polling a queue that is not its business.
+	// its own database. Starts true and is settled at startup by looking for
+	// the tables that queue lives in: a machine that is purely a managed node
+	// has no plane-local work, and polling a queue that is not its business is
+	// not something to leave to configuration. AGENT_LOCAL_JOBS=0 forces it off
+	// on a control plane that should not serve its own queue.
 	LocalJobs bool
 
 	// AgentDistDir is where platform releases deliver the shipped agent

@@ -98,38 +98,35 @@ func (d *DB) SQL() *sql.DB {
 	return d.conn
 }
 
-// ValidateSchema checks that the required plugin tables exist.
-// Called on startup to fail fast with a clear message instead of
-// crashing later with cryptic SQL errors.
-func (d *DB) ValidateSchema() error {
-	requiredTables := []string{"mgn_managed_nodes", "mjb_management_jobs", "ahb_agent_heartbeats"}
+// localJobTables are the server_manager tables the plane-local job queue and
+// its heartbeat live in. They exist on a control plane and nowhere else.
+var localJobTables = []string{"mgn_managed_nodes", "mjb_management_jobs", "ahb_agent_heartbeats"}
+
+// MissingLocalJobTables reports which of the plane-local tables this database
+// lacks. An empty result means this machine has a local job queue to serve.
+//
+// This is a capability question, not a health check: an agent on a plain
+// managed node has none of these tables and is working exactly as intended —
+// it takes its work from the management node it joined, over the channel, and
+// never reads a queue out of the local database. Only a control plane, where
+// server_manager is installed, has local work of its own.
+func (d *DB) MissingLocalJobTables() ([]string, error) {
 	missing := []string{}
 
-	for _, table := range requiredTables {
+	for _, table := range localJobTables {
 		var exists bool
 		err := d.conn.QueryRow(
 			"SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = $1)", table,
 		).Scan(&exists)
 		if err != nil {
-			return fmt.Errorf("could not check for table %s: %w", table, err)
+			return nil, fmt.Errorf("could not check for table %s: %w", table, err)
 		}
 		if !exists {
 			missing = append(missing, table)
 		}
 	}
 
-	if len(missing) > 0 {
-		return fmt.Errorf("required tables missing from database: %s\n"+
-			"  The server_manager plugin is not installed or not activated.\n"+
-			"  To fix this:\n"+
-			"    1. Log in to your Joinery admin panel\n"+
-			"    2. Go to /admin/admin_plugins\n"+
-			"    3. Find 'Server Manager' and click Install, then Activate\n"+
-			"    4. Restart the agent: sudo systemctl restart joinery-agent",
-			strings.Join(missing, ", "))
-	}
-
-	return nil
+	return missing, nil
 }
 
 // ClaimNextJob finds the oldest pending job, checks per-node concurrency,
