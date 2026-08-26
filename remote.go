@@ -319,7 +319,13 @@ func capLog(text string) (kept string, total int) {
 
 // signedPost issues one signed request and returns the envelope's data field.
 func (r *RemoteSource) signedPost(ctx context.Context, path string, body []byte) (json.RawMessage, error) {
-	url := strings.TrimRight(r.identity.PlaneURL, "/") + path
+	return signedPlanePost(ctx, r.client, r.identity, path, body)
+}
+
+// signedPlanePost is the signed request itself, shared with the leave path
+// (leave.go), which must be able to sign without a running job source.
+func signedPlanePost(ctx context.Context, client *http.Client, id *NodeIdentity, path string, body []byte) (json.RawMessage, error) {
+	url := strings.TrimRight(id.PlaneURL, "/") + path
 
 	sum := sha256.Sum256(body)
 	bodyHash := hex.EncodeToString(sum[:])
@@ -334,12 +340,12 @@ func (r *RemoteSource) signedPost(ctx context.Context, path string, body []byte)
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Joinery-Agent-Node", strconv.FormatInt(r.identity.NodeID, 10))
+	req.Header.Set("X-Joinery-Agent-Node", strconv.FormatInt(id.NodeID, 10))
 	req.Header.Set("X-Joinery-Agent-Timestamp", timestamp)
 	req.Header.Set("X-Joinery-Agent-Nonce", nonce)
-	req.Header.Set("X-Joinery-Agent-Signature", r.identity.Sign(http.MethodPost, path, timestamp, nonce, bodyHash))
+	req.Header.Set("X-Joinery-Agent-Signature", id.Sign(http.MethodPost, path, timestamp, nonce, bodyHash))
 
-	resp, err := r.client.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}

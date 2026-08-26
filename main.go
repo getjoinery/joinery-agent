@@ -19,7 +19,7 @@ import (
 // must stay ABOVE 1.1.0 forever - install_agent.sh's downgrade guard sorts
 // with sort -V and refuses to replace a "newer" binary, so anything below
 // 1.1.0 strands those agents permanently.
-var version = "1.3.0"
+var version = "1.4.0"
 
 // How often the idle loop looks at the shipped agent_dist manifest. Update
 // checks never run while a job is executing.
@@ -122,7 +122,10 @@ func main() {
 	// join, Phase 1.5) — either way the local loop below is unchanged.
 	if remote := startRemoteSource(cfg, db, &jobLock, version); remote != nil {
 		log.Printf("node posture active — remote job source polling %s", remote.identity.PlaneURL)
+		leaver := &LeaveWatcher{db: db, identity: remote.identity, jobLock: &jobLock}
+		go leaver.Run(context.Background())
 	} else {
+		clearStaleLeaveRequest(db)
 		watcher := &JoinWatcher{cfg: cfg, db: db, jobLock: &jobLock, agentVersion: version}
 		go watcher.Run(context.Background())
 	}

@@ -293,6 +293,12 @@ func (w *JoinWatcher) promote(ctx context.Context, request *joinRequest, staged 
 		status.NodeID, status.NodeSlug, request.URL, IdentityPath())
 
 	source := startRemoteSource(w.cfg, w.db, w.jobLock, w.agentVersion)
+	if source != nil {
+		// Connected mid-process, so the leave watcher main() starts for an
+		// already-connected agent has to start here instead.
+		leaver := &LeaveWatcher{db: w.db, identity: source.identity, jobLock: w.jobLock}
+		go leaver.Run(ctx)
+	}
 	return source != nil
 }
 
@@ -380,8 +386,16 @@ func (w *JoinWatcher) callJoin(ctx context.Context, planeURL string, staged *sta
 // between new code arriving and update_database seeding the rows.
 
 func (w *JoinWatcher) readSetting(name string) (string, error) {
+	return readAgentSetting(w.db, name)
+}
+
+func (w *JoinWatcher) writeSetting(name, value string) {
+	writeAgentSetting(w.db, name, value)
+}
+
+func readAgentSetting(db *DB, name string) (string, error) {
 	var value sql.NullString
-	err := w.db.SQL().QueryRow(
+	err := db.SQL().QueryRow(
 		"SELECT stg_value FROM stg_settings WHERE stg_name = $1", name).Scan(&value)
 	if err == sql.ErrNoRows {
 		return "", nil
@@ -392,14 +406,14 @@ func (w *JoinWatcher) readSetting(name string) (string, error) {
 	return value.String, nil
 }
 
-func (w *JoinWatcher) writeSetting(name, value string) {
-	_, err := w.db.SQL().Exec(
+func writeAgentSetting(db *DB, name, value string) {
+	_, err := db.SQL().Exec(
 		`INSERT INTO stg_settings (stg_name, stg_value, stg_usr_user_id, stg_create_time, stg_update_time, stg_group_name)
 		 VALUES ($1, $2, 1, NOW(), NOW(), 'general')
 		 ON CONFLICT (stg_name) DO UPDATE SET stg_value = EXCLUDED.stg_value, stg_update_time = NOW()`,
 		name, value)
 	if err != nil {
-		log.Printf("join: could not write setting %s: %v", name, err)
+		log.Printf("settings: could not write %s: %v", name, err)
 	}
 }
 
