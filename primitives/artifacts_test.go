@@ -83,6 +83,31 @@ func TestFilesResolveToTheArtifactThatShipsThem(t *testing.T) {
 	}
 }
 
+func TestAFilenameWithSpacesNeitherBreaksTheManifestNorItsNeighbours(t *testing.T) {
+	// The shipped tree really contains one ("database devops.txt"). The
+	// manifest line format is sha256sum's — 64 hex, two spaces, then a path
+	// that may itself contain spaces — so parsing must cut at a fixed offset.
+	// A whitespace-split parser once turned that one filename into "unreadable
+	// line" and took every script primitive on the node down with it.
+	root, pub, priv := artifactTree(t)
+
+	spaced := writeFile(t, root, "maintenance_scripts/sysadmin_tools/database devops.txt", "notes\n")
+	script := writeFile(t, root, "public_html/utils/run_backup.php", "<?php backup();\n")
+
+	signManifest(t, root, "", priv,
+		"maintenance_scripts/sysadmin_tools/database devops.txt",
+		"public_html/utils/run_backup.php")
+
+	m := NewArtifactManifests(root, pub)
+
+	if err := m.Verify(script); err != nil {
+		t.Fatalf("a spaced filename elsewhere in the manifest must not poison verification: %v", err)
+	}
+	if err := m.Verify(spaced); err != nil {
+		t.Fatalf("the spaced filename itself should verify: %v", err)
+	}
+}
+
 func TestAPluginScriptIsNeverVerifiedByTheCoreManifest(t *testing.T) {
 	// The rule that makes per-artifact manifests mean anything. Core's manifest
 	// exists and is valid; the plugin has none. Falling back would "verify" a

@@ -116,14 +116,20 @@ func parseTreeManifest(body []byte) (map[string]string, error) {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		fields := strings.Fields(line)
-		if len(fields) != 2 || len(fields[0]) != 64 {
+		// sha256sum convention: 64 hex characters, two spaces, then the path.
+		// The path may itself contain spaces — one real file in the shipped
+		// tree does — so the line is CUT at a fixed offset, never
+		// whitespace-split: Fields() here once made a single spaced filename
+		// unreadable and took every script primitive on the node with it.
+		if len(line) < 67 || line[64] != ' ' || line[65] != ' ' {
 			return nil, errors.New("tree manifest has an unreadable line")
 		}
-		if _, err := hex.DecodeString(fields[0]); err != nil {
+		hash := line[:64]
+		path := line[66:]
+		if _, err := hex.DecodeString(hash); err != nil {
 			return nil, errors.New("tree manifest has a non-hex hash")
 		}
-		out[filepath.ToSlash(fields[1])] = strings.ToLower(fields[0])
+		out[filepath.ToSlash(path)] = strings.ToLower(hash)
 	}
 	if len(out) == 0 {
 		return nil, errors.New("tree manifest lists no files")
