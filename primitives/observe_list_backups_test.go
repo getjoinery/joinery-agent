@@ -153,3 +153,53 @@ func TestListBackupsTakesNoParameters(t *testing.T) {
 		t.Fatalf("list_backups must be observe, is %q", p.Class)
 	}
 }
+
+func TestAnArchiveReportsWhetherItsKeyIsBesideIt(t *testing.T) {
+	// The plane cannot see the node's disk, so this listing is the only thing
+	// that can say whether an encrypted archive still has the file that opens
+	// it. Without it, "this backup has no key anywhere" is a state nothing can
+	// detect, and an operator finds out at restore time.
+	dir := t.TempDir()
+	for _, name := range []string{
+		"paired-2026-08-01.tar.gz.enc",
+		"paired-2026-08-01.tar.gz.enc.keys.json",
+		"lonely-2026-08-02.sql.gz.enc",
+		"plain-2026-08-03.sql.gz",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0600); err != nil {
+			t.Fatalf("seed %s: %v", name, err)
+		}
+	}
+
+	result, err := runListBackupsFrom(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	files, _ := result["files"].([]map[string]interface{})
+
+	got := map[string]map[string]interface{}{}
+	for _, f := range files {
+		got[f["filename"].(string)] = f
+	}
+
+	// The envelope is not a backup and is never offered as one.
+	if _, listed := got["paired-2026-08-01.tar.gz.enc.keys.json"]; listed {
+		t.Error("an envelope must not be listed as a backup in its own right")
+	}
+	if len(got) != 3 {
+		t.Errorf("expected the three archives, got %d", len(got))
+	}
+
+	if got["paired-2026-08-01.tar.gz.enc"]["has_envelope"] != true {
+		t.Error("an archive with its key beside it should say so")
+	}
+	if got["lonely-2026-08-02.sql.gz.enc"]["has_envelope"] != false {
+		t.Error("an encrypted archive with no key file should say so — this is the whole point")
+	}
+	// A plaintext archive has no key to lose. Reporting it as unpaired would be
+	// a false alarm, and a listing that cries wolf is ignored when it is right.
+	if got["plain-2026-08-03.sql.gz"]["encrypted"] != false ||
+		got["plain-2026-08-03.sql.gz"]["has_envelope"] != false {
+		t.Error("a plaintext archive is not encrypted and is never missing a key")
+	}
+}

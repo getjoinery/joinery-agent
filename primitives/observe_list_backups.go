@@ -39,6 +39,23 @@ const backupDir = "/backups"
 // shortest-first would classify every encrypted dump as plaintext.
 var backupExtensions = []string{".tar.gz.enc", ".sql.gz.enc", ".tar.gz", ".sql.gz"}
 
+// envelopeSuffix names the key file that sits beside an encrypted archive
+// (BackupEnvelope::SIDECAR_SUFFIX). It is not itself a backup artifact — it is
+// never listed as one — but whether it is PRESENT is reported per archive.
+//
+// An encrypted archive is sealed with a data key minted for that archive alone,
+// and this file holds the only copy of it. An archive that reaches cloud storage
+// without it cannot be opened by anyone, and it looks exactly like a good backup
+// in every listing. Whoever is deciding what to upload, restore or trust needs
+// to know whether the key is there, and this is the only place that can answer:
+// the plane cannot see the node's disk.
+const envelopeSuffix = ".keys.json"
+
+// encryptedSuffix is what makes an archive need a key at all. A plaintext
+// archive reported as "missing its key" would be a false alarm, and a listing
+// that cries wolf gets ignored on the day it is right.
+const encryptedSuffix = ".enc"
+
 func runListBackups(ctx context.Context, _ *ExecEnv, _ Params) (map[string]interface{}, error) {
 	return runListBackupsFrom(ctx, backupDir)
 }
@@ -60,6 +77,15 @@ func runListBackupsFrom(_ context.Context, dir string) (map[string]interface{}, 
 		return nil, err
 	}
 
+	// Names first, so each archive can be asked whether its key file is here
+	// without re-reading the directory once per artifact.
+	present := map[string]bool{}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			present[entry.Name()] = true
+		}
+	}
+
 	for _, entry := range entries {
 		if entry.IsDir() || !isBackupArtifact(entry.Name()) {
 			continue
@@ -71,15 +97,18 @@ func runListBackupsFrom(_ context.Context, dir string) (map[string]interface{}, 
 
 		size := info.Size()
 		mtime := info.ModTime().UTC()
+		encrypted := strings.HasSuffix(entry.Name(), encryptedSuffix)
 		files = append(files, map[string]interface{}{
-			"filename":   entry.Name(),
-			"size":       formatSize(uint64(size)),
-			"size_bytes": size,
-			"date":       mtime.Format("2006-01-02"),
-			"mtime":      mtime.Unix(),
-			"local_path": filepath.Join(dir, entry.Name()),
-			"cloud_path": nil,
-			"location":   "local",
+			"encrypted":    encrypted,
+			"has_envelope": encrypted && present[entry.Name()+envelopeSuffix],
+			"filename":     entry.Name(),
+			"size":         formatSize(uint64(size)),
+			"size_bytes":   size,
+			"date":         mtime.Format("2006-01-02"),
+			"mtime":        mtime.Unix(),
+			"local_path":   filepath.Join(dir, entry.Name()),
+			"cloud_path":   nil,
+			"location":     "local",
 		})
 	}
 

@@ -119,13 +119,16 @@ func LoadConfig() (*Config, error) {
 		cfg.AgentName = v
 	}
 
-	// agent_dist lives inside the public_html tree of the site whose config
-	// we read: {site root}/config/Globalvars_site.php →
-	// {site root}/public_html/plugins/server_manager/agent_dist
+	// Everything is derived from the site whose config we read:
+	// {site root}/config/Globalvars_site.php → {site root}/public_html/...
 	siteRoot := filepath.Dir(filepath.Dir(configPath))
 	cfg.SiteRoot = siteRoot
 	cfg.WebRoot = filepath.Join(siteRoot, "public_html")
-	cfg.AgentDistDir = filepath.Join(siteRoot, "public_html", "plugins", "server_manager", "agent_dist")
+	// The signed agent artifact lives in CORE, not in the server_manager plugin.
+	// Every node must receive it, and the open-core rule is that no plugin arrives
+	// as a side effect of a core upgrade — server_manager is commercial and
+	// entitlement-gated, so it cannot be what carries the agent to a node.
+	cfg.AgentDistDir = filepath.Join(siteRoot, "public_html", "agent_dist")
 	if v := os.Getenv("AGENT_DIST_DIR"); v != "" {
 		cfg.AgentDistDir = v
 	}

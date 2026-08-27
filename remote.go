@@ -11,6 +11,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -95,11 +96,19 @@ type RemoteSource struct {
 
 	// warned suppresses repeat logging of a steady-state complaint.
 	warned map[string]bool
+
+	// agentVersion travels on every claim. The plane recorded a node's agent
+	// version once, at approval, and then never again — so a fleet that had
+	// self-updated three times still read as the version it first paired with,
+	// and the dashboard was confidently wrong for exactly the operation during
+	// which someone needs it: a rollout. The poll is the one moment the node is
+	// provably speaking for itself, so it is where the fact belongs.
+	agentVersion string
 }
 
 // NewRemoteSource builds the source. Returns nil when this agent has no node
 // identity, which is the normal state of a control-plane-only agent.
-func NewRemoteSource(id *NodeIdentity, policy *primitives.Policy, env *primitives.ExecEnv, jobLock *sync.Mutex) *RemoteSource {
+func NewRemoteSource(id *NodeIdentity, policy *primitives.Policy, env *primitives.ExecEnv, jobLock *sync.Mutex, agentVersion string) *RemoteSource {
 	if id == nil {
 		return nil
 	}
@@ -121,6 +130,7 @@ func NewRemoteSource(id *NodeIdentity, policy *primitives.Policy, env *primitive
 		pollInterval: interval,
 		jobLock:      jobLock,
 		warned:       map[string]bool{},
+		agentVersion: agentVersion,
 	}
 }
 
@@ -197,7 +207,10 @@ func (r *RemoteSource) noteFailure(err error) {
 
 // claim asks the plane for one job.
 func (r *RemoteSource) claim(ctx context.Context) (*RemoteJob, error) {
-	body, _ := json.Marshal(map[string]interface{}{"node_id": r.identity.NodeID})
+	body, _ := json.Marshal(map[string]interface{}{
+		"node_id":       r.identity.NodeID,
+		"agent_version": r.agentVersion,
+	})
 
 	raw, err := r.signedPost(ctx, pathClaim, body)
 	if err != nil {
@@ -255,6 +268,22 @@ func (r *RemoteSource) runJob(ctx context.Context, job *RemoteJob) {
 	default:
 		log.Printf("job #%d (%s) completed", job.JobID, job.Primitive)
 		r.postResult(ctx, job.JobID, "completed", result, "", "")
+	}
+
+	// A primitive may ask this process to end — restart_agent is the one that
+	// does. It cannot exit from inside itself: the result has to be posted
+	// first, or the job stays claimed until the plane's timeout returns it to
+	// pending and the restarted agent runs it again, which reads as a hang and
+	// then repeats. So the primitive records the intent and it is acted on here,
+	// after the post above has returned.
+	//
+	// The exit is unconditional once requested. Whether anything will start this
+	// agent again was settled inside the primitive, which refuses when the answer
+	// is no; re-deciding it here would be a second opinion on a question already
+	// answered with better information.
+	if restart, by := primitives.ConsumeRestartRequest(); restart {
+		log.Printf("job #%d asked this agent to restart — exiting; %s", job.JobID, by)
+		os.Exit(0)
 	}
 }
 

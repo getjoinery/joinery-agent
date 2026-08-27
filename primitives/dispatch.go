@@ -80,6 +80,14 @@ func Execute(ctx context.Context, env *ExecEnv, policy *Policy, req Request) (ma
 		return nil, err
 	}
 
+	// The node's own deadline on its own work. Applied after validation, so a
+	// refusal is never delayed by it, and applied to embedded and script
+	// primitives alike: before this, RemoteSource handed both the agent's ROOT
+	// context, so a wedged transfer was bounded only by whatever the script
+	// bounded itself with, and an embedded primitive by nothing at all.
+	ctx, cancel := context.WithTimeout(ctx, p.Timeout)
+	defer cancel()
+
 	if p.Script != nil {
 		return runScriptPrimitive(ctx, env, p, params)
 	}

@@ -1,12 +1,18 @@
 package primitives
 
 import (
+	"bytes"
 	"context"
+	"crypto/x509"
+	"encoding/pem"
 	"fmt"
 	"os"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // check_status is the migration's first primitive, and it is an observe one on
@@ -16,9 +22,14 @@ import (
 // and the management API answers in PHP, and it does so without running a
 // single command — disk comes from statfs, memory and load and uptime from
 // /proc, and the Joinery version and database list from the node's own
-// database. The result keys are exactly the ones the management API's stats
-// endpoint returns, so a node reached over this channel and a node reached over
-// the API leave mgn_last_status_data looking identical.
+// database. The result keys match the management API's stats endpoint, so a node
+// reached over this channel and a node reached over the API leave
+// mgn_last_status_data looking the same — with ONE deliberate exception, the
+// ssl_ keys below, which the API transport cannot ever produce because
+// /etc/letsencrypt/live is root-only and PHP runs as the web user. That is not a
+// parity bug to be closed; it is the first thing this transport can answer that
+// the other structurally cannot, and pretending otherwise would mean either
+// dropping a real answer or claiming the API could give it.
 func init() {
 	Register(Primitive{
 		Name:        "check_status",
@@ -42,10 +53,10 @@ func runCheckStatus(ctx context.Context, env *ExecEnv, _ Params) (map[string]int
 	collectMemory(result)
 	collectLoad(result)
 	collectUptime(result)
+	collectCertificates(letsEncryptLiveDir, time.Now(), result)
 	if env.DB != nil {
 		collectDatabase(ctx, env, result)
 	}
-
 
 	if len(result) == 0 {
 		return nil, fmt.Errorf("nothing could be collected on this node")
@@ -230,4 +241,148 @@ func formatUptime(seconds int64) string {
 	default:
 		return fmt.Sprintf("%d minutes", minutes)
 	}
+}
+
+// --- TLS certificates --------------------------------------------------------
+
+// letsEncryptLiveDir is where certbot keeps the current certificate of each
+// lineage. It is the ONLY place worth looking: both shipped vhost templates
+// point SSLCertificateFile at /etc/letsencrypt/live/{domain}/fullchain.pem and
+// wrap the whole :443 block in <IfFile> on that exact path, so a certificate
+// anywhere else is a certificate Apache is not serving.
+const letsEncryptLiveDir = "/etc/letsencrypt/live"
+
+// Bounds on what one node may report. A result travels inside a body the plane
+// caps, and a node with an unusual number of lineages should return a truncated
+// answer that says it was truncated rather than one the far end refuses whole.
+const (
+	maxReportedCertificates = 25
+	maxReportedDomains      = 10
+)
+
+// collectCertificates reports every certificate this node holds, and when each
+// one expires.
+//
+// WHY THE NODE ENUMERATES RATHER THAN BEING ASKED ABOUT A DOMAIN. The SSH step
+// this replaces was handed a domain computed on the plane from mgn_site_url, and
+// answered SSL_CERT_FOUND or SSL_CERT_MISSING about that one name. So it could
+// only ever see what the plane already believed, and a node with a certificate
+// under a lineage the plane did not name looked to it exactly like a node with
+// no certificate at all. That failure has a specific shape here: certbot
+// re-issuing into a fresh lineage writes {domain}-0001 and leaves the vhost
+// pointing at {domain}, so a node can hold a current certificate that Apache is
+// not serving and a stale one that it is. Listing the lineages is what makes
+// that visible; being asked about one name is what hides it.
+//
+// THESE ARE FACTS, NOT A VERDICT. The node says what is on its disk and when it
+// runs out. Whether the site "has SSL" is the plane's to decide, because it also
+// knows about the edge — a Cloudflare-terminated site is served over HTTPS with
+// no origin certificate at all, which is a healthy state this collector has no
+// way to see and must not report as a problem.
+//
+// Symlinks are FOLLOWED here, deliberately, which is the opposite of the rule
+// the probe primitives apply. The difference is direction and ownership: this
+// reads, in a root-only directory, a path certbot itself maintains as a symlink
+// into ../../archive. Refusing to follow it would report every certbot-managed
+// certificate as missing.
+func collectCertificates(dir string, now time.Time, result map[string]interface{}) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// No certbot on this machine. Zero is a real answer, and a
+			// different one from "could not look".
+			result["ssl_certificate_count"] = 0
+		} else {
+			// Root should be able to read this. Failing to is itself worth
+			// reporting rather than rendering as an absence.
+			result["ssl_certificates_unreadable"] = true
+		}
+		return
+	}
+
+	var certs []map[string]interface{}
+	truncated := false
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		if len(certs) >= maxReportedCertificates {
+			truncated = true
+			break
+		}
+		summary := summariseCertificate(filepath.Join(dir, entry.Name(), "fullchain.pem"), now)
+		if summary == nil {
+			continue
+		}
+		summary["name"] = entry.Name()
+		certs = append(certs, summary)
+	}
+
+	result["ssl_certificate_count"] = len(certs)
+	if truncated {
+		result["ssl_certificates_truncated"] = true
+	}
+	if len(certs) == 0 {
+		return
+	}
+
+	// Soonest first: the one that matters is the one about to lapse, and a
+	// fleet view sorting on a single number is what turns "eight days left on a
+	// node whose renewal timer is dead" into something anyone notices.
+	sort.Slice(certs, func(i, j int) bool {
+		return certs[i]["expires_in_days"].(int) < certs[j]["expires_in_days"].(int)
+	})
+	result["ssl_certificates"] = certs
+	result["ssl_soonest_expiry"] = certs[0]["not_after"]
+	result["ssl_soonest_expiry_days"] = certs[0]["expires_in_days"]
+}
+
+// summariseCertificate reads the leaf certificate of a fullchain file. It
+// returns nil for anything it cannot make sense of — an empty lineage
+// directory, a truncated file mid-renewal — because a node with one unreadable
+// lineage should still report the others.
+func summariseCertificate(path string, now time.Time) map[string]interface{} {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+
+	// The leaf is first in a fullchain; the rest is the issuer chain and says
+	// nothing about when THIS site's certificate expires.
+	block, _ := pem.Decode(raw)
+	if block == nil || block.Type != "CERTIFICATE" {
+		return nil
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return nil
+	}
+
+	// Truncated toward zero, so the last day before expiry reads as 0 rather
+	// than rounding up to a day that is not there, and an expired certificate
+	// reads negative.
+	days := int(cert.NotAfter.Sub(now) / (24 * time.Hour))
+
+	summary := map[string]interface{}{
+		"not_after":       cert.NotAfter.UTC().Format(time.RFC3339),
+		"expires_in_days": days,
+		"expired":         now.After(cert.NotAfter),
+		// A self-signed placeholder is present, servable, and trusted by
+		// nobody. Reported as its own fact because "a certificate exists" would
+		// otherwise read as "TLS works here".
+		"self_signed": bytes.Equal(cert.RawIssuer, cert.RawSubject),
+	}
+	if issuer := strings.TrimSpace(cert.Issuer.CommonName); issuer != "" {
+		summary["issuer"] = issuer
+	}
+	if names := cert.DNSNames; len(names) > 0 {
+		if len(names) > maxReportedDomains {
+			names = names[:maxReportedDomains]
+			summary["domains_truncated"] = true
+		}
+		// Copied rather than aliased: the slice above is a window into the
+		// parsed certificate, and the result outlives it.
+		summary["domains"] = append([]string(nil), names...)
+	}
+	return summary
 }

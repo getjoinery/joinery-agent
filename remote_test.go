@@ -36,7 +36,7 @@ func testSource(t *testing.T, id *NodeIdentity) *RemoteSource {
 	return NewRemoteSource(id,
 		&primitives.Policy{Accept: []primitives.Class{primitives.ClassObserve, primitives.ClassOperate}},
 		&primitives.ExecEnv{SiteRoot: t.TempDir(), WebRoot: t.TempDir(), Manifest: primitives.UnavailableVerifier{}},
-		&sync.Mutex{})
+		&sync.Mutex{}, "9.9.9")
 }
 
 // The plane-supplied poll interval is a number from the wire like any other.
@@ -101,7 +101,7 @@ func TestApprovalSuppliedPollIntervalIsCarriedAndClamped(t *testing.T) {
 		if id.PollSeconds != c.supplied {
 			t.Errorf("identity kept poll_seconds %d, want %d", id.PollSeconds, c.supplied)
 		}
-		src := NewRemoteSource(id, ShippedTestPolicy(), &primitives.ExecEnv{}, &sync.Mutex{})
+		src := NewRemoteSource(id, ShippedTestPolicy(), &primitives.ExecEnv{}, &sync.Mutex{}, "9.9.9")
 		if src.pollInterval != c.want {
 			t.Errorf("poll_interval %d became %s, want %s", c.supplied, src.pollInterval, c.want)
 		}
@@ -392,4 +392,3 @@ func TestIdentityRoundTripsAt0600(t *testing.T) {
 		t.Error("the loaded private key does not produce the same signature")
 	}
 }
-

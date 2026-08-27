@@ -19,10 +19,31 @@ import (
 // without a human editing this file. A primitive that arrives without a line
 // here fails the build's tests, so "the fleet quietly gained a capability" is
 // not a thing that can happen between releases.
+// Pins are written BEFORE the primitive they name, deliberately, while several
+// primitives are being built at once. This file is the one file every new
+// primitive has to touch, so five authors editing it is five chances to lose an
+// edit; writing the intended vocabulary once, up front, makes it single-writer.
+//
+// The cost is that this test is red between the pin and the primitive, failing
+// with "pinned but not registered". That is the honest reading — the vocabulary
+// this release intends to ship, minus what has landed — and it is a checklist
+// rather than a defect. It goes green when the last primitive lands, and a pin
+// still red at release time is a primitive that was abandoned, which is exactly
+// the thing worth being told about.
 var pinnedVocabulary = map[string]Class{
 	"check_status": ClassObserve,
 	"list_backups": ClassObserve,
 	"backup_run":   ClassOperate,
+
+	"restart_agent":         ClassOperate,
+	"upload_backup":         ClassOperate,
+	"delete_backup":         ClassOperate,
+	"run_plugin_installers": ClassOperate,
+
+	"ssl_probe_place": ClassOperate,
+	"ssl_probe_clear": ClassOperate,
+
+	"provision_certificate": ClassOperate,
 }
 
 func TestVocabularyIsPinned(t *testing.T) {

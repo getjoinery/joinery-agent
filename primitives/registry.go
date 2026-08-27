@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"time"
 )
 
 // Class groups primitives by what accepting one costs you. Acceptance policy
@@ -72,7 +73,32 @@ type Primitive struct {
 	// resolved from validated params, run without a shell, and only after the
 	// target file verifies against the signed release manifest (§3.2).
 	Script *ScriptSpec
+
+	// Timeout is how long this primitive may run before the node kills it.
+	// Zero means DefaultTimeout.
+	//
+	// Declared per primitive and compiled in, for the same reason as everything
+	// else here: a deadline the plane could set is a deadline an attacker could
+	// set to zero (a denial of service) or to a week (a wedged root process per
+	// job). The node decides how long its own work may take.
+	//
+	// It exists because the SSH steps each carried one and the primitive path
+	// carried none — RemoteSource passes the agent's root context, so before
+	// this a hung transfer was bounded only by whatever the script bounded
+	// itself with, and an embedded primitive by nothing at all.
+	Timeout time.Duration
 }
+
+// DefaultTimeout applies to any primitive that does not declare one. Sized for
+// the ones that read a directory or write a file: generous for work measured in
+// milliseconds, short enough that a wedged one is noticed.
+const DefaultTimeout = 5 * time.Minute
+
+// MaxTimeout is the ceiling on any declared timeout. A primitive asking for
+// longer is a build mistake, and Register panics rather than accepting it: work
+// that genuinely takes half a day should be a job the node reports progress on,
+// not one root process nothing will ever reap.
+const MaxTimeout = 6 * time.Hour
 
 // registry is the compiled-in vocabulary. Populated only by Register, only
 // from init functions in this package.
@@ -97,6 +123,12 @@ func Register(p Primitive) {
 	}
 	if err := validateSpecs(p.Params); err != nil {
 		panic(fmt.Sprintf("primitives: primitive %q has a bad parameter spec: %v", p.Name, err))
+	}
+	if p.Timeout < 0 || p.Timeout > MaxTimeout {
+		panic(fmt.Sprintf("primitives: primitive %q declares a timeout of %v, outside (0, %v]", p.Name, p.Timeout, MaxTimeout))
+	}
+	if p.Timeout == 0 {
+		p.Timeout = DefaultTimeout
 	}
 	registry[p.Name] = p
 }

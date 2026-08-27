@@ -3,6 +3,7 @@ package primitives
 import (
 	"encoding/json"
 	"regexp"
+	"time"
 )
 
 // backup_run: take this node's backup and upload it to the management node's
@@ -70,6 +71,11 @@ func init() {
 			// The engine's config, composed here from validated parameters.
 			StdinFrom: backupRunConfig,
 		},
+		// Matches the SSH step this replaces (S3Signer's transfer budget plus
+		// room for the dump itself). A full project backup of a large node is
+		// genuinely hours of work, and the deadline has to exceed the work or it
+		// becomes a scheduled way to kill backups.
+		Timeout: 4*time.Hour + 20*time.Minute,
 	})
 }
 

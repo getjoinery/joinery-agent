@@ -21,7 +21,7 @@ import (
 // must stay ABOVE 1.1.0 forever - install_agent.sh's downgrade guard sorts
 // with sort -V and refuses to replace a "newer" binary, so anything below
 // 1.1.0 strands those agents permanently.
-var version = "1.6.1"
+var version = "1.7.0"
 
 // How often the idle loop looks at the shipped agent_dist manifest. Update
 // checks never run while a job is executing.
@@ -115,7 +115,7 @@ func startRemoteSource(cfg *Config, db *DB, jobLock *sync.Mutex, agentVersion st
 		Manifest: releaseVerifier(cfg.SiteRoot),
 	}
 
-	source := NewRemoteSource(identity, policy, env, jobLock)
+	source := NewRemoteSource(identity, policy, env, jobLock, agentVersion)
 	go source.Run(context.Background())
 	return source
 }
