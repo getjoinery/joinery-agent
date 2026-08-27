@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -50,11 +51,35 @@ type Step struct {
 	Body         interface{}       `json:"body,omitempty"`
 }
 
+// How long a reachability probe waits before calling the database unavailable.
+// Short on purpose: this answers "can I do database work this minute", and a
+// caller blocked on the answer is a caller not doing the work it still can.
+const dbProbeTimeout = 5 * time.Second
+
 // DB wraps the database connection and provides job queue operations.
 type DB struct {
 	conn *sql.DB
+	cfg  *Config
 }
 
+// NewDB prepares the connection pool. It does NOT connect, and it does not fail
+// when PostgreSQL is down.
+//
+// This is the agent's independence, and it is worth stating plainly: a sick node
+// is when its agent is most needed. An agent that refuses to start without a
+// database gives up exactly then — and because the supervisor restarts it into
+// the same failure, a database outage used to mean an agent crash-looping until
+// someone with SSH intervened, on the very machine whose remote access this
+// migration is removing.
+//
+// sql.Open builds a pool without dialling; the driver connects on first use and
+// reconnects on its own afterwards. So laziness here is not machinery, it is
+// declining to add an eager Ping whose only effect was to convert a transient
+// outage into a dead process.
+//
+// Only a malformed DSN fails, and that is a config fault the caller should hear
+// about. Everything else surfaces per-query, where the caller can say which
+// piece of work is degraded instead of taking the process down with it.
 func NewDB(cfg *Config) (*DB, error) {
 	connStr := fmt.Sprintf("host=%s port=%s dbname=%s user=%s password=%s sslmode=disable",
 		cfg.DBHost, cfg.DBPort, cfg.DBName, cfg.DBUser, cfg.DBPassword)
@@ -64,36 +89,66 @@ func NewDB(cfg *Config) (*DB, error) {
 		return nil, fmt.Errorf("could not open database connection: %w", err)
 	}
 
-	if err := conn.Ping(); err != nil {
-		errStr := err.Error()
-		if strings.Contains(errStr, "password authentication failed") {
-			return nil, fmt.Errorf("database authentication failed for user %q on database %q.\n"+
-				"  Credentials were read from %s.\n"+
-				"  Verify dbusername and dbpassword are correct in that file.", cfg.DBUser, cfg.DBName, defaultJoineryConfig)
-		}
-		if strings.Contains(errStr, "does not exist") {
-			return nil, fmt.Errorf("database %q does not exist.\n"+
-				"  This was read from dbname in %s.", cfg.DBName, defaultJoineryConfig)
-		}
-		if strings.Contains(errStr, "connection refused") {
-			return nil, fmt.Errorf("could not connect to PostgreSQL at %s:%s — connection refused.\n"+
-				"  Is PostgreSQL running? Check: sudo systemctl status postgresql", cfg.DBHost, cfg.DBPort)
-		}
-		return nil, fmt.Errorf("could not connect to database: %w", err)
-	}
-
 	conn.SetMaxOpenConns(5)
 	conn.SetMaxIdleConns(2)
 
-	return &DB{conn: conn}, nil
+	return &DB{conn: conn, cfg: cfg}, nil
+}
+
+// Available reports whether the database is reachable right now, with the
+// diagnosis attached. Callers use it to decide what they can do this minute, not
+// whether to exist — nothing in the agent should treat this as fatal.
+func (d *DB) Available() error {
+	ctx, cancel := context.WithTimeout(context.Background(), dbProbeTimeout)
+	defer cancel()
+
+	if err := d.conn.PingContext(ctx); err != nil {
+		return d.diagnose(err)
+	}
+	return nil
+}
+
+// diagnose turns a driver error into something an operator can act on. These
+// messages used to be the agent's dying words; they are now what it says while
+// carrying on with the work that does not need a database.
+func (d *DB) diagnose(err error) error {
+	errStr := err.Error()
+	switch {
+	case strings.Contains(errStr, "password authentication failed"):
+		return fmt.Errorf("database authentication failed for user %q on database %q.\n"+
+			"  Credentials were read from %s.\n"+
+			"  Verify dbusername and dbpassword are correct in that file.",
+			d.cfg.DBUser, d.cfg.DBName, defaultJoineryConfig)
+	case strings.Contains(errStr, "does not exist"):
+		return fmt.Errorf("database %q does not exist.\n"+
+			"  This was read from dbname in %s.", d.cfg.DBName, defaultJoineryConfig)
+	case strings.Contains(errStr, "connection refused"):
+		return fmt.Errorf("could not connect to PostgreSQL at %s:%s — connection refused.\n"+
+			"  Is PostgreSQL running? Check: sudo systemctl status postgresql",
+			d.cfg.DBHost, d.cfg.DBPort)
+	}
+	return fmt.Errorf("could not connect to database: %w", err)
 }
 
 func (d *DB) Close() error {
 	return d.conn.Close()
 }
 
-// SQL exposes the connection for collectors that read local state. Handed to a
-// primitive through ExecEnv.DB, which is the only way a primitive reaches it.
+// Provider hands primitives a connection resolved at use, with the reachability
+// check attached. This is the only way a primitive reaches the database, and it
+// is deliberately not a bare handle: the agent runs through outages now, so
+// "here is the database" has to be able to answer "it is not there right now".
+func (d *DB) Provider() func() (*sql.DB, error) {
+	return func() (*sql.DB, error) {
+		if err := d.Available(); err != nil {
+			return nil, err
+		}
+		return d.conn, nil
+	}
+}
+
+// SQL exposes the connection for the agent's own plane-local queries. Primitives
+// go through Provider instead.
 func (d *DB) SQL() *sql.DB {
 	return d.conn
 }

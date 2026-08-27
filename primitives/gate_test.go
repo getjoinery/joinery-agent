@@ -21,6 +21,8 @@ import (
 // not a thing that can happen between releases.
 var pinnedVocabulary = map[string]Class{
 	"check_status": ClassObserve,
+	"list_backups": ClassObserve,
+	"backup_run":   ClassOperate,
 }
 
 func TestVocabularyIsPinned(t *testing.T) {
@@ -186,6 +188,77 @@ func TestNoShellInvocation(t *testing.T) {
 			}
 			return true
 		})
+	}
+}
+
+// TestStdinIsDataNotACommandChannel guards the widening that came with
+// backup_run.
+//
+// Adding stdin to the script framework is the kind of change that quietly
+// reintroduces an exec class: a process fed arbitrary bytes on stdin is an
+// arbitrary program IF the thing reading them is an interpreter reading a
+// program. Two properties keep it data, and both are asserted rather than
+// assumed, because the next person to add a script primitive will not have read
+// this comment.
+func TestStdinIsDataNotACommandChannel(t *testing.T) {
+	// 1. Every script primitive names a ScriptPath, and it is the program. The
+	//    interpreter always receives a manifest-verified file as its argument,
+	//    so whatever arrives on stdin is INPUT TO that verified script and can
+	//    never be the thing executed. An interpreter with no script path would
+	//    read its program from stdin — that is the shape being excluded.
+	for _, name := range Names() {
+		p, _ := Lookup(name)
+		if p.Script == nil {
+			continue
+		}
+		if p.Script.ScriptPath == "" {
+			t.Errorf("primitive %q supplies stdin with no script path — the interpreter would "+
+				"take its program from stdin, which is an exec class by another name", name)
+		}
+		if p.Script.Interpreter == "" {
+			t.Errorf("primitive %q has no interpreter", name)
+		}
+		// 2. The interpreter is compiled in and absolute. A relative one would
+		//    resolve through PATH on the node.
+		if !strings.HasPrefix(p.Script.Interpreter, "/") {
+			t.Errorf("primitive %q interpreter %q is not an absolute path", name, p.Script.Interpreter)
+		}
+	}
+}
+
+// TestStdinIsNeverLogged pins the reason stdin exists at all.
+//
+// run_backup.php takes its config on stdin because that config carries a storage
+// credential and "anything in argv is visible to every process on the box". A
+// log line is exactly as visible as ps, so a stdin value that reaches the log,
+// the result, or an error message gives back precisely what the change bought.
+func TestStdinIsNeverLogged(t *testing.T) {
+	raw, err := os.ReadFile("script.go")
+	if err != nil {
+		t.Fatalf("reading script.go: %v", err)
+	}
+	source := string(raw)
+
+	// The resolved value must not be placed anywhere that travels: the result
+	// map, an error, or a log call. Asserted structurally — the only thing done
+	// with it is handing it to the process.
+	// Scope to the stdin block itself: from where it is resolved to where the
+	// command's own output handling begins. A wider window catches the result
+	// map that legitimately follows and says nothing about stdin.
+	start := strings.Index(source, "if p.Script.StdinFrom != nil {")
+	if start < 0 {
+		t.Fatal("could not find where stdin is resolved")
+	}
+	end := strings.Index(source[start:], "var out bytes.Buffer")
+	if end < 0 {
+		t.Fatal("could not find the end of the stdin block")
+	}
+	window := source[start : start+end]
+	for _, forbidden := range []string{"log.", "result[", "fmt.Errorf(\"%s\", stdin", "refusedf"} {
+		if strings.Contains(window, forbidden) {
+			t.Errorf("the resolved stdin value appears near %q — it must go to the process and "+
+				"nowhere else, or the credential it carries is back in plain sight", forbidden)
+		}
 	}
 }
 

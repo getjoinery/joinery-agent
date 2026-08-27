@@ -2,7 +2,6 @@ package main
 
 import (
 	"errors"
-	"strings"
 	"sync"
 	"testing"
 )
@@ -11,53 +10,151 @@ import (
 // tell them apart, both of which used to be settled by a default the agent
 // never questioned — and one of which used to kill the process outright.
 
-func TestAControlPlaneServesItsLocalQueue(t *testing.T) {
-	local, reason := resolveLocalJobs(func() ([]string, error) { return nil, nil })
+// probe returns a canned answer, and counts how many times it was asked — a
+// capability that stops asking is the specific bug these guard.
+func probeReturning(missing []string, err error, calls *int) func() ([]string, error) {
+	return func() ([]string, error) {
+		if calls != nil {
+			*calls++
+		}
+		return missing, err
+	}
+}
 
-	if !local {
-		t.Fatalf("all tables present must mean a local queue; got %q", reason)
+func TestAControlPlaneServesItsLocalQueue(t *testing.T) {
+	q := NewLocalQueue(true, probeReturning(nil, nil, nil), nil)
+	q.Refresh()
+
+	if !q.Available() {
+		t.Fatal("all tables present must mean a local queue")
 	}
 }
 
 func TestAPlainManagedNodeHasNoLocalQueueAndThatIsNotAnError(t *testing.T) {
 	// The state every node in the fleet is in: server_manager was never
-	// installed, so none of its tables exist. This must resolve to node work
-	// only — not a fatal, which is what stopped the agent running anywhere but
-	// a control plane.
+	// installed, so none of its tables exist. Node work only — not a fatal,
+	// which is what stopped the agent running anywhere but a control plane.
 	missing := []string{"mgn_managed_nodes", "mjb_management_jobs", "ahb_agent_heartbeats"}
-	local, reason := resolveLocalJobs(func() ([]string, error) { return missing, nil })
+	q := NewLocalQueue(true, probeReturning(missing, nil, nil), nil)
+	q.Refresh()
 
-	if local {
+	if q.Available() {
 		t.Fatal("a node with none of the plane tables must not serve a local queue")
-	}
-	for _, table := range missing {
-		if !strings.Contains(reason, table) {
-			t.Errorf("the reason should name what is missing; %q omits %s", reason, table)
-		}
 	}
 }
 
 func TestAPartialSchemaIsAlsoNoLocalQueue(t *testing.T) {
-	// Half the tables is not half a queue.
-	local, _ := resolveLocalJobs(func() ([]string, error) {
-		return []string{"ahb_agent_heartbeats"}, nil
-	})
+	q := NewLocalQueue(true, probeReturning([]string{"ahb_agent_heartbeats"}, nil, nil), nil)
+	q.Refresh()
 
-	if local {
+	if q.Available() {
 		t.Fatal("one missing table must be enough to decline the local queue")
 	}
 }
 
 func TestAnUnanswerableProbeDeclinesTheLocalQueue(t *testing.T) {
-	local, reason := resolveLocalJobs(func() ([]string, error) {
-		return nil, errors.New("connection refused")
-	})
+	q := NewLocalQueue(true, probeReturning(nil, errors.New("connection refused"), nil), nil)
+	q.Refresh()
 
-	if local {
+	if q.Available() {
 		t.Fatal("a probe that failed must not be read as a queue being present")
 	}
-	if !strings.Contains(reason, "connection refused") {
-		t.Errorf("the reason should carry the probe error; got %q", reason)
+}
+
+func TestADatabaseOutageAtStartupDoesNotLatchTheQueueOffForever(t *testing.T) {
+	// The regression this type exists for. A control plane that restarts while
+	// PostgreSQL is down used to decide "no local queue" once and serve nothing
+	// until someone restarted it again — the lazy connection's whole benefit
+	// thrown away one layer up.
+	down := true
+	q := NewLocalQueue(true, func() ([]string, error) {
+		if down {
+			return nil, errors.New("connection refused")
+		}
+		return nil, nil
+	}, nil)
+
+	q.Refresh()
+	if q.Available() {
+		t.Fatal("cannot be available while the database is down")
+	}
+
+	down = false
+	q.Refresh()
+	if !q.Available() {
+		t.Fatal("the queue must return when the database does")
+	}
+}
+
+func TestTheQueueGoesAwayAgainWhenTheDatabaseDoes(t *testing.T) {
+	// Both directions, or the heartbeat keeps writing into a database that is
+	// no longer answering and the dashboard reads the errors as a broken agent.
+	down := false
+	q := NewLocalQueue(true, func() ([]string, error) {
+		if down {
+			return nil, errors.New("connection refused")
+		}
+		return nil, nil
+	}, nil)
+
+	q.Refresh()
+	if !q.Available() {
+		t.Fatal("should start available")
+	}
+
+	down = true
+	q.Refresh()
+	if q.Available() {
+		t.Fatal("a queue whose database went away must stop being available")
+	}
+}
+
+func TestStaleJobRecoveryFiresWhenTheQueueArrivesNotAtStartup(t *testing.T) {
+	// Jobs a dead process left running are found when the queue becomes
+	// servable. On a plane whose database was down at boot that is not startup,
+	// and recovery tied to startup would simply never run.
+	down := true
+	fired := 0
+	q := NewLocalQueue(true, func() ([]string, error) {
+		if down {
+			return nil, errors.New("connection refused")
+		}
+		return nil, nil
+	}, func() { fired++ })
+
+	q.Refresh()
+	if fired != 0 {
+		t.Fatalf("nothing to recover while the queue is unavailable; fired %d", fired)
+	}
+
+	down = false
+	q.Refresh()
+	if fired != 1 {
+		t.Fatalf("recovery must fire on the transition; fired %d", fired)
+	}
+
+	// Steady state is not a transition — recovery must not re-fire every tick.
+	q.Refresh()
+	q.Refresh()
+	if fired != 1 {
+		t.Fatalf("recovery re-fired while the queue stayed available; fired %d", fired)
+	}
+}
+
+func TestTheOperatorSwitchLatchesWhereTheObservationDoesNot(t *testing.T) {
+	// AGENT_LOCAL_JOBS=0 is a decision, not an observation. No amount of healthy
+	// database should overturn it, and the probe should not even be consulted.
+	calls := 0
+	q := NewLocalQueue(false, probeReturning(nil, nil, &calls), nil)
+
+	q.Refresh()
+	q.Refresh()
+
+	if q.Available() {
+		t.Fatal("an operator who turned local jobs off must stay off")
+	}
+	if calls != 0 {
+		t.Fatalf("the database was asked %d times about a decision it cannot change", calls)
 	}
 }
 

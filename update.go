@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -133,6 +134,67 @@ func (u *Updater) warnOnce(key, format string, args ...interface{}) {
 
 func (u *Updater) bakPath() string      { return u.installPath + ".bak" }
 func (u *Updater) rejectedPath() string { return u.installPath + ".rejected" }
+func (u *Updater) pendingPath() string  { return u.installPath + ".pending" }
+
+// markPendingConfirmation records, at swap time, that a version is installed but
+// has never been seen to work. The next process to start is the one on trial.
+func (u *Updater) markPendingConfirmation(version string) {
+	if err := os.WriteFile(u.pendingPath(), []byte(version+"\n0\n"), 0644); err != nil {
+		log.Printf("self-update: could not record pending confirmation: %v", err)
+	}
+}
+
+// CheckFailedBoot is the update watchdog, and it runs before anything else can
+// go wrong. It answers one question: did the previous start of this binary die
+// before proving itself?
+//
+// The trigger is deliberately not an error class. Classifying init failures as
+// binary-attributable or not is a taxonomy nobody can keep correct — the old
+// code tried, and a PostgreSQL outage was enough to make it condemn a perfectly
+// good release and refuse it until a newer one shipped. Reaching ConfirmHealthy
+// is a fact about the binary that no outage can fake, so the watchdog asks about
+// that instead. Together with the lazy database and the config retry, which
+// removed the environmental ways to exit early, "died before confirming" now
+// means the binary, by construction rather than by judgement.
+//
+// Returns true when it restored the previous binary; the caller exits so the
+// supervisor comes back on the known-good one.
+func (u *Updater) CheckFailedBoot() bool {
+	if u.installPath == "" {
+		return false
+	}
+	data, err := os.ReadFile(u.pendingPath())
+	if err != nil {
+		return false
+	}
+
+	parts := strings.SplitN(strings.TrimSpace(string(data)), "\n", 2)
+	version := strings.TrimSpace(parts[0])
+	attempts := 0
+	if len(parts) > 1 {
+		attempts, _ = strconv.Atoi(strings.TrimSpace(parts[1]))
+	}
+
+	// A marker naming some other version is debris from an older swap that this
+	// binary has nothing to do with.
+	if version != u.running {
+		os.Remove(u.pendingPath())
+		return false
+	}
+
+	if attempts == 0 {
+		// First start on trial. Record the attempt so that if this process dies
+		// before ConfirmHealthy, the next start knows to give up on it.
+		if err := os.WriteFile(u.pendingPath(), []byte(version+"\n1\n"), 0644); err != nil {
+			log.Printf("self-update: could not record boot attempt: %v", err)
+		}
+		return false
+	}
+
+	log.Printf("=== Self-update watchdog === v%s was installed and did not reach a healthy start; rolling back", u.running)
+	os.Remove(u.pendingPath())
+	return u.RestoreBackupBinary()
+}
 
 // ConfirmHealthy is called once the agent has fully initialised (config, DB,
 // schema). Reaching it after an update means the new binary works: the
@@ -142,6 +204,9 @@ func (u *Updater) ConfirmHealthy() {
 	if u.installPath == "" {
 		return
 	}
+	// Clearing the pending marker IS the confirmation: from here the watchdog has
+	// nothing to act on, and this version is one the machine has seen work.
+	os.Remove(u.pendingPath())
 	if err := os.Remove(u.bakPath()); err == nil {
 		log.Printf("self-update: confirmed healthy on v%s — removed previous binary backup", u.running)
 	}
@@ -257,6 +322,10 @@ func (u *Updater) CheckAndApply() bool {
 		log.Printf("=== Self-update === FAILED installing v%s: %v", m.Version, err)
 		return false
 	}
+
+	// On trial from here until a process running it reaches ConfirmHealthy. If
+	// none ever does, the watchdog on a later start puts the old binary back.
+	u.markPendingConfirmation(m.Version)
 
 	if u.convergeService != nil {
 		u.convergeService(u.distDir)

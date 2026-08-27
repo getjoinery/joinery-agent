@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
+	"encoding/base64"
 	"fmt"
 	"log"
 	"os"
@@ -19,22 +21,56 @@ import (
 // must stay ABOVE 1.1.0 forever - install_agent.sh's downgrade guard sorts
 // with sort -V and refuses to replace a "newer" binary, so anything below
 // 1.1.0 strands those agents permanently.
-var version = "1.5.0"
+var version = "1.6.0"
 
 // How often the idle loop looks at the shipped agent_dist manifest. Update
 // checks never run while a job is executing.
 const updateCheckInterval = 60 * time.Second
 
-// fatalInit handles a fatal initialisation error. If this binary was just
-// self-installed and a backup of the previous one exists, the previous binary
-// is restored (and this version marked rejected) so the supervisor restarts
-// into a working agent instead of crash-looping on a bad release.
-func fatalInit(updater *Updater, err error) {
+// fatalInit stops the process on an error nothing can be done about here.
+//
+// It deliberately no longer rolls the binary back. Deciding "this release is
+// bad" from an init error meant a database outage could condemn a good version
+// and refuse it until a newer one shipped; that judgement now belongs to the
+// watchdog (Updater.CheckFailedBoot), which asks whether a start ever reached
+// health rather than what the error looked like.
+//
+// Very little should reach this: the database is lazy and the site config is
+// retried, so the environment no longer ends the process. A malformed DSN does,
+// because every later use of it would fail the same way.
+func fatalInit(err error) {
 	log.Printf("FATAL: %v", err)
-	if updater != nil {
-		updater.RestoreBackupBinary()
-	}
 	os.Exit(1)
+}
+
+// How long to wait between attempts to read the site config, and how often to
+// say so. An agent that cannot read its config cannot do anything useful, but
+// exiting is worse than waiting: on a machine mid-upgrade or mid-restore the
+// file is briefly absent, and a supervisor restarting into that races the very
+// repair it is interrupting.
+const configRetryInterval = 15 * time.Second
+
+// loadConfigWaiting blocks until the site config can be read. It never gives up
+// and it never exits — the caller has nothing better to do without a config, and
+// a process that is present and complaining is easier to diagnose than one that
+// keeps vanishing.
+func loadConfigWaiting() *Config {
+	warned := false
+	for {
+		cfg, err := LoadConfig()
+		if err == nil {
+			if warned {
+				log.Printf("site config readable again — continuing startup")
+			}
+			return cfg
+		}
+		if !warned {
+			log.Printf("WARNING: cannot read the site config (%v)", err)
+			log.Printf("  Waiting for it; retrying every %s. Nothing else runs until it is readable.", configRetryInterval)
+			warned = true
+		}
+		time.Sleep(configRetryInterval)
+	}
 }
 
 // startRemoteSource brings up node posture: poll the joined management node
@@ -65,11 +101,18 @@ func startRemoteSource(cfg *Config, db *DB, jobLock *sync.Mutex, agentVersion st
 	env := &primitives.ExecEnv{
 		SiteRoot: cfg.SiteRoot,
 		WebRoot:  cfg.WebRoot,
-		DB:       db.SQL(),
-		// Phase 1: the release pipeline signs the agent bundle but not a
-		// per-file tree manifest, so nothing can be verified and every
-		// script-invoking primitive is unavailable rather than unverified.
-		Manifest: primitives.UnavailableVerifier{},
+		DB:       db.Provider(),
+		// Component G: a script is verified against the signed manifest of the
+		// artifact that ships it, using the release key compiled into this
+		// binary. No network call is involved — forging this means forging
+		// Ed25519, not spoofing a host.
+		//
+		// The boundary stays CLOSED where there is nothing to verify against: a
+		// node whose installed release predates the manifests, or an artifact
+		// that ships none, refuses its scripts rather than running them
+		// unverified. That is the same posture as before, now with a refusal
+		// that names which artifact could not be checked.
+		Manifest: releaseVerifier(cfg.SiteRoot),
 	}
 
 	source := NewRemoteSource(identity, policy, env, jobLock)
@@ -77,29 +120,28 @@ func startRemoteSource(cfg *Config, db *DB, jobLock *sync.Mutex, agentVersion st
 	return source
 }
 
-// resolveLocalJobs decides whether this machine has plane-local work of its
-// own, and returns the line explaining the decision.
+// recoverStaleJobs force-fails jobs a previous process left running and replays
+// their teardown steps — they never reached teardown and never will otherwise.
 //
-// The job queue and the heartbeat table belong to server_manager, which lives
-// on a control plane. A plain managed node has neither, and that is not a fault
-// to fail on: its work arrives from the management node it joined, over the
-// channel, and needs nothing from those tables. Asking the database — rather
-// than trusting a default or an env file — is what lets one binary serve both
-// kinds of machine with no per-node configuration.
-//
-// A probe that errors is treated as no local queue. The alternative is polling
-// a queue we could not confirm exists, which produces an error every tick and
-// tells the operator nothing they can act on.
-func resolveLocalJobs(probe func() ([]string, error)) (bool, string) {
-	missing, err := probe()
-	switch {
-	case err != nil:
-		return false, fmt.Sprintf("WARNING: could not check for a local job queue (%v) — serving node work only", err)
-	case len(missing) > 0:
-		return false, fmt.Sprintf("no local job queue on this machine (no %s) — serving node work only",
-			strings.Join(missing, ", "))
+// Runs when the local queue becomes servable, not at startup: those are the same
+// moment on a healthy control plane and are not the same moment on one whose
+// database was down when it started. Never runs without a local queue, where the
+// jobs in that table belong to an agent that does serve it — force-failing
+// another agent's running work would be a fine way to break it.
+func recoverStaleJobs(db *DB, runner *Runner) {
+	stale, err := db.RecoverStaleJobs()
+	if err != nil {
+		log.Printf("WARNING: failed to recover stale jobs: %v", err)
+		return
 	}
-	return true, "schema validated — all required tables present"
+	if len(stale) == 0 {
+		return
+	}
+	log.Printf("recovered %d stale running job(s) — marked as failed", len(stale))
+	for _, job := range stale {
+		log.Printf("replaying teardown for stale job #%d", job.ID)
+		runner.ReplayTeardown(job)
+	}
 }
 
 // attemptUpdate runs one self-update check unless a job is running, and reports
@@ -119,6 +161,24 @@ func attemptUpdate(jobLock *sync.Mutex, check func() bool) bool {
 	return check()
 }
 
+// releaseVerifier builds the manifest verifier for this node's site tree.
+//
+// A build with no release key baked in cannot verify anything, and must not
+// pretend otherwise: it refuses every script, exactly as a missing manifest
+// does. A hand-built agent is a legitimate thing to have and an illegitimate
+// thing to trust with root-exec of files it cannot check.
+func releaseVerifier(siteRoot string) primitives.ManifestVerifier {
+	if updatePubKeyB64 == "" || siteRoot == "" {
+		return primitives.UnavailableVerifier{}
+	}
+	key, err := base64.StdEncoding.DecodeString(updatePubKeyB64)
+	if err != nil || len(key) != ed25519.PublicKeySize {
+		log.Printf("script primitives unavailable: this build's release key is malformed")
+		return primitives.UnavailableVerifier{}
+	}
+	return primitives.NewArtifactManifests(siteRoot, ed25519.PublicKey(key))
+}
+
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "--version" {
 		fmt.Printf("joinery-agent %s\n", version)
@@ -128,28 +188,34 @@ func main() {
 	log.SetFlags(log.Ldate | log.Ltime | log.LUTC)
 	log.Printf("starting joinery-agent v%s", version)
 
-	cfg, err := LoadConfig()
-	if err != nil {
-		fatalInit(NewUpdater(nil, version), err)
+	// The watchdog first, before anything else can fail: if the previous start of
+	// this binary never proved healthy, put the old one back and let the
+	// supervisor restart into it.
+	if NewUpdater(nil, version).CheckFailedBoot() {
+		os.Exit(1)
 	}
 
+	cfg := loadConfigWaiting()
 	updater := NewUpdater(cfg, version)
 
+	// Not connecting — preparing a pool. A malformed DSN is a config fault worth
+	// stopping for; PostgreSQL being down is not, and no longer reaches here.
 	db, err := NewDB(cfg)
 	if err != nil {
-		fatalInit(updater, err)
+		fatalInit(err)
 	}
 	defer db.Close()
 
-	log.Printf("connected to PostgreSQL %s/%s", cfg.DBHost, cfg.DBName)
-
-	if cfg.LocalJobs {
-		var reason string
-		cfg.LocalJobs, reason = resolveLocalJobs(db.MissingLocalJobTables)
-		log.Print(reason)
+	if err := db.Available(); err != nil {
+		log.Printf("NOTE: database not reachable yet (%v)", err)
+		log.Printf("  Continuing: node work does not need it, and the pool reconnects on its own.")
+	} else {
+		log.Printf("connected to PostgreSQL %s/%s", cfg.DBHost, cfg.DBName)
 	}
 
-	// Fully initialised: a just-installed binary is now proven good.
+	// Fully initialised. Everything past this point degrades rather than exits,
+	// so a binary that got here is a binary that runs — which is exactly what
+	// the update watchdog needs to be told.
 	updater.ConfirmHealthy()
 
 	runner := NewRunner(db, cfg.SecretBoxKey)
@@ -159,11 +225,22 @@ func main() {
 	// was built expecting the other.
 	var jobLock sync.Mutex
 
+	// Plane-local work, asked as a live question rather than settled at startup.
+	// Stale-job recovery hangs off the transition, not off this line, because a
+	// queue that appears ten minutes late still has jobs a dead process left
+	// running in it.
+	localQueue := NewLocalQueue(cfg.LocalJobs, db.MissingLocalJobTables, func() {
+		recoverStaleJobs(db, runner)
+	})
+	go localQueue.Run(context.Background())
+
 	// Node posture. An agent with an identity polls its management node; one
 	// without watches for the local admin page to name one (the node-initiated
 	// join, Phase 1.5) — either way the local loop below is unchanged.
+	var pairedIdentity *NodeIdentity
 	if remote := startRemoteSource(cfg, db, &jobLock, version); remote != nil {
 		log.Printf("node posture active — remote job source polling %s", remote.identity.PlaneURL)
+		pairedIdentity = remote.identity
 		leaver := &LeaveWatcher{db: db, identity: remote.identity, jobLock: &jobLock}
 		go leaver.Run(context.Background())
 	} else {
@@ -172,44 +249,35 @@ func main() {
 		go watcher.Run(context.Background())
 	}
 
-	// Recover stale running jobs on startup, then replay their teardown
-	// steps — those jobs never reached teardown and never will otherwise.
-	// Skipped in node-posture-only mode: this agent does not serve the local
-	// queue, so the jobs in it belong to an agent that does, and force-failing
-	// another agent's running work would be a fine way to break it.
-	stale, err := []*Job{}, error(nil)
-	if cfg.LocalJobs {
-		stale, err = db.RecoverStaleJobs()
-	}
-	if err != nil {
-		log.Printf("WARNING: failed to recover stale jobs: %v", err)
-	} else if len(stale) > 0 {
-		log.Printf("recovered %d stale running job(s) — marked as failed", len(stale))
-		for _, job := range stale {
-			log.Printf("replaying teardown for stale job #%d", job.ID)
-			runner.ReplayTeardown(job)
-		}
-	}
+	// The run switch. Projects the setting into the marker the supervisor reads,
+	// and stops this process when an operator turns the agent off — saying so to
+	// the management node first, when there is one to tell.
+	switcher := &SwitchWatcher{db: db, jobLock: &jobLock, identity: pairedIdentity}
+	go switcher.Run(context.Background())
 
 	// Signal handling
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 
-	// Heartbeat goroutine. Plane-local, like the queue it reports alongside:
-	// the row lands in server_manager's table for its dashboard. A node-posture
-	// agent has no such table, and the management node learns its liveness from
-	// the polling itself, so there is nothing here for it to write.
-	if cfg.LocalJobs {
-		go func() {
-			for {
+	// Heartbeat goroutine. Plane-local, like the queue it reports alongside: the
+	// row lands in server_manager's table for its dashboard. A node-posture agent
+	// has no such table, and its management node learns liveness from the polling
+	// itself, so there is nothing here for it to write.
+	//
+	// The goroutine always runs and asks per tick, rather than being started or
+	// not at boot — the queue can arrive later, and a heartbeat that never came
+	// back after an outage would read on the dashboard as an agent that died.
+	go func() {
+		for {
+			if localQueue.Available() {
 				bundled, updateState := updater.HeartbeatInfo()
 				if err := db.UpdateHeartbeat(cfg.AgentName, version, bundled, updateState); err != nil {
 					log.Printf("WARNING: heartbeat update failed: %v", err)
 				}
-				time.Sleep(cfg.HeartbeatInterval)
 			}
-		}()
-	}
+			time.Sleep(cfg.HeartbeatInterval)
+		}
+	}()
 
 	// Self-update, on its own clock. Every agent moves forward with the fleet,
 	// whether or not it serves a local queue — this used to hang off the local
@@ -224,10 +292,11 @@ func main() {
 		}
 	}()
 
-	if cfg.LocalJobs {
+	if localQueue.Available() {
 		log.Printf("agent ready — polling the local job queue every %s", cfg.PollInterval)
 	} else {
-		log.Printf("agent ready — node posture only, not serving a local job queue")
+		log.Printf("agent ready — node posture only for now, rechecking for local work every %s",
+			localQueueRecheckInterval)
 	}
 
 	// Main poll loop
@@ -240,7 +309,7 @@ func main() {
 			log.Printf("received signal %v — shutting down", sig)
 			os.Exit(0)
 		case <-ticker.C:
-			if !cfg.LocalJobs {
+			if !localQueue.Available() {
 				continue
 			}
 

@@ -50,6 +50,28 @@ type ScriptSpec struct {
 	// passed through literally. A "{param}" naming an absent optional
 	// parameter drops the element.
 	Args []string
+
+	// StdinFrom builds what the script reads on standard input, from validated
+	// params. Nil means the script gets no stdin.
+	//
+	// A builder rather than a "{param}" template because what these scripts want
+	// on stdin is a composed object, not one value — and composing it HERE, from
+	// a fixed set of declared parameters, is what stops the plane adding a field
+	// by sending one.
+	//
+	// This exists because some platform scripts take their configuration on
+	// stdin deliberately, and say so: run_backup.php's header reads "Stdin
+	// rather than an argument on purpose. Anything in argv is visible to every
+	// [process on the box]." Its config carries a storage credential, so an
+	// argv template would leak it into ps on every node on every run.
+	//
+	// Stdin is DATA, never a command channel. The interpreter always receives a
+	// manifest-verified ScriptPath as its program, so what arrives here is input
+	// to that script and cannot become the thing executed. It is also never
+	// logged: not in the agent log, not in the posted result, not on failure —
+	// the whole reason it is not in argv is that it must not be visible, and a
+	// log line is as visible as ps.
+	StdinFrom func(params Params) (string, error)
 }
 
 // runScriptPrimitive verifies the script against the signed release manifest,
@@ -73,6 +95,18 @@ func runScriptPrimitive(ctx context.Context, env *ExecEnv, p Primitive, params P
 	}
 
 	cmd := exec.CommandContext(ctx, p.Script.Interpreter, append([]string{scriptPath}, argv...)...)
+
+	// Resolved here and handed straight to the process. It is deliberately not
+	// held anywhere that gets logged, returned, or attached to an error — see
+	// ScriptSpec.Stdin.
+	if p.Script.StdinFrom != nil {
+		stdin, err := p.Script.StdinFrom(params)
+		if err != nil {
+			return nil, err
+		}
+		cmd.Stdin = strings.NewReader(stdin)
+	}
+
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &out

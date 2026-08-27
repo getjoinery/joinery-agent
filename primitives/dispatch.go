@@ -32,14 +32,23 @@ type ExecEnv struct {
 	SiteRoot string
 	// WebRoot is the public_html directory.
 	WebRoot string
-	// DB is the node's own database, for collectors that read local state.
-	// Nil when the node has no Joinery database.
-	DB *sql.DB
+	// DB resolves the node's own database, for collectors that read local
+	// state. Nil when the node has no Joinery database at all.
+	//
+	// A provider rather than a handle, because the agent no longer waits for
+	// PostgreSQL to be up before it runs. Resolution happens at use, so a
+	// primitive that needs the database on a node where it is down reports that
+	// as its own legible failure — while the primitives that need nothing from
+	// it carry on, which on a sick node is most of what is worth knowing.
+	DB DBProvider
 	// Manifest verifies a file against the signed release manifest before a
 	// script-invoking primitive is allowed to execute it. Never nil in
 	// production; see manifest.go.
 	Manifest ManifestVerifier
 }
+
+// DBProvider hands back a usable database connection, or says why not.
+type DBProvider func() (*sql.DB, error)
 
 // Request is one job as the agent received it, after the transport has decided
 // it is addressed to this node.

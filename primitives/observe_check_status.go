@@ -46,6 +46,7 @@ func runCheckStatus(ctx context.Context, env *ExecEnv, _ Params) (map[string]int
 		collectDatabase(ctx, env, result)
 	}
 
+
 	if len(result) == 0 {
 		return nil, fmt.Errorf("nothing could be collected on this node")
 	}
@@ -154,15 +155,26 @@ func collectUptime(result map[string]interface{}) {
 // collectDatabase asks the node's own database the three questions the SSH path
 // used psql for. Read-only, and every statement is a fixed literal.
 func collectDatabase(ctx context.Context, env *ExecEnv, result map[string]interface{}) {
+	// Resolving can fail outright now — the agent starts without a database and
+	// keeps running through an outage. "Not accepting connections" is exactly
+	// what the operator needs to see in that case, and it is a finding, not an
+	// error: this collector's job is to report the node's health, and an
+	// unreachable database IS the health report.
+	db, err := env.DB()
+	if err != nil || db == nil {
+		result["postgres_status"] = "not accepting connections"
+		return
+	}
+
 	var current string
-	if err := env.DB.QueryRowContext(ctx, "SELECT current_database()").Scan(&current); err != nil {
+	if err := db.QueryRowContext(ctx, "SELECT current_database()").Scan(&current); err != nil {
 		result["postgres_status"] = "not accepting connections"
 		return
 	}
 	result["postgres_status"] = "accepting connections"
 	result["current_db"] = current
 
-	rows, err := env.DB.QueryContext(ctx,
+	rows, err := db.QueryContext(ctx,
 		"SELECT datname FROM pg_database WHERE datistemplate = false AND datname NOT IN ('postgres') ORDER BY datname")
 	if err == nil {
 		defer rows.Close()
@@ -179,13 +191,13 @@ func collectDatabase(ctx context.Context, env *ExecEnv, result map[string]interf
 	}
 
 	var version string
-	if err := env.DB.QueryRowContext(ctx,
+	if err := db.QueryRowContext(ctx,
 		"SELECT stg_value FROM stg_settings WHERE stg_name = 'system_version'").Scan(&version); err == nil && version != "" {
 		result["joinery_version"] = version
 	}
 
 	var cronLastRun string
-	if err := env.DB.QueryRowContext(ctx,
+	if err := db.QueryRowContext(ctx,
 		"SELECT stg_value FROM stg_settings WHERE stg_name = 'scheduled_tasks_last_cron_run'").Scan(&cronLastRun); err == nil && cronLastRun != "" {
 		result["cron_last_run"] = cronLastRun
 	}
