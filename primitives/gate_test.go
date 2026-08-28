@@ -45,6 +45,8 @@ var pinnedVocabulary = map[string]Class{
 	"ssl_probe_clear": ClassOperate,
 
 	"provision_certificate": ClassOperate,
+
+	"apply_update": ClassOperate,
 }
 
 func TestVocabularyIsPinned(t *testing.T) {

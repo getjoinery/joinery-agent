@@ -139,7 +139,7 @@ var certificateDomainPattern = regexp.MustCompile(
 // node afterwards, with an observe primitive, whether the certificate is there:
 // that is a question about the node's state rather than about this job's exit
 // code, and it is equally true whether the certificate arrived from here, from
-// arm_ssl_retry.sh's timer, or from an operator at a keyboard. The SSH
-// check_status job already collected exactly that (SSL_CERT_FOUND with an expiry
-// date, or SSL_CERT_MISSING); the agent's check_status collector does not
-// yet, and adding it there retires the old job's fourth step properly.
+// arm_ssl_retry.sh's timer, or from an operator at a keyboard. Both transports
+// answer it now: the SSH check_status job reports SSL_CERT_FOUND with an expiry
+// date or SSL_CERT_MISSING, and the agent's check_status collector reads the
+// same ground truth itself in collectCertificates.

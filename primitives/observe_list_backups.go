@@ -31,9 +31,6 @@ func init() {
 	})
 }
 
-// backupDir is where backups live on a node (BackupNaming::BACKUP_DIR).
-const backupDir = "/backups"
-
 // backupExtensions are the recognised artifact suffixes, longest first — the
 // same list and the same ordering rule as BackupNaming::EXTENSIONS, where
 // shortest-first would classify every encrypted dump as plaintext.
@@ -91,8 +88,9 @@ func runListBackups(ctx context.Context, env *ExecEnv, _ Params) (map[string]int
 }
 
 // runListBackupsFrom is the body, with the directory as an argument so it can be
-// exercised against a temp tree. The exported primitive above passes the
-// compiled-in constant and nothing else can: a job has no way to reach this.
+// exercised against a temp tree. Every directory it is called with comes from
+// backupDirsByProfile, which derives them from this node's own configuration
+// (backupdirs.go) — a job has no way to reach this.
 func runListBackupsFrom(_ context.Context, dir string) (map[string]interface{}, error) {
 	files := []map[string]interface{}{}
 

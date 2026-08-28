@@ -1,11 +1,14 @@
 package primitives
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"database/sql"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"math/big"
 	"os"
@@ -310,5 +313,38 @@ func TestCheckStatusStillTakesNoParameters(t *testing.T) {
 	if _, err := Validate(p.Params, map[string]interface{}{"domain": "example.com"}); err == nil {
 		t.Error("check_status must not have gained a domain parameter — the node enumerates, " +
 			"it is not told which name to look for")
+	}
+}
+
+// A machine with no database at all is not a machine whose database is down,
+// and check_status must not say it is.
+//
+// ExecEnv.DB carries that distinction: nil means "there is nothing here to
+// ask", a set provider that fails means "there is something here and it is
+// broken". Conflating them would make every siteless machine — a relay, a
+// Docker host — report a PostgreSQL fault on every status check, which is a
+// false alarm on a machine that was never going to have a database (spec A13).
+func TestNoDatabaseIsNotABrokenDatabase(t *testing.T) {
+	root := t.TempDir()
+
+	absent, err := runCheckStatus(context.Background(),
+		&ExecEnv{SiteRoot: root, WebRoot: root, DB: nil}, Params{})
+	if err != nil {
+		t.Fatalf("a machine with no database still has a health report: %v", err)
+	}
+	if _, said := absent["postgres_status"]; said {
+		t.Errorf("a machine with no database reported postgres_status=%v; it should say nothing about a database it does not have",
+			absent["postgres_status"])
+	}
+
+	broken, err := runCheckStatus(context.Background(),
+		&ExecEnv{SiteRoot: root, WebRoot: root, DB: func() (*sql.DB, error) {
+			return nil, errors.New("connection refused")
+		}}, Params{})
+	if err != nil {
+		t.Fatalf("an unreachable database is a finding, not an error: %v", err)
+	}
+	if broken["postgres_status"] != "not accepting connections" {
+		t.Errorf("a node whose database is down should report it, got %v", broken["postgres_status"])
 	}
 }

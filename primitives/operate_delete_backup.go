@@ -84,8 +84,9 @@ func runDeleteBackup(ctx context.Context, env *ExecEnv, params Params) (map[stri
 
 // runDeleteBackupIn is the body, with the directory as an argument so it can be
 // exercised against a temp tree — the same arrangement list_backups uses. The
-// registered primitive passes the compiled-in constant and nothing else can: a
-// job has no way to reach this.
+// directory comes from backupDirFor, which resolves this node's own configured
+// location for the named profile (backupdirs.go); the job supplies the profile
+// name, never a path.
 func runDeleteBackupIn(_ context.Context, dir, filename string) (map[string]interface{}, error) {
 	if !isBackupArtifact(filename) {
 		return nil, refusedf("%q is not the name of a backup artifact, so this node will not delete it", filename)

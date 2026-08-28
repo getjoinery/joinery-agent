@@ -250,6 +250,13 @@ func (r *RemoteSource) runJob(ctx context.Context, job *RemoteJob) {
 	r.jobLock.Lock()
 	defer r.jobLock.Unlock()
 
+	// Held for exactly as long as the lock is, because they answer the same
+	// question from two sides: the lock stops this agent swapping its own binary
+	// mid-job, and the marker stops install_agent.sh doing it from the outside
+	// when a job runs the upgrade or the host installers. See jobmarker.go.
+	clearJobMarker := markJobRunning(job.JobID)
+	defer clearJobMarker()
+
 	log.Printf("claimed job #%d from plane: primitive=%s", job.JobID, job.Primitive)
 
 	result, err := primitives.Execute(ctx, r.env, r.policy, primitives.Request{
@@ -283,6 +290,11 @@ func (r *RemoteSource) runJob(ctx context.Context, job *RemoteJob) {
 	// answered with better information.
 	if restart, by := primitives.ConsumeRestartRequest(); restart {
 		log.Printf("job #%d asked this agent to restart — exiting; %s", job.JobID, by)
+		// Explicitly, because os.Exit runs no deferred function. A marker left
+		// behind by a deliberate exit names a pid that is gone, so the installer
+		// would clear it as stale anyway — but leaving one is leaving a lie
+		// about this node on its own disk.
+		clearJobMarker()
 		os.Exit(0)
 	}
 }

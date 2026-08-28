@@ -35,11 +35,11 @@ import "time"
 // database is read, or which installers run. The declared list is a security
 // boundary, not documentation (§3.2), and the strongest list is the empty one.
 //
-// WHAT THE NODE MUST STILL SUPPLY ITSELF. The shipped runner takes SITENAME as
-// argv[1] and expects PGPASSWORD in its environment; given neither it exits 0
-// having done part of its work. That is a script-side prerequisite recorded in
-// full at the bottom of this file — not something to paper over with a
-// parameter, which would put the plane back in the sentence.
+// THE RUNNER MEETS IT THERE, which is what makes the empty vocabulary workable
+// rather than merely principled: _plugin_installers_start.sh 1.3 derives its own
+// site root from its own location and reads its own database credentials out of
+// the site config over PDO, so it needs neither an argument nor anything in the
+// environment. See "Node-side prerequisites" at the bottom of this file.
 //
 // SUCCESS IS NOT THE EXIT CODE. The runner is fail-safe by contract: a plugin
 // that is absent, a plugin that is inactive, an unreachable database, and an
@@ -91,32 +91,31 @@ const pluginInstallersRunner = "maintenance_scripts/install_tools/_plugin_instal
 
 // --- Node-side prerequisites -------------------------------------------------
 //
-// Recorded here because they are what stands between this primitive and doing
-// its whole job, and because the fix belongs on the node in both cases.
+// What the runner has to be able to do on its own for the empty parameter list
+// above to be workable rather than merely principled. Both are met by
+// _plugin_installers_start.sh 1.3.
 //
-// 1. THE RUNNER MUST DERIVE ITS OWN SITE ROOT. _plugin_installers_start.sh 1.2
-//    reads SITENAME from argv[1] and rebuilds SITE_ROOT as /var/www/html/$1;
-//    with no argument it prints "no SITENAME given - skipping" and exits 0. It
-//    does not need to be told: it already computes SCRIPT_DIR from its own
-//    BASH_SOURCE for the core-installer loop, and the site root is two levels
-//    above that. Deriving it also retires the /var/www/html assumption, which is
-//    wrong on any node installed elsewhere.
+//  1. IT DERIVES ITS OWN SITE ROOT, from its own BASH_SOURCE two levels up,
+//     rather than rebuilding /var/www/html/$1 from an argument. An explicit
+//     SITENAME still wins where /var/www/html/$SITENAME exists, because
+//     install.sh runs the script from the source tree it is installing FROM —
+//     but this primitive passes none, and the derived answer is the right one.
+//     It also retires the /var/www/html assumption, which is wrong on any node
+//     installed elsewhere.
 //
-// 2. THE RUNNER MUST SOURCE ITS OWN DATABASE CREDENTIALS. It greps only dbname
-//    out of the site config and then runs `psql -U postgres`, which on a
-//    password-authenticated cluster fails without PGPASSWORD in the environment.
-//    The failure is invisible: ACTIVE_PLUGINS comes back empty, the script
-//    prints "no active plugins found (or database unreachable) - skipping" and
-//    exits 0 — after the CORE installer loop has already run, so the output
-//    reads like a successful run that simply had nothing to do.
+//  2. IT READS ITS OWN DATABASE CREDENTIALS out of the site config over PDO,
+//     the way install_agent.sh in the same directory always has, instead of
+//     running `psql -U postgres` and depending on PGPASSWORD being in the
+//     environment. That dependency failed invisibly: ACTIVE_PLUGINS came back
+//     empty, the script printed "no active plugins found (or database
+//     unreachable) - skipping" and exited 0, after the core loop had already
+//     run — so a half-run read as a clean one. 1.3 also splits that message
+//     into "could not read the site database" and "no active plugins - nothing
+//     to run", which are different facts.
 //
-//    The mechanism it needs is in the same directory. install_agent.sh — which
-//    this very script invokes — reads dbname, dbusername and dbpassword out of
-//    the site config and connects over PDO. The runner reading its own
-//    credentials the same way removes the plane's last reason to hold them.
-//
-// Until both land, this primitive runs the core installer loop and silently
-// skips the plugin loop. It is registered now regardless: every script primitive
-// is refused anyway on a node whose artifact ships no signed manifest, and a
-// primitive that exists is a primitive whose parameter list is pinned before
-// anyone is tempted to add one.
+// THE RESTART, which this primitive shares with apply_update. The first thing
+// the runner does is run install_agent.sh, whose job is to converge and restart
+// the agent — this process. It defers both while a job is running, on the
+// marker the agent writes for the life of the job; see jobmarker.go and
+// operate_apply_update.go. Without that, running this primitive on a node with
+// a fresh agent artifact would kill the job that asked for it.

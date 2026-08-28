@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 )
 
 // MaxScriptOutputBytes bounds what one script may hand back. Output beyond it
@@ -98,7 +99,7 @@ func runScriptPrimitive(ctx context.Context, env *ExecEnv, p Primitive, params P
 
 	// Resolved here and handed straight to the process. It is deliberately not
 	// held anywhere that gets logged, returned, or attached to an error — see
-	// ScriptSpec.Stdin.
+	// ScriptSpec.StdinFrom.
 	if p.Script.StdinFrom != nil {
 		stdin, err := p.Script.StdinFrom(params)
 		if err != nil {
@@ -159,9 +160,68 @@ func resolveArgs(template []string, params Params) ([]string, error) {
 }
 
 // capOutput trims to max bytes, reporting whether anything was dropped.
+//
+// It keeps BOTH ENDS, and the tail is the larger share. Keeping only the head —
+// which is what this did first — throws away the part of a transcript that says
+// how it turned out. Every script this package runs puts its verdict last:
+// upgrade.php's version lines and its "PLEASE RE-RUN THE UPGRADE" request, the
+// installer runner's per-plugin results, run_backup.php's manifest summary. A
+// head-only cap on a chatty run therefore returns the part nobody needs and
+// drops the part the plane parses, which reads as an upgrade that produced no
+// verdict rather than one whose verdict was discarded.
+//
+// The head is kept as well because the start of a transcript says what the run
+// was doing — which release, which tree — and a tail alone can be a page of
+// output with no idea what produced it.
+//
+// The notice between them is counted against the budget, so the result is never
+// larger than max. It names the byte count rather than saying "truncated": the
+// caller also reports output_bytes, and the two together let a reader tell a
+// slightly-over run from one that produced megabytes.
 func capOutput(b []byte, max int) (string, bool) {
 	if len(b) <= max {
 		return string(b), false
 	}
-	return string(b[:max]), true
+
+	notice := fmt.Sprintf("\n\n[... %d bytes dropped by the agent's output cap ...]\n\n", len(b)-max)
+	room := max - len(notice)
+	if room <= 0 {
+		// A cap too small to hold the notice: keep the end, which is the half
+		// that carries the outcome.
+		return string(trimPartialRuneAtStart(b[len(b)-max:])), true
+	}
+
+	head := room / 4
+	tail := room - head
+	return string(trimPartialRuneAtEnd(b[:head])) +
+		notice +
+		string(trimPartialRuneAtStart(b[len(b)-tail:])), true
+}
+
+// trimPartialRuneAtEnd and trimPartialRuneAtStart drop a multi-byte character
+// left half-written by cutting at a byte offset. Both seams need it now that
+// there are two of them, and a mangled rune at a seam is the kind of thing that
+// gets read as corruption in the transcript rather than as an artifact of the
+// cap.
+// Both give up after UTFMax-1 bytes. A longer run of undecodable bytes is not a
+// seam artefact, it is output that was never text — and eating it would turn a
+// script that printed binary into a script that printed nothing.
+func trimPartialRuneAtEnd(b []byte) []byte {
+	for i := 0; i < utf8.UTFMax-1 && len(b) > 0; i++ {
+		if r, size := utf8.DecodeLastRune(b); r != utf8.RuneError || size > 1 {
+			break
+		}
+		b = b[:len(b)-1]
+	}
+	return b
+}
+
+func trimPartialRuneAtStart(b []byte) []byte {
+	for i := 0; i < utf8.UTFMax-1 && len(b) > 0; i++ {
+		if r, size := utf8.DecodeRune(b); r != utf8.RuneError || size > 1 {
+			break
+		}
+		b = b[1:]
+	}
+	return b
 }

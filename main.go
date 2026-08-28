@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/base64"
-	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -21,7 +20,7 @@ import (
 // must stay ABOVE 1.1.0 forever - install_agent.sh's downgrade guard sorts
 // with sort -V and refuses to replace a "newer" binary, so anything below
 // 1.1.0 strands those agents permanently.
-var version = "1.9.1"
+var version = "1.10.0"
 
 // How often the idle loop looks at the shipped agent_dist manifest. Update
 // checks never run while a job is executing.
@@ -98,10 +97,22 @@ func startRemoteSource(cfg *Config, db *DB, jobLock *sync.Mutex, agentVersion st
 		return nil
 	}
 
+	// Nil on a machine with no site, and that nil is load-bearing. ExecEnv.DB
+	// is the collectors' test for "is there a database to ask about" —
+	// check_status skips its database section when it is nil, and REPORTS A
+	// FAULT when it is set and unreachable. A siteless machine handed a live
+	// provider over an empty DSN would therefore report a database problem on
+	// every status check, on a machine that has no database to have a problem
+	// with. Absent and broken are different answers and must not be conflated.
+	var dbForPrimitives primitives.DBProvider
+	if !cfg.Siteless {
+		dbForPrimitives = db.Provider()
+	}
+
 	env := &primitives.ExecEnv{
 		SiteRoot: cfg.SiteRoot,
 		WebRoot:  cfg.WebRoot,
-		DB:       db.Provider(),
+		DB:       dbForPrimitives,
 		// Component G: a script is verified against the signed manifest of the
 		// artifact that ships it, using the release key compiled into this
 		// binary. No network call is involved — forging this means forging
@@ -180,9 +191,11 @@ func releaseVerifier(siteRoot string) primitives.ManifestVerifier {
 }
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "--version" {
-		fmt.Printf("joinery-agent %s\n", version)
-		os.Exit(0)
+	// Subcommands first: they are one-shot operator commands and must not fall
+	// through into starting a service. A machine with no site enrolls here
+	// rather than through an admin page it does not have (cli.go).
+	if handled, exit := runCLI(os.Args); handled {
+		os.Exit(exit)
 	}
 
 	log.SetFlags(log.Ldate | log.Ltime | log.LUTC)
@@ -206,11 +219,18 @@ func main() {
 	}
 	defer db.Close()
 
-	if err := db.Available(); err != nil {
-		log.Printf("NOTE: database not reachable yet (%v)", err)
-		log.Printf("  Continuing: node work does not need it, and the pool reconnects on its own.")
-	} else {
-		log.Printf("connected to PostgreSQL %s/%s", cfg.DBHost, cfg.DBName)
+	switch {
+	case cfg.Siteless:
+		// Not an outage and not worth a warning every start. There is no
+		// database here because there is no site here.
+		log.Printf("machine posture — no local site or database; serving only what this machine can answer for itself")
+	default:
+		if err := db.Available(); err != nil {
+			log.Printf("NOTE: database not reachable yet (%v)", err)
+			log.Printf("  Continuing: node work does not need it, and the pool reconnects on its own.")
+		} else {
+			log.Printf("connected to PostgreSQL %s/%s", cfg.DBHost, cfg.DBName)
+		}
 	}
 
 	// Fully initialised. Everything past this point degrades rather than exits,
@@ -241,12 +261,22 @@ func main() {
 	if remote := startRemoteSource(cfg, db, &jobLock, version); remote != nil {
 		log.Printf("node posture active — remote job source polling %s", remote.identity.PlaneURL)
 		pairedIdentity = remote.identity
-		leaver := &LeaveWatcher{db: db, identity: remote.identity, jobLock: &jobLock}
-		go leaver.Run(context.Background())
-	} else {
+		// Both watchers below are settings-table readers, and a siteless
+		// machine has no settings table. Its equivalents are the CLI:
+		// `joinery-agent join` and `joinery-agent leave` act directly instead
+		// of leaving a request for a watcher to notice. Running them anyway
+		// would be a query that fails every few seconds for the life of the
+		// process, which is how a machine ends up with a log nobody reads.
+		if !cfg.Siteless {
+			leaver := &LeaveWatcher{db: db, identity: remote.identity, jobLock: &jobLock}
+			go leaver.Run(context.Background())
+		}
+	} else if !cfg.Siteless {
 		clearStaleLeaveRequest(db)
 		watcher := &JoinWatcher{cfg: cfg, db: db, jobLock: &jobLock, agentVersion: version}
 		go watcher.Run(context.Background())
+	} else {
+		log.Printf("machine posture — not enrolled; run `joinery-agent join --management-node=URL` to ask a management node to adopt this machine")
 	}
 
 	// The run switch. Projects the setting into the marker the supervisor reads,
@@ -292,9 +322,16 @@ func main() {
 		}
 	}()
 
-	if localQueue.Available() {
+	switch {
+	case localQueue.Available():
 		log.Printf("agent ready — polling the local job queue every %s", cfg.PollInterval)
-	} else {
+	case !cfg.LocalJobs:
+		// Latched off, so the recheck below never runs and saying it would is
+		// simply untrue. A machine with no site has no local queue to wait for,
+		// and an operator reading this log should not be left watching for a
+		// state change that cannot arrive.
+		log.Printf("agent ready — machine posture; no local job queue on this machine")
+	default:
 		log.Printf("agent ready — node posture only for now, rechecking for local work every %s",
 			localQueueRecheckInterval)
 	}
