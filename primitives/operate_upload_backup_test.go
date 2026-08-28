@@ -23,6 +23,7 @@ func uploadParams(t *testing.T, raw map[string]interface{}) (Params, error) {
 func validUploadParams() map[string]interface{} {
 	return map[string]interface{}{
 		"filename":        "jeremytunnell_2026-08-27_full.tar.gz.enc",
+		"profile":         "manager",
 		"bucket":          "joinery-backups",
 		"path_prefix":     "joinery-backups",
 		"slug":            "jeremytunnell",
@@ -189,7 +190,8 @@ func TestTheUploadConfigIsComposedOnTheNode(t *testing.T) {
 		t.Fatalf("the composed config should be JSON: %v", err)
 	}
 
-	want := map[string]bool{"bucket": true, "path_prefix": true, "slug": true, "filename": true, "credentials_b64": true}
+	want := map[string]bool{"bucket": true, "path_prefix": true, "slug": true, "filename": true,
+		"profile": true, "credentials_b64": true}
 	for key := range want {
 		if _, ok := config[key]; !ok {
 			t.Errorf("the script needs %q and it is missing", key)
@@ -298,7 +300,7 @@ func TestTheEnvelopeFlagReachesTheScriptOnlyWhenAskedFor(t *testing.T) {
 	}
 	// Still a fixed key set — the flag is the sixth and last.
 	want := map[string]bool{"bucket": true, "path_prefix": true, "slug": true,
-		"filename": true, "credentials_b64": true, "include_envelope": true}
+		"filename": true, "profile": true, "credentials_b64": true, "include_envelope": true}
 	for key := range config {
 		if !want[key] {
 			t.Errorf("the composed config carries %q, which the script will refuse", key)

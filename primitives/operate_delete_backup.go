@@ -64,13 +64,22 @@ func init() {
 			// and the pattern excludes the separator.
 			{Name: "filename", Type: ParamString, Required: true, MaxLen: 255,
 				Pattern: regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)},
+
+			// WHOSE backup, not WHERE it is. The node maps this to a directory
+			// using its own configured backup base, so the plane still cannot
+			// express a path — an enum of two known values is not a filesystem
+			// location. It is required because guessing wrong deletes nothing
+			// (or, worse, the other party's archive of the same name).
+			{Name: "profile", Type: ParamEnum, Required: true,
+				Values: []string{"site", "manager"}},
 		},
 		Run: runDeleteBackup,
 	})
 }
 
-func runDeleteBackup(ctx context.Context, _ *ExecEnv, params Params) (map[string]interface{}, error) {
-	return runDeleteBackupIn(ctx, backupDir, params.String("filename"))
+func runDeleteBackup(ctx context.Context, env *ExecEnv, params Params) (map[string]interface{}, error) {
+	dir := backupDirFor(ctx, env, BackupProfile(params.String("profile")))
+	return runDeleteBackupIn(ctx, dir, params.String("filename"))
 }
 
 // runDeleteBackupIn is the body, with the directory as an argument so it can be

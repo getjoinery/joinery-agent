@@ -197,7 +197,14 @@ func collectDatabase(ctx context.Context, env *ExecEnv, result map[string]interf
 			}
 		}
 		if len(names) > 0 {
-			result["databases"] = names
+			// db_list, not "databases": this key is read by the node overview and
+			// is produced under that name by BOTH the management API's stats
+			// endpoint and the SSH path's DB: lines. Reporting the same fact
+			// under a different name meant the plane measured it fresh, stored it
+			// where nothing reads, and carried the stale SSH value forward
+			// forever. This file's own contract is that its keys match the stats
+			// endpoint's.
+			result["db_list"] = names
 		}
 	}
 

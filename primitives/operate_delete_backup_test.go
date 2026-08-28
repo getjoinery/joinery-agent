@@ -39,16 +39,29 @@ func TestNoCloudObjectCanBeNamedForDeletion(t *testing.T) {
 	// issue an HTTPS DELETE the plane can issue itself. The cloud object is the
 	// plane's to delete. Nothing here can name one.
 	for _, field := range []string{"cloud_path", "bucket", "credentials_b64", "target", "remote_key", "path_prefix", "local_path"} {
-		params := map[string]interface{}{"filename": "site_2026-08-27.sql.gz", field: "anything"}
+		params := map[string]interface{}{"filename": "site_2026-08-27.sql.gz", "profile": "site", field: "anything"}
 
 		if _, err := deleteParams(t, params); err == nil {
 			t.Errorf("a delete job carrying %q must be refused as out-of-vocabulary", field)
 		}
 	}
 
+	// A NAME and WHOSE, and nothing else. profile is an enum of two values the
+	// node maps to a directory itself — it is not a path, and it exists because
+	// the two profiles keep separate directories (BackupProfile::output_dir).
+	// Pinned exactly, so a third parameter has to be argued for here.
 	p, _ := Lookup("delete_backup")
-	if len(p.Params) != 1 || p.Params[0].Name != "filename" {
-		t.Errorf("delete_backup should take a filename and nothing else, got %v", p.Params)
+	allowed := map[string]bool{"filename": true, "profile": true}
+	if len(p.Params) != len(allowed) {
+		t.Errorf("delete_backup should take a filename and a profile and nothing else, got %v", p.Params)
+	}
+	for _, spec := range p.Params {
+		if !allowed[spec.Name] {
+			t.Errorf("delete_backup gained parameter %q", spec.Name)
+		}
+		if spec.Name == "profile" && spec.Type != ParamEnum {
+			t.Error("profile must be an enum: a free string here would be a directory selector")
+		}
 	}
 	if p.Script != nil {
 		t.Error("delete_backup runs no script: there is nothing here to invoke and no credential to carry")
@@ -60,7 +73,7 @@ func TestNoCloudObjectCanBeNamedForDeletion(t *testing.T) {
 
 func TestThePlaneCannotNameAPathToDelete(t *testing.T) {
 	for _, bad := range []string{"/etc/passwd", "../../config/Globalvars_site.php", "..", ".", "sub/dir.tar.gz", ""} {
-		if _, err := deleteParams(t, map[string]interface{}{"filename": bad}); err == nil {
+		if _, err := deleteParams(t, map[string]interface{}{"filename": bad, "profile": "site"}); err == nil {
 			t.Errorf("filename %q should be refused; it is a path", bad)
 		}
 	}

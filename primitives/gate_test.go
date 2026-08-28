@@ -31,9 +31,10 @@ import (
 // still red at release time is a primitive that was abandoned, which is exactly
 // the thing worth being told about.
 var pinnedVocabulary = map[string]Class{
-	"check_status": ClassObserve,
-	"list_backups": ClassObserve,
-	"backup_run":   ClassOperate,
+	"check_status":        ClassObserve,
+	"list_backups":        ClassObserve,
+	"recovery_key_report": ClassObserve,
+	"backup_run":          ClassOperate,
 
 	"restart_agent":         ClassOperate,
 	"upload_backup":         ClassOperate,

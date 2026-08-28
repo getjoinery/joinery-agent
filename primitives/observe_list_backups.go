@@ -56,8 +56,38 @@ const envelopeSuffix = ".keys.json"
 // that cries wolf gets ignored on the day it is right.
 const encryptedSuffix = ".enc"
 
-func runListBackups(ctx context.Context, _ *ExecEnv, _ Params) (map[string]interface{}, error) {
-	return runListBackupsFrom(ctx, backupDir)
+// runListBackups reports both profiles' backups.
+//
+// BOTH, because "what backups exist on this node" means both, and because a node
+// whose own backups have stopped while the control plane's pile up is a fact
+// worth being able to see. Each file carries the profile it belongs to, so the
+// plane can address it later without ever naming a path.
+//
+// A missing directory is not an error and not a gap in the report: a node that
+// has never run one profile simply has no directory for it.
+func runListBackups(ctx context.Context, env *ExecEnv, _ Params) (map[string]interface{}, error) {
+	files := []map[string]interface{}{}
+
+	for profile, dir := range backupDirsByProfile(ctx, env) {
+		found, err := runListBackupsFrom(ctx, dir)
+		if err != nil {
+			return nil, err
+		}
+		for _, f := range found["files"].([]map[string]interface{}) {
+			f["profile"] = string(profile)
+			files = append(files, f)
+		}
+	}
+
+	// The manager directory sits INSIDE the site base, so a naive read of the
+	// base would report the plane's archives as the site's. runListBackupsFrom
+	// skips directories, so nothing is double counted — but sort here, once, now
+	// that both profiles are in one list.
+	sort.Slice(files, func(i, j int) bool {
+		return files[i]["mtime"].(int64) > files[j]["mtime"].(int64)
+	})
+
+	return map[string]interface{}{"files": files}, nil
 }
 
 // runListBackupsFrom is the body, with the directory as an argument so it can be

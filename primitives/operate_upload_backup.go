@@ -82,6 +82,13 @@ func init() {
 
 			// The storage credential. Bounded and base64-shaped; never logged,
 			// never in argv, never in the result.
+			// WHOSE backup. The node maps it to a directory from its own
+			// configured backup base; the plane never names a path. Required,
+			// because the two profiles keep separate directories and an archive
+			// looked for in the wrong one simply is not there.
+			{Name: "profile", Type: ParamEnum, Required: true,
+				Values: []string{"site", "manager"}},
+
 			{Name: "credentials_b64", Type: ParamString, Required: true, MaxLen: 8192,
 				Pattern: regexp.MustCompile(`^[A-Za-z0-9+/=]+$`)},
 
@@ -138,6 +145,7 @@ func uploadBackupConfig(params Params) (string, error) {
 		"path_prefix":     params.String("path_prefix"),
 		"slug":            params.String("slug"),
 		"filename":        filename,
+		"profile":         params.String("profile"),
 		"credentials_b64": params.String("credentials_b64"),
 	}
 	// Absent unless asked for, rather than sent as a false: the script treats an
