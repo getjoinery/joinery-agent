@@ -78,15 +78,31 @@ type ScriptSpec struct {
 // runScriptPrimitive verifies the script against the signed release manifest,
 // then runs it with an explicit argv.
 func runScriptPrimitive(ctx context.Context, env *ExecEnv, p Primitive, params Params) (map[string]interface{}, error) {
-	if env == nil || env.Manifest == nil {
-		return nil, refusedf("primitive %q cannot run: this agent has no manifest verifier, so it cannot prove the script it would execute as root is the one the publisher shipped", p.Name)
-	}
-	if env.SiteRoot == "" {
-		return nil, refusedf("primitive %q cannot run: this node has no site root", p.Name)
+	if env == nil {
+		return nil, refusedf("primitive %q has no execution environment", p.Name)
 	}
 
-	scriptPath := filepath.Join(env.SiteRoot, filepath.FromSlash(p.Script.ScriptPath))
-	if err := env.Manifest.Verify(scriptPath); err != nil {
+	// Which tree this script lives in, and which manifest speaks for it.
+	//
+	// A site root wins wherever there is one, so nothing changes for a machine
+	// that has a site: same tree, same manifest, same refusals. A machine with
+	// no site uses the signed support bundle instead — and a machine with
+	// NEITHER refuses exactly as it always did. The script path is the same
+	// string in both cases, because bundle paths are recorded relative to a
+	// site root too, so no primitive has to know which posture it is running in.
+	root, verifier := env.SiteRoot, env.Manifest
+	if root == "" {
+		root, verifier = env.ToolRoot, env.ToolManifest
+	}
+	if root == "" {
+		return nil, refusedf("primitive %q cannot run: this machine has no site root and no support bundle, so there is no tree to resolve %s in", p.Name, p.Script.ScriptPath)
+	}
+	if verifier == nil {
+		return nil, refusedf("primitive %q cannot run: this agent has no manifest verifier, so it cannot prove the script it would execute as root is the one the publisher shipped", p.Name)
+	}
+
+	scriptPath := filepath.Join(root, filepath.FromSlash(p.Script.ScriptPath))
+	if err := verifier.Verify(scriptPath); err != nil {
 		return nil, refusedf("primitive %q refused: %v", p.Name, err)
 	}
 

@@ -64,8 +64,19 @@ const (
 // the opposite direction (plane calls into a node's web tier) and is pinned
 // status-only by §3.5.4.
 const (
-	pathClaim  = "/api/v1/agent/claim"
-	pathResult = "/api/v1/agent/result"
+	pathClaim    = "/api/v1/agent/claim"
+	pathResult   = "/api/v1/agent/result"
+	pathArtifact = "/api/v1/agent/artifact"
+)
+
+// What the artifact endpoint may be asked for. A flat, compiled-in set: the
+// node names one of these four things and nothing else, so there is no shape
+// in which a request from here becomes a path over there.
+const (
+	artifactKindAgentManifest = "agent_manifest"
+	artifactKindAgentBinary   = "agent_binary"
+	artifactKindBundleInfo    = "bundle_manifest"
+	artifactKindBundleBody    = "bundle_body"
 )
 
 // RemoteJob is one unit of work as the plane offers it. A primitive name and
@@ -96,6 +107,18 @@ type RemoteSource struct {
 
 	// warned suppresses repeat logging of a steady-state complaint.
 	warned map[string]bool
+
+	// extrasDropped latches when the plane refuses a field this agent added.
+	//
+	// The plane validates a claim STRICTLY — an undeclared key is refused, not
+	// ignored — which is the right rule and makes a newer agent's extra fields
+	// fatal against an older plane. In this fleet the plane is always upgraded
+	// first, because the agent artifact ships inside the core release; but "in
+	// practice first" is not an ordering guarantee, and a node whose site
+	// upgraded ahead of its management node would otherwise stop claiming
+	// altogether. Dropping the extras costs the plane a capability report;
+	// dropping the claim costs it the node.
+	extrasDropped bool
 
 	// agentVersion travels on every claim. The plane recorded a node's agent
 	// version once, at approval, and then never again — so a fleet that had
@@ -207,13 +230,30 @@ func (r *RemoteSource) noteFailure(err error) {
 
 // claim asks the plane for one job.
 func (r *RemoteSource) claim(ctx context.Context) (*RemoteJob, error) {
-	body, _ := json.Marshal(map[string]interface{}{
+	claimBody := map[string]interface{}{
 		"node_id":       r.identity.NodeID,
 		"agent_version": r.agentVersion,
-	})
+	}
+	if !r.extrasDropped {
+		// The node's own account of what it can do, sent on every poll for the
+		// same reason the version is: this is the one moment the machine speaks
+		// for itself, and the plane must never GUESS a node's vocabulary. The
+		// first apply_update rollout dispatched the new primitive to nine
+		// agents that predated it and all nine refused — a plane reading a
+		// version number and inferring a capability from it.
+		claimBody["primitives"] = strings.Join(primitives.Names(), ",")
+		// Empty on a machine with no support bundle, which is every machine
+		// that has a site tree to verify scripts against. It is the only
+		// evidence the plane gets that the bundle actually landed somewhere.
+		claimBody["bundle_version"] = installedBundleVersion()
+	}
+	body, _ := json.Marshal(claimBody)
 
 	raw, err := r.signedPost(ctx, pathClaim, body)
 	if err != nil {
+		if r.dropExtrasIfRefused(err) {
+			return nil, nil
+		}
 		return nil, err
 	}
 
@@ -243,6 +283,25 @@ func (r *RemoteSource) claim(ctx context.Context) (*RemoteJob, error) {
 	}
 
 	return payload.Job, nil
+}
+
+// dropExtrasIfRefused reads one refusal and decides whether this agent is
+// talking to a plane that predates the fields it just sent. Reports whether it
+// latched, in which case the caller simply tries again next poll with the older
+// shape.
+//
+// It matches on the plane's own words for an undeclared field, which is a
+// narrow thing to depend on — and the failure of the match is not silent
+// breakage but the status quo: the node keeps reporting the error it is already
+// reporting, until the plane it answers is upgraded.
+func (r *RemoteSource) dropExtrasIfRefused(err error) bool {
+	if r.extrasDropped || !strings.Contains(err.Error(), "undeclared field") {
+		return false
+	}
+	r.extrasDropped = true
+	log.Printf("this management node does not accept the capability fields this agent sends " +
+		"(it predates them) — claiming without them; upgrade the plane to restore vocabulary reporting")
+	return true
 }
 
 // runJob executes one primitive and reports the outcome.
@@ -366,26 +425,10 @@ func (r *RemoteSource) signedPost(ctx context.Context, path string, body []byte)
 // signedPlanePost is the signed request itself, shared with the leave path
 // (leave.go), which must be able to sign without a running job source.
 func signedPlanePost(ctx context.Context, client *http.Client, id *NodeIdentity, path string, body []byte) (json.RawMessage, error) {
-	url := strings.TrimRight(id.PlaneURL, "/") + path
-
-	sum := sha256.Sum256(body)
-	bodyHash := hex.EncodeToString(sum[:])
-	timestamp := strconv.FormatInt(time.Now().UTC().Unix(), 10)
-	nonce, err := newNonce()
+	req, url, err := newSignedRequest(ctx, id, path, body)
 	if err != nil {
 		return nil, err
 	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Joinery-Agent-Node", strconv.FormatInt(id.NodeID, 10))
-	req.Header.Set("X-Joinery-Agent-Timestamp", timestamp)
-	req.Header.Set("X-Joinery-Agent-Nonce", nonce)
-	req.Header.Set("X-Joinery-Agent-Signature", id.Sign(http.MethodPost, path, timestamp, nonce, bodyHash))
-
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -394,6 +437,120 @@ func signedPlanePost(ctx context.Context, client *http.Client, id *NodeIdentity,
 
 	return readCappedEnvelope(resp, url)
 }
+
+// newSignedRequest builds one signed request. Split out from signedPlanePost
+// because the artifact endpoint signs identically and reads back differently:
+// the signature covers the method, the path, this node's id, a timestamp, a
+// nonce and the body hash, and none of that changes because the response
+// happens to be bytes instead of an envelope.
+func newSignedRequest(ctx context.Context, id *NodeIdentity, path string, body []byte) (*http.Request, string, error) {
+	url := strings.TrimRight(id.PlaneURL, "/") + path
+
+	sum := sha256.Sum256(body)
+	bodyHash := hex.EncodeToString(sum[:])
+	timestamp := strconv.FormatInt(time.Now().UTC().Unix(), 10)
+	nonce, err := newNonce()
+	if err != nil {
+		return nil, url, err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return nil, url, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Joinery-Agent-Node", strconv.FormatInt(id.NodeID, 10))
+	req.Header.Set("X-Joinery-Agent-Timestamp", timestamp)
+	req.Header.Set("X-Joinery-Agent-Nonce", nonce)
+	req.Header.Set("X-Joinery-Agent-Signature", id.Sign(http.MethodPost, path, timestamp, nonce, bodyHash))
+	return req, url, nil
+}
+
+// artifactRequestBody is what the node asks the artifact endpoint for. A kind
+// from the compiled-in set, and — for the binary — the architecture this build
+// runs on. No file name, no path, no version: everything the plane needs to
+// resolve the answer, it already knows better than the node does.
+func artifactRequestBody(id *NodeIdentity, kind, platform string) []byte {
+	payload := map[string]interface{}{
+		"node_id": id.NodeID,
+		"kind":    kind,
+	}
+	if platform != "" {
+		payload["platform"] = platform
+	}
+	body, _ := json.Marshal(payload)
+	return body
+}
+
+// signedArtifactEnvelope asks for one of the small, JSON answers the artifact
+// endpoint gives — a manifest, or the bundle's identity. These come back
+// through the ordinary capped envelope reader, unchanged.
+func signedArtifactEnvelope(ctx context.Context, client *http.Client, id *NodeIdentity, kind, platform string) (json.RawMessage, error) {
+	return signedPlanePost(ctx, client, id, pathArtifact, artifactRequestBody(id, kind, platform))
+}
+
+// signedArtifactStream asks for BYTES, and is the one plane response this agent
+// does not read through readCappedEnvelope.
+//
+// That reader exists to bound a job envelope at 64 KiB and is right to; an
+// artifact is megabytes, so running one through it would refuse every download
+// this endpoint exists to serve. What replaces the bound is not its absence: the
+// stream is limited to max, one byte past which the transfer is abandoned
+// unread, and the caller streams rather than buffering — so a plane that will
+// not stop sending is a failed update, never an agent that ran a relay out of
+// memory.
+//
+// A refusal still arrives as an envelope, because the plane answers a bad
+// request the way it answers every other one. So a non-200 is read back
+// through the capped reader and reported with the plane's own words.
+func signedArtifactStream(ctx context.Context, client *http.Client, id *NodeIdentity, kind, platform string, max int64) (io.ReadCloser, error) {
+	req, url, err := newSignedRequest(ctx, id, pathArtifact, artifactRequestBody(id, kind, platform))
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		defer resp.Body.Close()
+		if _, envErr := readCappedEnvelope(resp, url); envErr != nil {
+			return nil, envErr
+		}
+		return nil, fmt.Errorf("plane returned HTTP %d for %s", resp.StatusCode, url)
+	}
+	return &cappedBody{
+		body:      resp.Body,
+		remaining: max + 1, // one past, so "exactly at the cap" is not ambiguous
+		max:       max,
+		url:       url,
+	}, nil
+}
+
+// cappedBody is a response body that refuses to hand back more than it agreed
+// to read. The overflow is an error rather than a silent truncation: a
+// truncated artifact would fail its sha256 and be reported as a corrupt
+// release, which is a true statement about the wrong thing.
+type cappedBody struct {
+	body      io.ReadCloser
+	remaining int64
+	max       int64
+	url       string
+}
+
+func (c *cappedBody) Read(p []byte) (int, error) {
+	if c.remaining <= 0 {
+		return 0, fmt.Errorf("the artifact at %s is larger than this agent's %d-byte limit — abandoned unread", c.url, c.max)
+	}
+	if int64(len(p)) > c.remaining {
+		p = p[:c.remaining]
+	}
+	n, err := c.body.Read(p)
+	c.remaining -= int64(n)
+	return n, err
+}
+
+func (c *cappedBody) Close() error { return c.body.Close() }
 
 // readCappedEnvelope reads a plane response under the node's inbound cap.
 //

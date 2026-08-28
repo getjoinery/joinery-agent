@@ -20,7 +20,7 @@ import (
 // must stay ABOVE 1.1.0 forever - install_agent.sh's downgrade guard sorts
 // with sort -V and refuses to replace a "newer" binary, so anything below
 // 1.1.0 strands those agents permanently.
-var version = "1.10.0"
+var version = "1.11.0"
 
 // How often the idle loop looks at the shipped agent_dist manifest. Update
 // checks never run while a job is executing.
@@ -124,6 +124,16 @@ func startRemoteSource(cfg *Config, db *DB, jobLock *sync.Mutex, agentVersion st
 		// unverified. That is the same posture as before, now with a refusal
 		// that names which artifact could not be checked.
 		Manifest: releaseVerifier(cfg.SiteRoot),
+
+		// The support bundle, for a machine with no site tree to verify
+		// against. Set unconditionally on a siteless machine, before any bundle
+		// has arrived: the verifier reads the manifest at the moment of use and
+		// does not cache its absence, so a machine that is handed a bundle ten
+		// minutes from now starts running script primitives then, without a
+		// restart. Empty where there is a site — SiteRoot wins there, and a
+		// second script root would be a second answer.
+		ToolRoot:     toolRoot(cfg),
+		ToolManifest: bundleVerifier(cfg),
 	}
 
 	source := NewRemoteSource(identity, policy, env, jobLock, agentVersion)
@@ -178,6 +188,38 @@ func attemptUpdate(jobLock *sync.Mutex, check func() bool) bool {
 // pretend otherwise: it refuses every script, exactly as a missing manifest
 // does. A hand-built agent is a legitimate thing to have and an illegitimate
 // thing to trust with root-exec of files it cannot check.
+// toolRoot is the support bundle's tree on a machine that has no site, and
+// empty everywhere else.
+func toolRoot(cfg *Config) string {
+	if cfg == nil || !cfg.Siteless {
+		return ""
+	}
+	return BundleRoot()
+}
+
+// bundleVerifier verifies files under the support bundle against the manifest
+// the bundle itself carries.
+//
+// It is the SAME verifier a site tree uses, pointed at a different root, and
+// that is deliberate: the bundle is a signed tree with a RELEASE_MANIFEST and a
+// .sig exactly as a release is, so there is one manifest format in this system
+// and one piece of code that decides whether a file may be executed as root.
+func bundleVerifier(cfg *Config) primitives.ManifestVerifier {
+	root := toolRoot(cfg)
+	if root == "" {
+		return nil
+	}
+	if updatePubKeyB64 == "" {
+		return primitives.UnavailableVerifier{}
+	}
+	key, err := base64.StdEncoding.DecodeString(updatePubKeyB64)
+	if err != nil || len(key) != ed25519.PublicKeySize {
+		log.Printf("script primitives unavailable: this build's release key is malformed")
+		return primitives.UnavailableVerifier{}
+	}
+	return primitives.NewArtifactManifests(root, ed25519.PublicKey(key))
+}
+
 func releaseVerifier(siteRoot string) primitives.ManifestVerifier {
 	if updatePubKeyB64 == "" || siteRoot == "" {
 		return primitives.UnavailableVerifier{}
@@ -309,13 +351,19 @@ func main() {
 		}
 	}()
 
-	// Self-update, on its own clock. Every agent moves forward with the fleet,
-	// whether or not it serves a local queue — this used to hang off the local
-	// poll loop, where an agent doing only node work would never have checked.
+	// Self-update and the support bundle, on one clock and under one lock.
+	//
+	// They share both because they are the same hazard seen twice: swapping the
+	// binary under a running job, and swapping the scripts that job is running.
+	// The bundle is checked FIRST and does not exit — a machine that has just
+	// been given its scripts should be able to use them without waiting for a
+	// restart it has no other reason to make.
+	bundle := NewBundleSync(cfg)
 	go func() {
 		ticker := time.NewTicker(updateCheckInterval)
 		defer ticker.Stop()
 		for range ticker.C {
+			attemptUpdate(&jobLock, bundle.CheckAndApply)
 			if attemptUpdate(&jobLock, updater.CheckAndApply) {
 				os.Exit(0)
 			}

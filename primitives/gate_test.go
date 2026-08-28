@@ -290,7 +290,17 @@ func TestStdinIsNeverLogged(t *testing.T) {
 // Widening it is how a collector would grow the ability to read arbitrary files
 // or run arbitrary SQL, both of which §3.5.3 refuses outright.
 func TestPrimitiveExecutionEnvIsExplicit(t *testing.T) {
-	want := map[string]bool{"SiteRoot": true, "WebRoot": true, "DB": true, "Manifest": true}
+	// ToolRoot and ToolManifest are pinned DELIBERATELY, and they widen nothing:
+	// they are the same two capabilities SiteRoot and Manifest already are — a
+	// tree to resolve a script path in, and the signed manifest that says
+	// whether that file may be executed as root — for a machine whose tree is
+	// the support bundle rather than a site. No primitive reads a file through
+	// them that it could not read through their site-tree equivalents, and the
+	// verification is the same code against the same compiled-in key.
+	want := map[string]bool{
+		"SiteRoot": true, "WebRoot": true, "DB": true, "Manifest": true,
+		"ToolRoot": true, "ToolManifest": true,
+	}
 
 	fset := token.NewFileSet()
 	parsed, err := parser.ParseFile(fset, "dispatch.go", nil, 0)

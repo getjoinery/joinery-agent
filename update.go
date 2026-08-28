@@ -57,6 +57,15 @@ type distBinary struct {
 // releases) and replaces the running binary when a newer, correctly signed
 // version appears. All checks run between jobs — never mid-job.
 type Updater struct {
+	// source is where the bytes come from: the shipped directory on a machine
+	// a release delivers to, the channel on a machine nothing delivers to.
+	// Nil when neither exists, which is a build with no config at all.
+	source artifactSource
+
+	// distDir is the shipped directory when there is one, and empty on a
+	// machine that fetches. Kept beside the source because one thing besides
+	// the binary lives in that directory — the systemd unit — and it is
+	// converged from a file rather than fetched.
 	distDir     string
 	installPath string
 	platform    string // e.g. linux-amd64
@@ -83,6 +92,7 @@ func NewUpdater(cfg *Config, runningVersion string) *Updater {
 		distDir = cfg.AgentDistDir
 	}
 	u := &Updater{
+		source:          chooseArtifactSource(cfg, distDir),
 		distDir:         distDir,
 		platform:        "linux-" + runtime.GOARCH,
 		running:         runningVersion,
@@ -243,15 +253,16 @@ func (u *Updater) RestoreBackupBinary() bool {
 // replaced — the caller should exit cleanly so the supervisor restarts into
 // the new version.
 func (u *Updater) CheckAndApply() bool {
-	if u.installPath == "" {
+	if u.installPath == "" || u.source == nil {
 		return false
 	}
 
-	manifestPath := filepath.Join(u.distDir, "manifest.json")
-	raw, err := os.ReadFile(manifestPath)
+	raw, err := u.source.Manifest()
 	if err != nil {
-		// No shipped artifact (pre-channel release, or not a control plane
-		// tree). Not an error.
+		// Nothing on offer: a release that shipped no artifact, a tree that is
+		// not a control plane's, or a machine that fetches and is not paired
+		// to anything yet. None of those is an error, and none of them is this
+		// agent's problem to solve.
 		u.setState("", "")
 		return false
 	}
@@ -302,14 +313,14 @@ func (u *Updater) CheckAndApply() bool {
 		return false
 	}
 
-	binary, err := u.loadAndVerify(entry)
+	binary, err := u.fetchAndVerify(entry)
 	if err != nil {
 		u.mu.Lock()
 		u.failedManifestSum = manifestSum
 		u.mu.Unlock()
 		u.setState(m.Version, updateStateVerifyFailed)
 		log.Printf("=== Self-update === REFUSED v%s: %v", m.Version, err)
-		log.Printf("  The artifact in %s does not verify against this agent's embedded public key.", u.distDir)
+		log.Printf("  The artifact from %s does not verify against this agent's embedded public key.", u.source.Describe())
 		log.Printf("  Not retrying until the manifest changes.")
 		return false
 	}
@@ -336,22 +347,40 @@ func (u *Updater) CheckAndApply() bool {
 	return true
 }
 
-// loadAndVerify reads the gzipped binary, checks its sha256, and verifies the
-// publisher signature over the raw binary bytes.
-func (u *Updater) loadAndVerify(entry distBinary) ([]byte, error) {
-	f, err := os.Open(filepath.Join(u.distDir, entry.File))
+// fetchAndVerify opens the artifact at whichever source this agent uses and
+// hands the bytes to the verification that has never moved.
+func (u *Updater) fetchAndVerify(entry distBinary) ([]byte, error) {
+	r, err := u.source.Open(u.platform, entry)
 	if err != nil {
 		return nil, fmt.Errorf("open artifact: %w", err)
 	}
-	defer f.Close()
+	defer r.Close()
+	return u.loadAndVerify(entry, r)
+}
 
-	gz, err := gzip.NewReader(f)
+// loadAndVerify reads the gzipped binary, checks its sha256, and verifies the
+// publisher signature over the raw binary bytes.
+//
+// It takes a READER, and that is the only thing about this function the channel
+// changed. The key it verifies against is compiled into this binary, so the
+// answer is the same whether the bytes came off a local disk or off a control
+// plane — and a plane cannot sign an agent, which is what makes it safe for one
+// to serve these bytes at all.
+func (u *Updater) loadAndVerify(entry distBinary, r io.Reader) ([]byte, error) {
+	gz, err := gzip.NewReader(r)
 	if err != nil {
 		return nil, fmt.Errorf("artifact is not gzip: %w", err)
 	}
-	binary, err := io.ReadAll(gz)
+	// One byte past the ceiling, so an artifact that is exactly at it is not
+	// mistaken for one that overran. A gzip bomb from a hostile plane is the
+	// case this exists for: without it, "decompress everything you are sent"
+	// is an out-of-memory condition a relay cannot recover from.
+	binary, err := io.ReadAll(io.LimitReader(gz, maxAgentBinaryBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("decompress artifact: %w", err)
+	}
+	if len(binary) > maxAgentBinaryBytes {
+		return nil, fmt.Errorf("the artifact decompresses to more than this agent's %d-byte limit", maxAgentBinaryBytes)
 	}
 
 	sum := sha256.Sum256(binary)
@@ -412,6 +441,13 @@ func (u *Updater) install(binary []byte) error {
 // in place before the restart. No-op on cron-supervised hosts.
 func convergeSystemdUnit(distDir string) {
 	const livePath = "/etc/systemd/system/joinery-agent.service"
+	if distDir == "" {
+		// A machine that fetches its binary has no shipped directory and so no
+		// unit to converge from. Its unit was written by the installer at first
+		// install and is not re-derived here — inventing a path to read one
+		// from is exactly what the siteless posture refuses to do.
+		return
+	}
 	if _, err := os.Stat("/run/systemd/system"); err != nil {
 		return // cron supervision — the keepalive restarts us regardless of exit code
 	}

@@ -45,6 +45,24 @@ type ExecEnv struct {
 	// script-invoking primitive is allowed to execute it. Never nil in
 	// production; see manifest.go.
 	Manifest ManifestVerifier
+
+	// ToolRoot is the signed support bundle a machine with NO SITE unpacks, and
+	// the tree its script primitives resolve against instead of SiteRoot. Empty
+	// on every machine that has a site, which is every machine that has a
+	// release manifest of its own to check against.
+	//
+	// It is a second root, not a fallback: a machine has one or the other, and
+	// SiteRoot wins wherever it exists. Trying both in turn would mean a file
+	// missing from the site's manifest could be satisfied by a bundle, which is
+	// the cross-manifest fallback ArtifactManifests refuses for the same reason
+	// — being listed in SOME manifest is not the same as being the file the
+	// artifact that owns it shipped.
+	ToolRoot string
+
+	// ToolManifest verifies files under ToolRoot, against the signature the
+	// bundle carries. Same contract as Manifest, same compiled-in key, and the
+	// same posture when it is absent: no manifest means no script runs.
+	ToolManifest ManifestVerifier
 }
 
 // DBProvider hands back a usable database connection, or says why not.

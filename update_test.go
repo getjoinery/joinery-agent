@@ -37,6 +37,7 @@ func newTestUpdaterEnv(t *testing.T, runningVersion string) *testUpdaterEnv {
 		t.Fatalf("seed installed binary: %v", err)
 	}
 	u := &Updater{
+		source:      localDirSource{dir: distDir},
 		distDir:     distDir,
 		installPath: install,
 		platform:    "linux-amd64",
