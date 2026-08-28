@@ -20,7 +20,7 @@ import (
 // must stay ABOVE 1.1.0 forever - install_agent.sh's downgrade guard sorts
 // with sort -V and refuses to replace a "newer" binary, so anything below
 // 1.1.0 strands those agents permanently.
-var version = "1.11.0"
+var version = "1.12.0"
 
 // How often the idle loop looks at the shipped agent_dist manifest. Update
 // checks never run while a job is executing.
@@ -113,6 +113,10 @@ func startRemoteSource(cfg *Config, db *DB, jobLock *sync.Mutex, agentVersion st
 		SiteRoot: cfg.SiteRoot,
 		WebRoot:  cfg.WebRoot,
 		DB:       dbForPrimitives,
+		// Which database is this machine's own, from this machine's own config.
+		// The plane stores no column for it and so can only guess; see
+		// ExecEnv.DBName.
+		DBName: cfg.DBName,
 		// Component G: a script is verified against the signed manifest of the
 		// artifact that ships it, using the release key compiled into this
 		// binary. No network call is involved — forging this means forging

@@ -11,7 +11,9 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"strings"
 	"unicode/utf8"
@@ -51,6 +53,28 @@ type ScriptSpec struct {
 	// passed through literally. A "{param}" naming an absent optional
 	// parameter drops the element.
 	Args []string
+
+	// ArgsFrom composes argv from validated params AND the node's own resolved
+	// environment. Set this OR Args, never both; Register refuses a spec that
+	// sets both, so there is one answer to "where did this argv come from".
+	//
+	// It is the exact twin of StdinFrom, and it exists for the exact twin of
+	// StdinFrom's reason. Some platform scripts want a composed object on
+	// stdin; others want an ABSOLUTE PATH in argv — and a path is the one thing
+	// the plane must never be able to express (§ upload_backup, delete_backup).
+	// A "{param}" slot can only ever emit a value the wire supplied, so a
+	// template alone would leave exactly two ways to give restore_database.sh
+	// the file it must read: let the plane send a path, or hardcode a directory
+	// that is wrong on every container node (see backupdirs.go, which exists
+	// because that hardcoding was the bug). This is the third way: the wire
+	// supplies a NAME, and the node — which is the only party that knows where
+	// its own backups live — turns it into a path here.
+	//
+	// It widens nothing that StdinFrom did not already widen. It receives the
+	// same validated Params, it cannot see the raw wire object, and every
+	// element it returns goes to the kernel as a list element. There is still
+	// no shell, and script.go is still the only file that may start a process.
+	ArgsFrom func(ctx context.Context, env *ExecEnv, params Params) ([]string, error)
 
 	// StdinFrom builds what the script reads on standard input, from validated
 	// params. Nil means the script gets no stdin.
@@ -106,7 +130,7 @@ func runScriptPrimitive(ctx context.Context, env *ExecEnv, p Primitive, params P
 		return nil, refusedf("primitive %q refused: %v", p.Name, err)
 	}
 
-	argv, err := resolveArgs(p.Script.Args, params)
+	argv, err := resolveArgv(ctx, env, p, params)
 	if err != nil {
 		return nil, err
 	}
@@ -123,6 +147,29 @@ func runScriptPrimitive(ctx context.Context, env *ExecEnv, p Primitive, params P
 		}
 		cmd.Stdin = strings.NewReader(stdin)
 	}
+
+	// The child's environment, with one thing guaranteed: a HOME.
+	//
+	// systemd sets $HOME only for units that set User= (systemd.exec: "$HOME,
+	// $LOGNAME, and $SHELL are only set for the units that have User= set").
+	// joinery-agent.service sets no User= — it runs as root because it is a
+	// system agent — so the agent process, and every root process it starts,
+	// inherits NO HOME at all.
+	//
+	// That is not cosmetic. The platform scripts resolve the node's own backup
+	// key through it, and they fail two different ways on an empty value:
+	// restore_database.sh runs under `set -o pipefail` alone, so
+	// "$HOME/.joinery_backup_key" quietly becomes "/.joinery_backup_key" and the
+	// node reports having no key; restore_project.sh runs under `set -euo
+	// pipefail`, where an UNSET $HOME is an unbound variable and the script dies
+	// mid-restore. A node that decrypts its own backups perfectly by hand would
+	// have failed to over the agent, and the reason would have been nowhere in
+	// the output.
+	//
+	// The value is resolved from the passwd database, never from a job: it is a
+	// property of the account this process runs as, and nothing on the wire can
+	// influence it.
+	cmd.Env = envWithHome(os.Environ())
 
 	var out bytes.Buffer
 	cmd.Stdout = &out
@@ -141,6 +188,16 @@ func runScriptPrimitive(ctx context.Context, env *ExecEnv, p Primitive, params P
 		return result, fmt.Errorf("%s exited with an error: %w", p.Script.ScriptPath, runErr)
 	}
 	return result, nil
+}
+
+// resolveArgv produces the argument list for one run, from whichever of the two
+// mechanisms the primitive declared. Neither one is reachable from the wire: a
+// template can only emit validated values, and a builder is compiled-in code.
+func resolveArgv(ctx context.Context, env *ExecEnv, p Primitive, params Params) ([]string, error) {
+	if p.Script.ArgsFrom != nil {
+		return p.Script.ArgsFrom(ctx, env, params)
+	}
+	return resolveArgs(p.Script.Args, params)
 }
 
 // resolveArgs fills the "{param}" slots of a fixed template from validated
@@ -240,4 +297,24 @@ func trimPartialRuneAtStart(b []byte) []byte {
 		b = b[1:]
 	}
 	return b
+}
+
+// envWithHome returns env unchanged when it already carries a usable HOME, and
+// otherwise appends one resolved from the passwd entry of the account this
+// process runs as. A later assignment wins in execve, so appending is enough.
+//
+// It falls back to /root only when the passwd lookup itself fails, which on a
+// managed node means a broken account database — and a root process with no
+// home at all is worse than one pointed at the conventional answer.
+func envWithHome(env []string) []string {
+	for _, entry := range env {
+		if strings.HasPrefix(entry, "HOME=") && len(entry) > len("HOME=") {
+			return env
+		}
+	}
+	home := "/root"
+	if u, err := user.Current(); err == nil && u.HomeDir != "" {
+		home = u.HomeDir
+	}
+	return append(env, "HOME="+home)
 }

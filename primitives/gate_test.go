@@ -47,6 +47,16 @@ var pinnedVocabulary = map[string]Class{
 	"provision_certificate": ClassOperate,
 
 	"apply_update": ClassOperate,
+
+	// The restore family. The first destructive primitives, and the pin is
+	// doing more work here than anywhere else in this list: it is the line a
+	// reviewer reads to see that this release taught nine nodes to replace
+	// their own database and their own project tree. They are refused at the
+	// compiled ceiling in this build (Policy.Accepts), so what shipped is the
+	// vocabulary, not the ability.
+	"restore_database": ClassDestructive,
+	"restore_project":  ClassDestructive,
+	"restore_chain":    ClassDestructive,
 }
 
 func TestVocabularyIsPinned(t *testing.T) {
@@ -297,9 +307,17 @@ func TestPrimitiveExecutionEnvIsExplicit(t *testing.T) {
 	// the support bundle rather than a site. No primitive reads a file through
 	// them that it could not read through their site-tree equivalents, and the
 	// verification is the same code against the same compiled-in key.
+	// DBName is pinned deliberately and widens nothing. It is a fact about this
+	// machine's own identity read from this machine's own config, in the same
+	// class as SiteRoot — not a new thing a primitive may touch. A primitive
+	// holding DB can already run SQL against that database; one that does not
+	// hold DB gains no ability by learning its name. It is here because the
+	// control plane stores no column for it, so the alternative was letting the
+	// plane name a node's database, which in the operation that drops a schema
+	// is the plane naming somebody else's.
 	want := map[string]bool{
-		"SiteRoot": true, "WebRoot": true, "DB": true, "Manifest": true,
-		"ToolRoot": true, "ToolManifest": true,
+		"SiteRoot": true, "WebRoot": true, "DB": true, "DBName": true,
+		"Manifest": true, "ToolRoot": true, "ToolManifest": true,
 	}
 
 	fset := token.NewFileSet()

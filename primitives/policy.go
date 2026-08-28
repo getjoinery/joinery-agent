@@ -103,6 +103,16 @@ func refuseAllPolicy(reason string) *Policy {
 // that can accept one — a policy file listing "destructive" still refuses.
 // That is deliberate: the ceiling drops only when the approval verifier lands,
 // in the same release, reviewed together.
+//
+// THIS BRANCH IS THE SEAM. The approval round plugs in HERE and nowhere else:
+// the whole of "restore over the agent" is built, registered and reachable, and
+// the one thing standing between a dispatched restore_chain job and a node
+// replacing its own project tree is the four lines below. That is on purpose,
+// and it is why the branch is unconditional rather than a policy lookup — there
+// is no file, no setting and no wire value that relaxes it, so the change that
+// makes destructive work dispatchable cannot be a configuration change made by
+// somebody who did not read this. It has to be an edit to this function,
+// arriving with the verifier it depends on, in a diff a reviewer sees.
 func (p *Policy) Accepts(class Class) error {
 	if class == ClassDestructive {
 		return refusedf("destructive primitives are never run unattended on this node; " +

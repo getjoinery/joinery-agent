@@ -41,6 +41,22 @@ type ExecEnv struct {
 	// as its own legible failure — while the primitives that need nothing from
 	// it carry on, which on a sick node is most of what is worth knowing.
 	DB DBProvider
+	// DBName is which database on this machine is the site's own, read from
+	// the node's own config (Globalvars_site.php). Empty on a machine with no
+	// site.
+	//
+	// It exists because there is nowhere else the answer lives: the control
+	// plane stores no column for it, so a plane naming a node's database would
+	// be inventing the value — and an invented value aimed at the wrong node
+	// names somebody else's database, in the one operation that drops a schema.
+	// The node knows, so the node says. Same rule as the site name in
+	// run_plugin_installers and the domain in restore_project.
+	//
+	// It is a fact about this machine's own identity, like SiteRoot, and grants
+	// nothing: a primitive that has DB already runs SQL, and one that does not
+	// cannot start doing so by learning a name.
+	DBName string
+
 	// Manifest verifies a file against the signed release manifest before a
 	// script-invoking primitive is allowed to execute it. Never nil in
 	// production; see manifest.go.

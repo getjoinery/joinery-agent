@@ -121,6 +121,12 @@ func Register(p Primitive) {
 	if (p.Run == nil) == (p.Script == nil) {
 		panic(fmt.Sprintf("primitives: primitive %q must set exactly one of Run or Script", p.Name))
 	}
+	// One source of argv, so "where did this argument come from" has one
+	// answer. A spec setting both would silently ignore one of them, and the
+	// ignored one would read as an active constraint to the next reviewer.
+	if p.Script != nil && p.Script.Args != nil && p.Script.ArgsFrom != nil {
+		panic(fmt.Sprintf("primitives: primitive %q sets both Args and ArgsFrom", p.Name))
+	}
 	if err := validateSpecs(p.Params); err != nil {
 		panic(fmt.Sprintf("primitives: primitive %q has a bad parameter spec: %v", p.Name, err))
 	}
