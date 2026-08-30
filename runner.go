@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"os/exec"
-	"strings"
 	"time"
 )
 
@@ -18,7 +17,6 @@ type runnerStore interface {
 	AppendOutput(jobID int64, text string, currentStep int) error
 	CompleteJob(jobID int64) error
 	FailJob(jobID int64, errorMsg string) error
-	GetNodeConnInfo(nodeID int64) (*NodeConnInfo, error)
 	GetNodeAPIInfo(nodeID int64) (*NodeAPIInfo, error)
 	GetBackupTargetCredentials(targetID int64) (string, error)
 	GetBackupTargetNodeCredentials(targetID int64) (string, error)
@@ -26,8 +24,7 @@ type runnerStore interface {
 
 // Runner executes jobs by processing their steps sequentially.
 type Runner struct {
-	db      runnerStore
-	sshPool *SSHPool
+	db runnerStore
 	// secretBoxKey unseals backup-target credentials for __SM_CREDS_<id>__
 	// placeholder resolution. Decoded once at construction; nil if unset or
 	// malformed (placeholder resolution then fails loudly for sealed targets).
@@ -38,8 +35,7 @@ type Runner struct {
 
 func NewRunner(db *DB, secretBoxKey string) *Runner {
 	r := &Runner{
-		db:      db,
-		sshPool: NewSSHPool(),
+		db: db,
 	}
 	if secretBoxKey != "" {
 		if key, err := decodeSecretBoxKey(secretBoxKey); err != nil {
@@ -72,7 +68,6 @@ func partitionSteps(steps []Step) (mainSteps, teardownSteps []Step) {
 // while teardown executes, so the per-node lock in ClaimNextJob is held and
 // the job detail view keeps streaming teardown output.
 func (r *Runner) Execute(job *Job) {
-	defer r.sshPool.CloseAll()
 
 	mainSteps, teardownSteps := partitionSteps(job.Commands.Steps)
 
@@ -179,7 +174,6 @@ func (r *Runner) runTeardown(job *Job, steps []Step, lastIndex int) {
 // by stale recovery: scratch paths are per-job unique and every teardown
 // command is idempotent, so replaying is safe no matter how far the job got.
 func (r *Runner) ReplayTeardown(job *Job) {
-	defer r.sshPool.CloseAll()
 	_, teardownSteps := partitionSteps(job.Commands.Steps)
 	r.runTeardown(job, teardownSteps, job.CurrentStep)
 }
@@ -200,10 +194,13 @@ func (r *Runner) executeStep(job *Job, step *Step, timeout time.Duration) (strin
 	defer cancel()
 
 	switch step.Type {
-	case "ssh":
-		return r.executeSSH(ctx, job, step)
-	case "scp":
-		return r.executeSCP(ctx, job, step)
+	case "ssh", "scp":
+		// Removed deliberately. This was a legacy runner with no connection to
+		// the primitive path, and leaving it in place kept producing designs
+		// that worked around it instead of replacing it. Steps of this type are
+		// still composed plane-side; refusing them here is the tripwire that
+		// says so.
+		return "", fmt.Errorf("SSH and SCP capability is deprecated (step type %q)", step.Type)
 	case "local":
 		return r.executeLocal(ctx, step)
 	case "api":
@@ -211,70 +208,6 @@ func (r *Runner) executeStep(job *Job, step *Step, timeout time.Duration) (strin
 	default:
 		return "", fmt.Errorf("unknown step type %q — valid types are: ssh, scp, local, api", step.Type)
 	}
-}
-
-// executeSSH runs a command on a remote host via SSH.
-func (r *Runner) executeSSH(ctx context.Context, job *Job, step *Step) (string, error) {
-	nodeID := job.NodeID
-	if step.NodeID > 0 {
-		nodeID = step.NodeID
-	}
-
-	if nodeID == 0 {
-		return "", fmt.Errorf("SSH step %q has no target node. The job's node may have been deleted, " +
-			"or this step is missing a node_id field", step.Label)
-	}
-
-	info, err := r.db.GetNodeConnInfo(nodeID)
-	if err != nil {
-		return "", err
-	}
-
-	cmd, err := r.resolveCmd(step.Cmd)
-	if err != nil {
-		return "", err
-	}
-
-	// Wrap in docker exec if node is a container (unless on_host is set)
-	if info.IsContainer() && !step.OnHost {
-		escaped := strings.ReplaceAll(cmd, "'", "'\"'\"'")
-		if info.ContainerUser != "" {
-			cmd = fmt.Sprintf("docker exec -u %s %s bash -c '%s'", info.ContainerUser, info.ContainerName, escaped)
-		} else {
-			cmd = fmt.Sprintf("docker exec %s bash -c '%s'", info.ContainerName, escaped)
-		}
-	}
-
-	return r.sshPool.RunCommand(ctx, info, cmd)
-}
-
-// executeSCP transfers a file between control plane and remote host.
-func (r *Runner) executeSCP(ctx context.Context, job *Job, step *Step) (string, error) {
-	nodeID := job.NodeID
-	if step.NodeID > 0 {
-		nodeID = step.NodeID
-	}
-
-	if nodeID == 0 {
-		return "", fmt.Errorf("SCP step %q has no target node", step.Label)
-	}
-
-	info, err := r.db.GetNodeConnInfo(nodeID)
-	if err != nil {
-		return "", err
-	}
-
-	if step.Direction == "" {
-		return "", fmt.Errorf("SCP step %q missing 'direction' field (must be 'upload' or 'download')", step.Label)
-	}
-	if step.RemotePath == "" {
-		return "", fmt.Errorf("SCP step %q missing 'remote_path' field", step.Label)
-	}
-	if step.LocalPath == "" {
-		return "", fmt.Errorf("SCP step %q missing 'local_path' field", step.Label)
-	}
-
-	return SCPTransfer(ctx, info, step.Direction, step.RemotePath, step.LocalPath)
 }
 
 // executeLocal runs a command on the control plane itself.

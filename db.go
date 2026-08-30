@@ -363,46 +363,6 @@ func (d *DB) UpdateHeartbeat(agentName, agentVersion, bundledVersion, updateStat
 	return err
 }
 
-// GetNodeConnInfo returns connection info for a managed node.
-func (d *DB) GetNodeConnInfo(nodeID int64) (*NodeConnInfo, error) {
-	row := d.conn.QueryRow(`
-		SELECT mgn_id, mgn_host, mgn_ssh_user, mgn_ssh_key_path, mgn_ssh_port,
-		       mgn_container_name, mgn_container_user
-		FROM mgn_managed_nodes
-		WHERE mgn_id = $1
-	`, nodeID)
-
-	var info NodeConnInfo
-	var sshKeyPath, containerName, containerUser sql.NullString
-	var sshPort sql.NullInt32
-
-	err := row.Scan(&info.ID, &info.Host, &info.SSHUser, &sshKeyPath, &sshPort,
-		&containerName, &containerUser)
-	if err == sql.ErrNoRows {
-		return nil, fmt.Errorf("node #%d not found in mgn_managed_nodes. It may have been deleted. "+
-			"Check the node list at /admin/server_manager/nodes", nodeID)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("loading node #%d: %w", nodeID, err)
-	}
-
-	if sshKeyPath.Valid {
-		info.SSHKeyPath = sshKeyPath.String
-	}
-	info.SSHPort = 22
-	if sshPort.Valid {
-		info.SSHPort = int(sshPort.Int32)
-	}
-	if containerName.Valid {
-		info.ContainerName = containerName.String
-	}
-	if containerUser.Valid {
-		info.ContainerUser = containerUser.String
-	}
-
-	return &info, nil
-}
-
 // GetNodeAPIInfo returns management-API connection info for a managed node.
 // Returns an error — NOT just empty strings — if credentials aren't configured,
 // so the api step fails with a clear message instead of silently doing nothing.

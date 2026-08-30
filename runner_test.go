@@ -29,9 +29,6 @@ func (f *fakeStore) FailJob(jobID int64, msg string) error {
 	f.failMsg = msg
 	return nil
 }
-func (f *fakeStore) GetNodeConnInfo(nodeID int64) (*NodeConnInfo, error) {
-	return nil, errors.New("no node info in tests")
-}
 func (f *fakeStore) GetNodeAPIInfo(nodeID int64) (*NodeAPIInfo, error) {
 	return nil, errors.New("no api info in tests")
 }
@@ -45,7 +42,7 @@ func (f *fakeStore) GetBackupTargetNodeCredentials(targetID int64) (string, erro
 // testRunner returns a Runner whose step execution is the given stub.
 // executed collects the labels of every step the stub was asked to run.
 func testRunner(store *fakeStore, executed *[]string, failLabels map[string]bool) *Runner {
-	r := &Runner{db: store, sshPool: NewSSHPool()}
+	r := &Runner{db: store}
 	r.exec = func(job *Job, step *Step, timeout time.Duration) (string, error) {
 		*executed = append(*executed, step.Label)
 		if failLabels[step.Label] {
