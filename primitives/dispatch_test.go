@@ -58,19 +58,47 @@ func TestPolicyRefusalIsRecordedWithAReason(t *testing.T) {
 	}
 }
 
-// The compiled ceiling: destructive is refused even by a policy that accepts
-// it, because the node-verified approval path does not exist in this build.
-func TestDestructiveIsRefusedEvenWhenPolicyAcceptsIt(t *testing.T) {
+// Accepting the destructive CLASS means "this node is willing to be asked", and
+// nothing more. The thing that actually decides is in Execute, and this pins the
+// division: a policy that accepts destructive still cannot get a restore run.
+func TestAcceptingDestructiveIsNotPermissionToRun(t *testing.T) {
 	permissive := &Policy{
 		Accept: []Class{ClassObserve, ClassOperate, ClassDestructive},
-		source: "a policy file that tried to allow destructive work",
+		source: "a policy file that allows destructive work",
 	}
-	err := permissive.Accepts(ClassDestructive)
+	if err := permissive.Accepts(ClassDestructive); err != nil {
+		t.Fatalf("a policy that lists destructive should accept the class: %v", err)
+	}
+
+	// And a node with that policy, with no way to ask its operator, still runs
+	// nothing. This is the assertion that matters — if it ever passes because
+	// the restore RAN, the whole mechanism is gone.
+	env := restoreEnv(t)
+	env.Approval = nil
+	_, err := Execute(context.Background(), env, permissive, Request{
+		JobID: 1, Primitive: "restore_database", Params: map[string]interface{}{},
+	})
 	if !Refused(err) {
-		t.Fatalf("destructive must be refused unattended everywhere (A2), got %v", err)
+		t.Fatalf("destructive work must never run unapproved (A2), got %v", err)
 	}
-	if !strings.Contains(err.Error(), "approval") {
-		t.Errorf("the refusal should point at the missing approval verifier; got %q", err)
+	if !strings.Contains(err.Error(), "approve") {
+		t.Errorf("the refusal should say the node cannot ask; got %q", err)
+	}
+}
+
+// A node that leaves destructive out of its own policy file refuses at the
+// class, before anything is asked of anyone. That is the opt-out, and it wins.
+func TestAPolicyWithoutDestructiveRefusesOutright(t *testing.T) {
+	quiet := &Policy{
+		Accept: []Class{ClassObserve, ClassOperate},
+		source: "a policy file that wants no destructive work at all",
+	}
+	err := quiet.Accepts(ClassDestructive)
+	if !Refused(err) {
+		t.Fatalf("a policy without destructive must refuse it, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "wants no destructive work") {
+		t.Errorf("the refusal must name the policy that caused it; got %q", err)
 	}
 }
 

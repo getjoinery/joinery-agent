@@ -83,7 +83,10 @@ func init() {
 		// large tree plus the inner database load genuinely uses it, and a
 		// deadline under the work would kill a project restore part-way through
 		// extracting over a live site — the worst state this operation has.
-		Timeout: 70 * time.Minute,
+		Describe: describeRestoreProject,
+		// The work, plus the window in which a human on this machine's own site
+		// answers the approval — the wait happens inside this deadline.
+		Timeout: 70*time.Minute + ApprovalWindow,
 	})
 }
 

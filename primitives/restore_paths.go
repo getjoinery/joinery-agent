@@ -110,7 +110,144 @@ func resolveBackupFile(ctx context.Context, env *ExecEnv, params Params, suffixe
 	if err != nil || !info.Mode().IsRegular() {
 		return "", refusedf("this node has no backup called %q in %s", name, dir)
 	}
+
+	// RULE 3, ADDED WITH THE DISPATCH ROUND: the archive has to be one this
+	// machine remembers making.
+	//
+	// Rules 1 and 2 stop the plane naming a path and stop it sending a key. They
+	// do not stop it choosing the BYTES: the plane owns the bucket, signs the
+	// download, and picks the name a fetched object lands under, while the
+	// operator approving the restore approves a name and never sees content. So
+	// the last question — is this file the one this machine uploaded under this
+	// name — is answered against a record the plane has never been able to
+	// touch: the node-side upload ledger, written by the backup run itself at
+	// upload time.
+	//
+	// It is checked HERE, immediately before a root process reads the file,
+	// rather than only where the file arrived. download_backup verifies what it
+	// fetches, which closes the delivery path; this closes the path where
+	// something already sitting in the backup directory has been changed since.
+	// A restore drops a schema or replaces a tree, so "was this ever tampered
+	// with" is a question that belongs at the moment of use.
+	if err := verifyLedgered(env, profile, name, path); err != nil {
+		return "", err
+	}
 	return path, nil
+}
+
+// requireStagedChain refuses unless a chain workspace holds the two things
+// staging leaves behind, and unless its manifest is one this machine recorded
+// uploading.
+//
+// Split out of restoreChainArgs so the approval statement can make exactly the
+// same checks before the operator is shown anything. An approval screen for a
+// restore that would refuse the instant it was approved is worse than no screen:
+// it spends the one moment of the operator's attention this design gets.
+func requireStagedChain(env *ExecEnv, work string) error {
+	manifest := filepath.Join(work, chainManifestFile)
+	if info, err := os.Stat(manifest); err != nil || !info.Mode().IsRegular() {
+		return refusedf("this node has no downloaded chain at %s: %s is missing. "+
+			"Stage the chain first (the stage_chain primitive downloads what the chain manifest "+
+			"names and recovers the data key from this machine's own key)",
+			work, chainManifestFile)
+	}
+
+	key := filepath.Join(work, chainKeyFile)
+	if info, err := os.Stat(key); err != nil || !info.Mode().IsRegular() {
+		return refusedf("the chain at %s has no recovered data key (%s). "+
+			"It is recovered on this node, from this node's own backup_site_key, by stage_chain. "+
+			"No key may be sent to it: a key on the wire is a key in every stored job",
+			work, chainKeyFile)
+	}
+
+	// The manifest against the ledger, under whichever shelf this machine
+	// recorded uploading it to. The manifest carries every artifact's expected
+	// size and hash, so restore_chain.sh's own verification is only worth as
+	// much as the manifest is — which makes this the check the whole chain
+	// restore rests on.
+	relname := filepath.Base(work)
+	if strings.HasPrefix(relname, chainWorkspacePrefix) {
+		relname = strings.TrimPrefix(relname, chainWorkspacePrefix) + "/" + chainManifestFile
+	} else {
+		relname = chainManifestFile
+	}
+	// Both shelves are tried because a chain workspace does not record which one
+	// its chain came from — the profile decides a bucket path, and by the time
+	// anything is staged that question is settled.
+	//
+	// WHICH REFUSAL COMES BACK MATTERS. Every chain lives on exactly one shelf,
+	// so the other one truthfully has no record of it, and returning the last
+	// error meant a manifest whose BYTES were wrong was reported as a manifest
+	// nobody had ever heard of — the same message a pre-ledger archive gets, and
+	// a completely different problem. Prefer a refusal from a shelf that has
+	// actually heard of this chain.
+	var noRecord error
+	for _, profile := range []BackupProfile{ProfileManager, ProfileSite} {
+		err := verifyLedgered(env, profile, relname, manifest)
+		if err == nil {
+			return nil
+		}
+		if _, known := ledgerFact(env, profile, relname); known {
+			return err
+		}
+		if noRecord == nil {
+			noRecord = err
+		}
+	}
+	return noRecord
+}
+
+// nodeProjectName is what THIS machine calls its own project: the last segment
+// of its site root, which is the directory restore_chain.sh replaces
+// (/var/www/html/<project>) and the name it hands the database engine.
+//
+// Empty on a machine with no site, and that is a real answer rather than a
+// missing one — a siteless machine has no project to restore into.
+func nodeProjectName(env *ExecEnv) string {
+	if env == nil || env.SiteRoot == "" {
+		return ""
+	}
+	return filepath.Base(env.SiteRoot)
+}
+
+// restoreChainProject answers which project a chain restore lands in, and
+// refuses to let the plane answer it differently from this machine.
+//
+// The project is not a label. restore_chain.sh uses it twice: as the tree it
+// replaces, and as the DATABASE NAME it hands the restore engine. So a value the
+// plane chooses is a plane naming a database to drop — the exact thing
+// restoreDatabaseTarget exists to stop it doing for restore_database, and the
+// reason restore_project.sh is told no domain. The script has a check of its own
+// (the archive's carried root directory must be the target's last segment), but
+// that check happens after a root process has started, reads a chain the plane
+// staged, and says nothing at all about the database name.
+//
+// So: this machine's own project is the answer. A job that names the same one
+// passes through — the plane derives it from its own record of the node's web
+// root, and agreement is the normal case. A job that names a different one is
+// refused, naming both, because there is no legitimate restore of this machine's
+// own chain into somebody else's project.
+func restoreChainProject(env *ExecEnv, params Params) (string, error) {
+	own := nodeProjectName(env)
+	named := params.String("project")
+
+	if own == "" {
+		if named == "" {
+			return "", refusedf("this node cannot say which project is its own, so it will not " +
+				"guess which one to replace")
+		}
+		// A machine with no site root of its own has nothing to check against.
+		// It also has nothing to restore, so this is very nearly unreachable —
+		// but taking the job's word is the only thing left, and saying so here
+		// is better than a silent fallback.
+		return named, nil
+	}
+	if named != "" && named != own {
+		return "", refusedf("this restore names the project %q, and this machine's own project is %q. "+
+			"A chain restore replaces that project's files AND loads over the database of the same "+
+			"name, so it will only ever do that to its own", named, own)
+	}
+	return own, nil
 }
 
 // restoreProfile reads the profile parameter: whose backups to look among.

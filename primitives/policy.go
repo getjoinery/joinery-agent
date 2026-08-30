@@ -30,11 +30,24 @@ type Policy struct {
 }
 
 // ShippedPolicy is the fleet-uniform policy of §3.3: observe yes, operate yes,
-// destructive refused unattended — everywhere, own nodes included (A1/A2).
-// A node with no policy file runs this.
+// destructive only behind an approval this node issues and verifies itself —
+// everywhere, own nodes included (A1/A2). A node with no policy file runs this.
+//
+// DESTRUCTIVE IS LISTED HERE, AND THAT IS NOT A RELAXATION OF A2. A2 says a
+// destructive job is never run UNATTENDED. It is not unattended: Execute
+// requires an operator on this machine's own site to open a challenge sealed to
+// this machine's recovery key and answer it, for that job, before a destructive
+// primitive runs at all. Listing the class here is what lets the fleet's
+// existing nodes approve a restore with a key they already hold — the
+// alternative was pushing a new policy file to every node, which is an
+// enrolment step, and an enrolment step is the thing this design was chosen to
+// avoid.
+//
+// A node that wants restores refused outright, approval or not, drops
+// "destructive" from its own policy file. That still works and still wins.
 func ShippedPolicy() *Policy {
 	return &Policy{
-		Accept: []Class{ClassObserve, ClassOperate},
+		Accept: []Class{ClassObserve, ClassOperate, ClassDestructive},
 		source: "the shipped fleet-uniform policy (no policy file on this node)",
 	}
 }
@@ -93,31 +106,31 @@ func refuseAllPolicy(reason string) *Policy {
 	return &Policy{Accept: nil, source: reason}
 }
 
-// Accepts reports whether this node will run a primitive of the given class
-// unattended, returning a refusal naming the reason when it will not.
+// Accepts reports whether this node will consider a primitive of the given
+// class at all, returning a refusal naming the reason when it will not.
 //
-// The destructive ceiling is compiled in, above the policy: a destructive job
-// executes only when it carries a signature, over a node-issued challenge
-// bound to that specific job, that the agent verifies itself (§3.3, sentinel
-// §13.O10). No such verifier exists in this build, so there is no code path
-// that can accept one — a policy file listing "destructive" still refuses.
-// That is deliberate: the ceiling drops only when the approval verifier lands,
-// in the same release, reviewed together.
+// IT IS NOT THE WHOLE OF THE DESTRUCTIVE GATE, and reading it as such is the
+// mistake this comment exists to prevent. Accepting the class means "this node
+// is willing to be ASKED", never "this node will do it". The second half lives
+// in Execute: a ClassDestructive job runs only after an operator on this
+// machine's own site has opened a challenge sealed to this machine's own backup
+// recovery key — bound to that job and to the node's own statement of what it
+// would do — and answered with what was inside it. There is no configuration
+// value, on this node or anywhere else, that skips that.
 //
-// THIS BRANCH IS THE SEAM. The approval round plugs in HERE and nowhere else:
-// the whole of "restore over the agent" is built, registered and reachable, and
-// the one thing standing between a dispatched restore_chain job and a node
-// replacing its own project tree is the four lines below. That is on purpose,
-// and it is why the branch is unconditional rather than a policy lookup — there
-// is no file, no setting and no wire value that relaxes it, so the change that
-// makes destructive work dispatchable cannot be a configuration change made by
-// somebody who did not read this. It has to be an edit to this function,
-// arriving with the verifier it depends on, in a diff a reviewer sees.
+// The two halves are apart because they answer different questions with
+// different information. This one is about a CLASS and knows nothing else: no
+// job, no parameters, no way to reach the machine's own state. The approval is
+// about one job's real archive, real age and real size, which only exists after
+// the parameters have been validated. Folding them together would have meant
+// either approving a class in the abstract or giving the policy file a
+// dependency on the whole environment.
+//
+// A node that wants destructive work refused outright — approval or not — says
+// so by leaving "destructive" out of its own root-owned policy file, and that
+// refusal is final: the plane cannot argue with it and neither can an operator
+// at a keyboard.
 func (p *Policy) Accepts(class Class) error {
-	if class == ClassDestructive {
-		return refusedf("destructive primitives are never run unattended on this node; " +
-			"they require a node-verified approval signature, and this agent has no approval verifier yet")
-	}
 	for _, accepted := range p.Accept {
 		if accepted == class {
 			return nil
@@ -144,5 +157,21 @@ func (p *Policy) Describe() string {
 		}
 		out += " " + n
 	}
-	return out + " (destructive always refused) — from " + p.source
+	// Named explicitly, because "accepts destructive" on a startup line would
+	// otherwise read as "this node will restore when told to", which is exactly
+	// the opposite of what it means.
+	if p.acceptsClass(ClassDestructive) {
+		out += " (destructive only behind an approval answered on this machine)"
+	}
+	return out + " — from " + p.source
+}
+
+// acceptsClass is the plain membership test, without the refusal message.
+func (p *Policy) acceptsClass(class Class) bool {
+	for _, accepted := range p.Accept {
+		if accepted == class {
+			return true
+		}
+	}
+	return false
 }

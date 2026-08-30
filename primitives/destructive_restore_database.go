@@ -100,7 +100,10 @@ func init() {
 		// a killed one, and a restore killed mid-load is the single worst state
 		// this operation has (RESTORE_LOAD_FAILED — the only marker that can
 		// leave the database modified). So: the SSH budget, plus slack.
-		Timeout: 70 * time.Minute,
+		Describe: describeRestoreDatabase,
+		// The work, plus the window in which a human on this machine's own site
+		// answers the approval — the wait happens inside this deadline.
+		Timeout: 70*time.Minute + ApprovalWindow,
 	})
 }
 

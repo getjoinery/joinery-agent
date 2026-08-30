@@ -2,7 +2,6 @@ package primitives
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"regexp"
 	"time"
@@ -46,6 +45,10 @@ func init() {
 		Params: []ParamSpec{
 			// Which project the chain is restored into. Same bound as
 			// restore_project: one directory segment, no separator.
+			//
+			// It is CROSS-CHECKED, not obeyed — restoreChainProject refuses any
+			// value but this machine's own, because restore_chain.sh spends it
+			// twice: on the tree it replaces and on the database it loads over.
 			{Name: "project", Type: ParamString, Required: true, MaxLen: 128,
 				Pattern: regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)},
 
@@ -85,7 +88,13 @@ func init() {
 		// that is genuinely used: a chain restore verifies every artifact
 		// against its recorded size and hash before writing anything, then
 		// applies a full plus every incremental in order. Plus slack.
-		Timeout: 2*time.Hour + 20*time.Minute,
+		Describe: describeRestoreChain,
+		// The work, plus the window in which a human on this machine's own site
+		// answers the approval. The wait happens inside this deadline — the job
+		// is claimed and held while the challenge is outstanding — so a timeout
+		// sized for the restore alone would kill jobs during the approval it
+		// requires.
+		Timeout: 2*time.Hour + 20*time.Minute + ApprovalWindow,
 	})
 }
 
@@ -97,29 +106,26 @@ func restoreChainArgs(ctx context.Context, env *ExecEnv, params Params) ([]strin
 	chainID := params.String("chain_id")
 	work := chainWorkspace(ctx, env, chainID)
 
-	// The two things the earlier steps would have left behind. Checked here,
-	// before a root process starts, so the answer names what is missing instead
-	// of arriving as restore_chain.sh's "--key-file is required" — which is
-	// true, and tells an operator nothing about why.
-	manifest := filepath.Join(work, chainManifestFile)
-	if info, err := os.Stat(manifest); err != nil || !info.Mode().IsRegular() {
-		return nil, refusedf("this node has no downloaded chain at %s: %s is missing. "+
-			"Downloading a chain's artifacts is not yet something this agent can do on its own — "+
-			"it needs the node-side step that reads the chain manifest and fetches what it names",
-			work, chainManifestFile)
+	// What staging left behind, and that its manifest is one this machine
+	// recorded uploading. Checked before a root process starts, so the answer
+	// names what is missing instead of arriving as restore_chain.sh's
+	// "--key-file is required" — which is true, and tells an operator nothing
+	// about why.
+	if err := requireStagedChain(env, work); err != nil {
+		return nil, err
 	}
-
 	key := filepath.Join(work, chainKeyFile)
-	if info, err := os.Stat(key); err != nil || !info.Mode().IsRegular() {
-		return nil, refusedf("the chain at %s has no recovered data key (%s). "+
-			"It is recovered on this node from this node's own backup_site_key, with "+
-			"backup_envelope.php open against the chain manifest — a step this agent cannot yet "+
-			"run on its own. No key may be sent to it: a key on the wire is a key in every stored job",
-			work, chainKeyFile)
+
+	// This machine's own project, cross-checked against the one the job names.
+	// See restoreChainProject: the value is a database name as well as a
+	// directory, so it is not the plane's to choose.
+	project, err := restoreChainProject(env, params)
+	if err != nil {
+		return nil, err
 	}
 
 	argv := []string{
-		params.String("project"),
+		project,
 		"--artifacts", work,
 		"--key-file", key,
 		// Same reason as restore_project: there is no terminal to confirm at.

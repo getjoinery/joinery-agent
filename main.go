@@ -20,7 +20,7 @@ import (
 // must stay ABOVE 1.1.0 forever - install_agent.sh's downgrade guard sorts
 // with sort -V and refuses to replace a "newer" binary, so anything below
 // 1.1.0 strands those agents permanently.
-var version = "1.12.0"
+var version = "1.13.0"
 
 // How often the idle loop looks at the shipped agent_dist manifest. Update
 // checks never run while a job is executing.
@@ -138,6 +138,16 @@ func startRemoteSource(cfg *Config, db *DB, jobLock *sync.Mutex, agentVersion st
 		// second script root would be a second answer.
 		ToolRoot:     toolRoot(cfg),
 		ToolManifest: bundleVerifier(cfg),
+
+		// How this machine asks its OWN operator to authorize a destructive
+		// job. Set from the same database handle the collectors use, and set
+		// unconditionally: a machine with no database is a machine that cannot
+		// ask, and SettingsApproval refuses in that case rather than the caller
+		// having to remember to. Never nil, so "the gate was not wired" can
+		// never quietly mean "there was no gate" — Execute refuses a
+		// destructive job without one, but a nil here would be a deployment
+		// mistake presenting as a policy.
+		Approval: NewSettingsApproval(db),
 	}
 
 	source := NewRemoteSource(identity, policy, env, jobLock, agentVersion)

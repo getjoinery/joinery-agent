@@ -79,6 +79,14 @@ type ExecEnv struct {
 	// bundle carries. Same contract as Manifest, same compiled-in key, and the
 	// same posture when it is absent: no manifest means no script runs.
 	ToolManifest ManifestVerifier
+
+	// Approval is how this node asks its OWN operator to authorize a
+	// destructive job. Nil means it cannot ask, and a node that cannot ask
+	// refuses every destructive job — see Execute. It is a field here, rather
+	// than something a primitive reaches for, for the reason the type comment
+	// gives: everything a primitive can touch is named in this struct, so
+	// widening the boundary is a visible change rather than an import.
+	Approval ApprovalGate
 }
 
 // DBProvider hands back a usable database connection, or says why not.
@@ -109,6 +117,30 @@ func Execute(ctx context.Context, env *ExecEnv, policy *Policy, req Request) (ma
 		return nil, err
 	}
 
+	// CAN this node be asked at all? A question about the node and the binary,
+	// not about the job, so it is answered here beside the policy check and
+	// ahead of the parameters. A machine that cannot reach its own operator
+	// refuses every destructive job, and says that rather than reporting
+	// whichever parameter happened to be wrong.
+	//
+	// Nil is never "nobody objected". A build that forgot to wire the gate, or
+	// a deployment that could not reach the database to ask, is a machine that
+	// does not restore.
+	if p.Class == ClassDestructive {
+		if env == nil || env.Approval == nil {
+			return nil, refusedf("this node has no way to ask its own operator to approve a %s, "+
+				"so it will not run one", p.Name)
+		}
+		if p.Describe == nil {
+			// Register refuses to build such a primitive, so reaching this is a
+			// broken binary rather than a bad job. Refuse anyway: an
+			// unapprovable destructive primitive must never fall through to
+			// running.
+			return nil, refusedf("primitive %q is destructive but cannot say what it would do, "+
+				"so there is nothing an operator could approve", p.Name)
+		}
+	}
+
 	params, err := Validate(p.Params, req.Params)
 	if err != nil {
 		return nil, err
@@ -119,8 +151,41 @@ func Execute(ctx context.Context, env *ExecEnv, policy *Policy, req Request) (ma
 	// primitives alike: before this, RemoteSource handed both the agent's ROOT
 	// context, so a wedged transfer was bounded only by whatever the script
 	// bounded itself with, and an embedded primitive by nothing at all.
+	//
+	// IT COVERS THE APPROVAL WAIT TOO, and that placement is load-bearing. A
+	// destructive job is claimed and then HELD while a person at this machine
+	// answers a challenge, and the plane's claim budget bounds the whole claim,
+	// not the work inside it. With the deadline started after the approval
+	// instead, a restore could spend the full approval window AND then the full
+	// work budget — over the plane's ceiling — and the plane would hand the job
+	// out a second time while the first copy was still restoring. Two concurrent
+	// restores is the one thing in this vocabulary that destroys what it was
+	// recovering. Each restore primitive's declared Timeout therefore includes
+	// ApprovalWindow, and the two numbers have to stay on the same side of this
+	// line.
 	ctx, cancel := context.WithTimeout(ctx, p.Timeout)
 	defer cancel()
+
+	// THE APPROVAL ITSELF, for anything that destroys. After validation,
+	// because the statement the operator approves is composed from validated
+	// parameters — nobody should be shown an approval screen for a job the node
+	// was going to reject anyway — and before any primitive code runs, because
+	// the whole point is that nothing happens until a human on this machine
+	// says so.
+	//
+	// Deliberately NOT inside Policy.Accepts. That answers a question about a
+	// CLASS and has no job, no parameters and no way to reach the node's own
+	// state; folding the approval into it would have meant either approving a
+	// class in the abstract or giving the policy a dependency on everything.
+	if p.Class == ClassDestructive {
+		statement, err := p.Describe(ctx, env, params)
+		if err != nil {
+			return nil, err
+		}
+		if err := env.Approval.Require(ctx, req.JobID, statement); err != nil {
+			return nil, err
+		}
+	}
 
 	if p.Script != nil {
 		return runScriptPrimitive(ctx, env, p, params)

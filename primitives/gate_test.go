@@ -48,12 +48,23 @@ var pinnedVocabulary = map[string]Class{
 
 	"apply_update": ClassOperate,
 
-	// The restore family. The first destructive primitives, and the pin is
-	// doing more work here than anywhere else in this list: it is the line a
-	// reviewer reads to see that this release taught nine nodes to replace
-	// their own database and their own project tree. They are refused at the
-	// compiled ceiling in this build (Policy.Accepts), so what shipped is the
-	// vocabulary, not the ability.
+	// Bringing a backup back off the shelf, so there is something to restore
+	// FROM. Both are operate, and that classification is the load-bearing part
+	// of the pin: writing a file into a backup directory destroys nothing, so
+	// these ship and work on nodes that cannot yet be asked to approve
+	// anything. A future change that made either destructive would be trading a
+	// working recovery path for a refusal, and should be argued for here.
+	"download_backup": ClassOperate,
+	"stage_chain":     ClassOperate,
+
+	// The restore family. The destructive primitives, and the pin is doing more
+	// work here than anywhere else in this list: it is the line a reviewer
+	// reads to see that this release taught nine nodes to replace their own
+	// database and their own project tree. They are DISPATCHABLE in this build,
+	// and what stands between one of them and a replaced project tree is an
+	// operator on that machine's own site opening a challenge sealed to that
+	// machine's own backup recovery key. See Execute, which requires it, and
+	// SettingsApproval, which is the only implementation of it.
 	"restore_database": ClassDestructive,
 	"restore_project":  ClassDestructive,
 	"restore_chain":    ClassDestructive,
@@ -318,6 +329,12 @@ func TestPrimitiveExecutionEnvIsExplicit(t *testing.T) {
 	want := map[string]bool{
 		"SiteRoot": true, "WebRoot": true, "DB": true, "DBName": true,
 		"Manifest": true, "ToolRoot": true, "ToolManifest": true,
+		// How a destructive primitive gets authorized. This is the largest
+		// single addition to the boundary the package has taken: it lets
+		// Execute BLOCK, holding a claimed job open while a human at this
+		// machine's own site decides. Pinned deliberately, and worth reading
+		// the approval.go type comment before changing.
+		"Approval": true,
 	}
 
 	fset := token.NewFileSet()

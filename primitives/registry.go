@@ -74,6 +74,16 @@ type Primitive struct {
 	// target file verifies against the signed release manifest (§3.2).
 	Script *ScriptSpec
 
+	// Describe composes this node's own account of what a job would do, for the
+	// operator who has to approve it. REQUIRED on ClassDestructive and
+	// meaningless anywhere else; Register enforces both.
+	//
+	// The node composes it, from the node's own records — not the plane, which
+	// is the party whose word is not being taken. It receives validated params
+	// and the same ExecEnv a run would, so it can state the real archive, its
+	// real age and its real size rather than what a job row claimed.
+	Describe func(ctx context.Context, env *ExecEnv, p Params) (ApprovalStatement, error)
+
 	// Timeout is how long this primitive may run before the node kills it.
 	// Zero means DefaultTimeout.
 	//
@@ -129,6 +139,18 @@ func Register(p Primitive) {
 	}
 	if err := validateSpecs(p.Params); err != nil {
 		panic(fmt.Sprintf("primitives: primitive %q has a bad parameter spec: %v", p.Name, err))
+	}
+	// A destructive primitive that cannot describe itself is one no operator
+	// could meaningfully approve, and approving it anyway would make the
+	// approval a formality. A panic at process start rather than a refusal at
+	// job time, for the reason every other check here is: a malformed
+	// vocabulary is a build mistake, and an agent that started with one is an
+	// agent whose refusals cannot be trusted.
+	if p.Class == ClassDestructive && p.Describe == nil {
+		panic(fmt.Sprintf("primitives: destructive primitive %q has no Describe", p.Name))
+	}
+	if p.Class != ClassDestructive && p.Describe != nil {
+		panic(fmt.Sprintf("primitives: primitive %q is not destructive but declares Describe", p.Name))
 	}
 	if p.Timeout < 0 || p.Timeout > MaxTimeout {
 		panic(fmt.Sprintf("primitives: primitive %q declares a timeout of %v, outside (0, %v]", p.Name, p.Timeout, MaxTimeout))

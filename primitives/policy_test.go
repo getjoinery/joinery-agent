@@ -25,8 +25,15 @@ func TestAbsentPolicyFileRunsTheShippedPolicy(t *testing.T) {
 	if err := p.Accepts(ClassOperate); err != nil {
 		t.Errorf("the shipped policy accepts operate: %v", err)
 	}
-	if err := p.Accepts(ClassDestructive); !Refused(err) {
-		t.Error("the shipped policy refuses destructive")
+	// The shipped policy ACCEPTS the destructive class, which means "this node
+	// is willing to be asked" and nothing more — Execute still requires an
+	// operator at this machine's own site to approve the specific job. It is
+	// listed so that the nodes already in the fleet can approve a restore with
+	// a key they already hold; the alternative was pushing a new policy file to
+	// every one of them, which is the enrolment step this design exists to
+	// avoid. See TestAcceptingDestructiveIsNotPermissionToRun.
+	if err := p.Accepts(ClassDestructive); err != nil {
+		t.Errorf("the shipped policy is willing to be asked about destructive work: %v", err)
 	}
 }
 
@@ -94,7 +101,8 @@ func TestMalformedPolicyFileRefusesEverything(t *testing.T) {
 
 func TestDescribeSaysWhatIsAcceptedAndWhy(t *testing.T) {
 	got := ShippedPolicy().Describe()
-	for _, want := range []string{"observe", "operate", "destructive always refused"} {
+	for _, want := range []string{"observe", "operate",
+		"destructive only behind an approval answered on this machine"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("Describe() = %q, missing %q", got, want)
 		}
