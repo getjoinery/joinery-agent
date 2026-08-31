@@ -390,7 +390,7 @@ func (w *JoinWatcher) readSetting(name string) (string, error) {
 }
 
 func (w *JoinWatcher) writeSetting(name, value string) {
-	writeAgentSetting(w.db, name, value)
+	_ = writeAgentSetting(w.db, name, value)
 }
 
 func readAgentSetting(db *DB, name string) (string, error) {
@@ -406,7 +406,7 @@ func readAgentSetting(db *DB, name string) (string, error) {
 	return value.String, nil
 }
 
-func writeAgentSetting(db *DB, name, value string) {
+func writeAgentSetting(db *DB, name, value string) error {
 	_, err := db.SQL().Exec(
 		`INSERT INTO stg_settings (stg_name, stg_value, stg_usr_user_id, stg_create_time, stg_update_time, stg_group_name)
 		 VALUES ($1, $2, 1, NOW(), NOW(), 'general')
@@ -415,6 +415,7 @@ func writeAgentSetting(db *DB, name, value string) {
 	if err != nil {
 		log.Printf("settings: could not write %s: %v", name, err)
 	}
+	return err
 }
 
 func (w *JoinWatcher) writeJoinState(state map[string]interface{}) {

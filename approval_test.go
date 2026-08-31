@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -34,6 +35,11 @@ type fakeSettings struct {
 	// onWrite fires after each write, so a test can answer a challenge the
 	// instant it appears rather than racing the poll interval.
 	onWrite func(name, value string)
+	// writeErr makes one named write fail; swallow makes one report success
+	// and store nothing. Two different lies a settings table can tell.
+	writeErr     error
+	writeErrName string
+	swallow      map[string]bool
 }
 
 func newFakeSettings(seed map[string]string) *fakeSettings {
@@ -50,14 +56,27 @@ func (f *fakeSettings) Read(name string) (string, error) {
 	return f.values[name], nil
 }
 
-func (f *fakeSettings) Write(name, value string) {
+func (f *fakeSettings) Write(name, value string) error {
 	f.mu.Lock()
+	if f.writeErr != nil && name == f.writeErrName {
+		err := f.writeErr
+		f.mu.Unlock()
+		return err
+	}
+	if f.swallow != nil && f.swallow[name] {
+		// Reports success and stores nothing — the shape of a settings write
+		// that cannot be observed to have failed. This is what a node looks
+		// like when its own site never shows the approval screen.
+		f.mu.Unlock()
+		return nil
+	}
 	f.values[name] = value
 	hook := f.onWrite
 	f.mu.Unlock()
 	if hook != nil {
 		hook(name, value)
 	}
+	return nil
 }
 
 // provenKeyStore is a machine with a recovery key whose possession has been
@@ -422,5 +441,52 @@ func TestStrayWhitespaceDoesNotRefuseAGenuineApproval(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("a correct answer with stray whitespace must still be accepted: %v", err)
+	}
+}
+
+// --- The staging handoff must not fail silently -------------------------------
+
+func TestAnApprovalThatCannotBeStagedRefusesInsteadOfWaiting(t *testing.T) {
+	// The first live restore attempt failed this way and nothing said so: the
+	// node sealed a challenge, wrote it to a settings row, waited the full
+	// fifteen minutes and reported "no one approved" — while the operator sat on
+	// an admin page that had never been given anything to show. A write that
+	// cannot report failure makes "nobody was asked" and "nobody said yes" the
+	// same outcome, and they are opposite problems.
+	store, _ := provenKeyStore(t)
+	store.writeErr = errors.New("relation stg_settings is read only")
+	store.writeErrName = settingApprovalRequest
+
+	gate := &SettingsApproval{store: store}
+	err := gate.Require(context.Background(), 77, primitives.ApprovalStatement{
+		Primitive: "restore_database", Summary: "erase and reload"})
+
+	if err == nil {
+		t.Fatal("a restore whose approval could not be staged was allowed to proceed")
+	}
+	if !strings.Contains(err.Error(), "nobody would ever have been shown") {
+		t.Errorf("the refusal does not say the screen was never shown: %v", err)
+	}
+	if strings.Contains(err.Error(), "no one approved") {
+		t.Error("a staging failure is reported as an operator declining to approve")
+	}
+}
+
+func TestAStagingWriteThatStoresNothingIsCaughtByReadingItBack(t *testing.T) {
+	// The harder case, and the one a returned error does not cover: the write
+	// reports success and the row is not there. Only asking the row settles it,
+	// so the check is a read-back rather than trust in the return value.
+	store, _ := provenKeyStore(t)
+	store.swallow = map[string]bool{settingApprovalRequest: true}
+
+	gate := &SettingsApproval{store: store}
+	err := gate.Require(context.Background(), 78, primitives.ApprovalStatement{
+		Primitive: "restore_database", Summary: "erase and reload"})
+
+	if err == nil {
+		t.Fatal("a restore whose approval was never actually stored was allowed to proceed")
+	}
+	if !strings.Contains(err.Error(), "could not read it back") {
+		t.Errorf("the refusal does not name the read-back: %v", err)
 	}
 }

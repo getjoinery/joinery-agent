@@ -15,12 +15,27 @@ import (
 // the challenge was bound to a job that no longer exists, so the second dispatch
 // would issue a second challenge and the first approval would be worthless.
 //
-// Fifteen minutes: long enough for someone to reach the machine's own admin page
-// and find their recovery key, short enough that a restore nobody is watching
-// fails as a refusal rather than pinning the node until the plane's claim
-// budget runs out. Each restore primitive adds this to its own deadline, so the
-// wait is inside the job rather than on top of it.
-const ApprovalWindow = 15 * time.Minute
+// AN HOUR, and the number is a symptom of the design rather than a judgement
+// about people. It was fifteen minutes, which assumed an operator standing by
+// with their recovery key already to hand. The real case is someone at work, in
+// a meeting, or asleep — and for that the honest answer is not a longer hold but
+// no hold at all: stage the challenge, release the job, and pick the answer up
+// on a later poll. That is specced in `deferred_destructive_approval.md`, and
+// until it lands this constant is bounded by what a node can afford to be deaf
+// for, NOT by what is convenient for the person approving.
+//
+// So: an hour covers a meeting, and costs a node up to an hour of answering
+// nothing else — its scheduled backup queues behind the restore rather than
+// being lost. Twelve hours, which is what the requirement actually wants, would
+// take a managed node out of monitoring for half a day and delay noticing a
+// genuinely crashed restore by the same amount, because the plane's claim budget
+// has to exceed this. That is the trade the deferred design removes.
+//
+// Each restore primitive adds this to its own deadline, so the wait is inside
+// the job rather than on top of it, and every plane-side claim budget must
+// exceed the total — pinned by primitive_transport_parity_test.php, which reads
+// this constant out of the source.
+const ApprovalWindow = 60 * time.Minute
 
 // The gate a destructive job passes before anything runs.
 //

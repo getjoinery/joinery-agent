@@ -164,11 +164,12 @@ func restoreDatabaseTarget(env *ExecEnv, params Params) (string, error) {
 //     primitive while decrypting it fine over SSH, and the failure reads as a
 //     bad key rather than a key in the wrong place.
 //
-//  2. THERE IS NO ENVELOPE FALLBACK IN THIS SCRIPT. restore_project.sh 1.3.0
-//     opens the .keys.json sidecar beside an archive with the site's own key;
-//     restore_database.sh has no such step, and the SSH path supplied it from
-//     outside (step_resolve_restore_key). So an archive sealed to an envelope
-//     rather than to the legacy standing key is restorable over SSH and not over
-//     this primitive. Closing that means giving restore_database.sh the sidecar
-//     resolution its sibling already has — a platform change, and the right one,
-//     since it also fixes the by-hand case.
+//  2. THE ENVELOPE SIDECAR HAS TO BE BESIDE THE ARCHIVE. restore_database.sh
+//     3.4 opens <archive>.keys.json with this machine's own backup_site_key
+//     when no --key-file is given, exactly as restore_project.sh does, so an
+//     envelope-sealed dump restores unattended over this primitive. What the
+//     node must have is the sidecar as well as the archive: the SSH path
+//     resolved the key from outside (step_resolve_restore_key) and left nothing
+//     on disk, so nothing here inherits it. download_backup fetches the sidecar
+//     with the archive for this reason — its envelope_url parameter is not an
+//     optimisation, it is what makes an envelope-sealed archive restorable.

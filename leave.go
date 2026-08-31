@@ -67,8 +67,8 @@ func (w *LeaveWatcher) Run(ctx context.Context) {
 
 		// The identity is already gone, so a crash between these writes leaves
 		// only stale settings — and a disconnected agent clears those on start.
-		writeAgentSetting(w.db, settingLeaveRequest, "")
-		writeAgentSetting(w.db, settingJoinState, "")
+		_ = writeAgentSetting(w.db, settingLeaveRequest, "")
+		_ = writeAgentSetting(w.db, settingJoinState, "")
 
 		log.Printf("leave: disconnected — restarting into local-only service")
 		os.Exit(0)
@@ -104,5 +104,5 @@ func clearStaleLeaveRequest(db *DB) {
 	if err != nil || strings.TrimSpace(value) == "" {
 		return
 	}
-	writeAgentSetting(db, settingLeaveRequest, "")
+	_ = writeAgentSetting(db, settingLeaveRequest, "")
 }

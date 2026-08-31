@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"golang.org/x/crypto/curve25519"
@@ -95,7 +96,15 @@ const (
 // proving and they are the hardest to reach by hand.
 type approvalStore interface {
 	Read(name string) (string, error)
-	Write(name, value string)
+	// Write REPORTS FAILURE, and that return is not decoration.
+	//
+	// This is the handoff that puts the approval screen in front of a human. A
+	// write that silently does nothing produces a node that seals a challenge
+	// nobody is ever shown and then waits the full window for an answer to a
+	// question it never asked — indistinguishable, from every surface, from an
+	// operator who chose not to approve. The first live restore attempt spent
+	// fifteen minutes in exactly that state.
+	Write(name, value string) error
 }
 
 // dbSettings adapts the agent's database handle to approvalStore, using the same
@@ -103,7 +112,7 @@ type approvalStore interface {
 type dbSettings struct{ db *DB }
 
 func (d dbSettings) Read(name string) (string, error) { return readAgentSetting(d.db, name) }
-func (d dbSettings) Write(name, value string)         { writeAgentSetting(d.db, name, value) }
+func (d dbSettings) Write(name, value string) error   { return writeAgentSetting(d.db, name, value) }
 
 // SettingsApproval asks this machine's own operator, through this machine's own
 // site, using this machine's own recovery key.
@@ -230,16 +239,33 @@ func (a *SettingsApproval) Require(ctx context.Context, jobID int64, statement p
 	// A stale answer from an earlier job must not satisfy this one. Cleared
 	// before the request is published rather than after, so there is no instant
 	// in which a fresh challenge sits beside somebody else's answer.
-	a.store.Write(settingApprovalAnswer, "")
-	a.store.Write(settingApprovalRequest, string(body))
+	if err := a.store.Write(settingApprovalAnswer, ""); err != nil {
+		return &primitives.RefusalError{Reason: "this machine could not clear the previous approval " +
+			"answer from its own settings, so it will not ask for a new one: " + err.Error()}
+	}
+	if err := a.store.Write(settingApprovalRequest, string(body)); err != nil {
+		return &primitives.RefusalError{Reason: "this machine could not put the approval request on its " +
+			"own site, so nobody would ever have been shown it: " + err.Error()}
+	}
+
+	// READ IT BACK. The write reported success; this asks the row whether it
+	// agrees. A staging step that cannot be observed to have worked is the one
+	// place in this mechanism where failure is invisible by construction — every
+	// other refusal names itself, and this one would present as "no one
+	// approved", fifteen minutes later, on a node whose operator was watching an
+	// empty page the whole time.
+	if back, err := a.store.Read(settingApprovalRequest); err != nil || strings.TrimSpace(back) == "" {
+		return &primitives.RefusalError{Reason: "this machine wrote the approval request and could not " +
+			"read it back, so its own site would not have shown it. The restore was not run"}
+	}
 
 	// Whatever happens next, the challenge does not outlive this job. An
 	// unanswered one left on the admin page is an approval screen for a restore
 	// that is no longer running, which is the shape of an operator approving
 	// something that then happens later for reasons they cannot see.
 	defer func() {
-		a.store.Write(settingApprovalRequest, "")
-		a.store.Write(settingApprovalAnswer, "")
+		_ = a.store.Write(settingApprovalRequest, "")
+		_ = a.store.Write(settingApprovalAnswer, "")
 	}()
 
 	log.Printf("  job #%d is destructive and is waiting for approval on this machine's own site (%s)",
@@ -287,7 +313,7 @@ func (a *SettingsApproval) await(ctx context.Context, jobID int64, expected stri
 			// Cleared rather than treated as an error, so a stale row cannot
 			// wedge every future approval.
 			if err == nil {
-				a.store.Write(settingApprovalAnswer, "")
+				_ = a.store.Write(settingApprovalAnswer, "")
 			}
 		}
 
