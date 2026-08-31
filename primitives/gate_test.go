@@ -48,6 +48,18 @@ var pinnedVocabulary = map[string]Class{
 
 	"apply_update": ClassOperate,
 
+	// The managed-domain pair. Both operate, and for the same reason the SSH
+	// they replace was never observe: preparing a domain mints a DKIM key, and
+	// the notice writes four settings. A node whose policy accepts only observe
+	// has to be able to trust that an observe primitive writes nothing.
+	//
+	// managed_domain_notice is the one to read carefully if this list is being
+	// reviewed: it writes SETTINGS, and what makes that bounded rather than
+	// total is that the four setting NAMES are compiled into the node-side
+	// script and are not parameters. See its own file.
+	"managed_domain_prepare": ClassOperate,
+	"managed_domain_notice":  ClassOperate,
+
 	// Bringing a backup back off the shelf, so there is something to restore
 	// FROM. Both are operate, and that classification is the load-bearing part
 	// of the pin: writing a file into a backup directory destroys nothing, so
