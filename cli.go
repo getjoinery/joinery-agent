@@ -75,6 +75,8 @@ func cliUsage(w *os.File) {
 	fmt.Fprintf(w, `joinery-agent %s
 
   joinery-agent join --management-node=URL   ask a management node to adopt this machine
+        [--name=NAME]                        what to be called in the plane's pending list (default: hostname)
+        [--no-wait]                          return once the ask is lodged; the running agent finishes the join
   joinery-agent status                       what this machine is connected to, and its key fingerprint
   joinery-agent leave                        disconnect from the management node and delete the credential
   joinery-agent enable | disable             turn the agent on or off on this machine
@@ -95,10 +97,23 @@ func cliError(format string, args ...interface{}) int {
 
 func cliJoin(args []string) int {
 	planeURL := ""
+	claimedName := ""
+	noWait := false
 	for _, arg := range args {
 		switch {
 		case strings.HasPrefix(arg, "--management-node="):
 			planeURL = strings.TrimSuffix(strings.TrimPrefix(arg, "--management-node="), "/")
+		case strings.HasPrefix(arg, "--name="):
+			// What the plane's operator sees in the pending list. A machine's
+			// hostname is often "localhost" or a container id, which names
+			// nothing; the installer passes something a human recognises.
+			claimedName = strings.TrimSpace(strings.TrimPrefix(arg, "--name="))
+		case arg == "--no-wait":
+			// Lodge the ask and return. The running agent finishes the join
+			// when it is approved (StagedJoinWatcher) — the install path uses
+			// this, because an approval may be hours away and nobody is at
+			// this terminal.
+			noWait = true
 		default:
 			return cliError("unrecognised argument %q; see `joinery-agent help`", arg)
 		}
@@ -137,9 +152,15 @@ func cliJoin(args []string) int {
 			PublicKey:     pub,
 			PrivateKey:    priv,
 			RequestedTime: time.Now().UTC().Format(time.RFC3339),
+			ClaimedName:   claimedName,
 		}
 		if err := staged.save(); err != nil {
 			return cliError("could not store the staged keypair at %s: %v", stagedIdentityPath(), err)
+		}
+	} else if claimedName != "" && claimedName != staged.ClaimedName {
+		staged.ClaimedName = claimedName
+		if err := staged.save(); err != nil {
+			return cliError("could not update the staged keypair at %s: %v", stagedIdentityPath(), err)
 		}
 	}
 
@@ -149,16 +170,19 @@ func cliJoin(args []string) int {
 		return cliError("the staged keypair is unusable and has been discarded; run join again: %v", err)
 	}
 
-	hostname, _ := os.Hostname()
+	name := staged.ClaimedName
+	if name == "" {
+		name, _ = os.Hostname()
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), howLongToWaitForApproval+time.Minute)
 	defer cancel()
 
-	status, err := watcher.callJoin(ctx, planeURL, staged, hostname, true)
+	status, err := watcher.callJoin(ctx, planeURL, staged, name, true)
 	if err != nil {
 		return cliError("%v", err)
 	}
 
-	fmt.Printf("Asked %s to adopt this machine as %q.\n\n", planeURL, hostname)
+	fmt.Printf("Asked %s to adopt this machine as %q.\n\n", planeURL, name)
 	fmt.Printf("    Key fingerprint:  %s\n\n", fingerprint)
 	fmt.Printf("Approve the request on the management node, and only if the fingerprint\n")
 	fmt.Printf("shown there is exactly the one above.\n\n")
@@ -177,12 +201,18 @@ func cliJoin(args []string) int {
 		return 1
 	}
 
+	if noWait {
+		fmt.Printf("The request stays live on the management node. The running agent finishes the\n")
+		fmt.Printf("join on its own once it is approved; `joinery-agent status` shows where it stands.\n")
+		return 0
+	}
+
 	fmt.Printf("Waiting up to %s for approval...\n", howLongToWaitForApproval)
 	deadline := time.Now().Add(howLongToWaitForApproval)
 	for time.Now().Before(deadline) {
 		time.Sleep(approvalPollInterval)
 
-		status, err := watcher.callJoin(ctx, planeURL, staged, hostname, false)
+		status, err := watcher.callJoin(ctx, planeURL, staged, name, false)
 		if err != nil {
 			// Transient: the plane may be restarting, and the ask is already
 			// lodged. Keep waiting rather than throwing away a live request.
@@ -198,8 +228,8 @@ func cliJoin(args []string) int {
 		}
 	}
 
-	fmt.Printf("Still pending. The request stays live on the management node —\n")
-	fmt.Printf("approve it there, then run `joinery-agent status` to confirm.\n")
+	fmt.Printf("Still pending. The request stays live on the management node — approve it\n")
+	fmt.Printf("there; the running agent finishes the join on its own once it is approved.\n")
 	return 0
 }
 

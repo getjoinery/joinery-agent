@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"bytes"
 	"compress/gzip"
 	"crypto/ed25519"
@@ -37,6 +38,7 @@ const (
 	updateStateCurrent       = "current"
 	updateStatePending       = "update_pending"
 	updateStateVerifyFailed  = "verify_failed"
+	updateStateFetchFailed   = "fetch_failed"
 	updateStateUnsignedBuild = "unsigned_build"
 	updateStateNoBinary      = "no_binary"
 	updateStateRejected      = "version_rejected"
@@ -315,6 +317,18 @@ func (u *Updater) CheckAndApply() bool {
 
 	binary, err := u.fetchAndVerify(entry)
 	if err != nil {
+		if !errors.Is(err, errArtifactRefused) {
+			// Transport, not verdict. The bytes were not all there — a
+			// publish mid-swap, a request that timed out, a plane restarting
+			// — and none of that says anything about the artifact. The next
+			// check tries again; only a verdict holds until the manifest
+			// changes. (The first live 1.16.0 rollout hit exactly this: the
+			// fetch landed in the second the publisher was writing the file,
+			// and the agent filed 'context canceled' as a bad signature.)
+			u.setState(m.Version, updateStateFetchFailed)
+			u.warnOnce("fetch-"+manifestSum, "self-update: could not fetch v%s from %s: %v — will retry", m.Version, u.source.Describe(), err)
+			return false
+		}
 		u.mu.Lock()
 		u.failedManifestSum = manifestSum
 		u.mu.Unlock()
@@ -346,6 +360,12 @@ func (u *Updater) CheckAndApply() bool {
 	log.Printf("=== Self-update === installed v%s (was v%s); exiting for supervisor restart", m.Version, u.running)
 	return true
 }
+
+// errArtifactRefused marks a failure that is the artifact's own fault — a wrong
+// checksum, a wrong signature, a size past the ceiling. That verdict holds until
+// the manifest changes. Everything on the way to it (opening, reading,
+// decompressing) is transport, and transport is retried.
+var errArtifactRefused = errors.New("artifact refused")
 
 // fetchAndVerify opens the artifact at whichever source this agent uses and
 // hands the bytes to the verification that has never moved.
@@ -380,18 +400,18 @@ func (u *Updater) loadAndVerify(entry distBinary, r io.Reader) ([]byte, error) {
 		return nil, fmt.Errorf("decompress artifact: %w", err)
 	}
 	if len(binary) > maxAgentBinaryBytes {
-		return nil, fmt.Errorf("the artifact decompresses to more than this agent's %d-byte limit", maxAgentBinaryBytes)
+		return nil, fmt.Errorf("%w: the artifact decompresses to more than this agent's %d-byte limit", errArtifactRefused, maxAgentBinaryBytes)
 	}
 
 	sum := sha256.Sum256(binary)
 	expected, err := hex.DecodeString(entry.Sha256)
 	if err != nil || !bytes.Equal(sum[:], expected) {
-		return nil, fmt.Errorf("sha256 mismatch")
+		return nil, fmt.Errorf("%w: sha256 mismatch", errArtifactRefused)
 	}
 
 	sig, err := base64.StdEncoding.DecodeString(entry.Signature)
 	if err != nil || !ed25519.Verify(u.pubKey, binary, sig) {
-		return nil, fmt.Errorf("signature verification failed")
+		return nil, fmt.Errorf("%w: signature verification failed", errArtifactRefused)
 	}
 	return binary, nil
 }

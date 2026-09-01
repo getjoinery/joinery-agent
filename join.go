@@ -61,6 +61,10 @@ type stagedIdentity struct {
 	PublicKey     string `json:"public_key"`
 	PrivateKey    string `json:"private_key"`
 	RequestedTime string `json:"requested_time"`
+	// ClaimedName is what this machine asked to be called on the plane (the
+	// CLI's --name, else the hostname at the time of the ask), kept so a
+	// renewal presents the same name the operator is looking for.
+	ClaimedName string `json:"claimed_name,omitempty"`
 }
 
 func stagedIdentityPath() string {

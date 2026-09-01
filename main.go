@@ -20,7 +20,7 @@ import (
 // must stay ABOVE 1.1.0 forever - install_agent.sh's downgrade guard sorts
 // with sort -V and refuses to replace a "newer" binary, so anything below
 // 1.1.0 strands those agents permanently.
-var version = "1.15.0"
+var version = "1.16.3"
 
 // How often the idle loop looks at the shipped agent_dist manifest. Update
 // checks never run while a job is executing.
@@ -339,6 +339,10 @@ func main() {
 		go watcher.Run(context.Background())
 	} else {
 		log.Printf("machine posture — not enrolled; run `joinery-agent join --management-node=URL` to ask a management node to adopt this machine")
+		// The CLI lodges the ask; this finishes it. An approval can be hours
+		// away, and a machine we created has nobody at its terminal.
+		stagedWatcher := &StagedJoinWatcher{cfg: cfg, db: db, jobLock: &jobLock, agentVersion: version}
+		go stagedWatcher.Run(context.Background())
 	}
 
 	// The run switch. Projects the setting into the marker the supervisor reads,

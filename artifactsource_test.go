@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // A machine with no site tree has no directory a release delivers to, so it
@@ -30,6 +31,7 @@ import (
 
 // planeArtifact is a fake control plane serving the artifact endpoint.
 type planeArtifact struct {
+	trickle  bool // serve the binary in two parts with a pause between
 	manifest []byte
 	binaryGz []byte
 	bundleGz []byte
@@ -65,6 +67,18 @@ func (p *planeArtifact) handler(t *testing.T) http.HandlerFunc {
 			writeEnvelope(w, map[string]interface{}{"manifest": string(p.manifest)})
 		case artifactKindAgentBinary:
 			w.Header().Set("Content-Type", "application/octet-stream")
+			if p.trickle {
+				// Half now, half after the client has certainly returned
+				// from Open — the shape of a real multi-megabyte download.
+				half := len(p.binaryGz) / 2
+				w.Write(p.binaryGz[:half])
+				if f, ok := w.(http.Flusher); ok {
+					f.Flush()
+				}
+				time.Sleep(150 * time.Millisecond)
+				w.Write(p.binaryGz[half:])
+				return
+			}
 			w.Write(p.binaryGz)
 		case artifactKindBundleInfo:
 			sum := sha256.Sum256(p.bundleGz)
@@ -151,6 +165,22 @@ func channelUpdater(t *testing.T, plane *planeArtifact, pub ed25519.PublicKey, r
 		running:     running,
 		warned:      map[string]bool{},
 	}, server
+}
+
+// The stream is read after Open returns, so the request's context must outlive
+// Open. A body that arrives in two parts, the second after the caller is back
+// in loadAndVerify, is what a real download looks like — and what a context
+// cancelled on return turns into "decompress artifact: context canceled".
+func TestAnArtifactThatArrivesInPiecesStillInstalls(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	manifest, gzipped := signedAgentArtifact(t, priv, "2.0.0", bytes.Repeat([]byte("NEW-BINARY-CONTENTS "), 4096))
+	plane := &planeArtifact{manifest: manifest, binaryGz: gzipped, trickle: true}
+
+	u, _ := channelUpdater(t, plane, pub, "1.11.0")
+	if !u.CheckAndApply() {
+		_, state := u.HeartbeatInfo()
+		t.Fatalf("a streamed artifact must install; state is %q", state)
+	}
 }
 
 func TestASitelessMachineUpdatesItselfOverTheChannel(t *testing.T) {

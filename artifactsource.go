@@ -167,9 +167,30 @@ func (s *channelSource) Open(platform string, entry distBinary) (io.ReadCloser, 
 	// whatever its own manifest says, so nothing this agent sends can be read
 	// over there as a path — the same discipline delete_backup follows in the
 	// other direction.
+	// The stream outlives this call: the caller reads it AFTER Open returns.
+	// So the context must live as long as the stream does, and is released
+	// by Close — cancelling it here would cancel every read that follows.
+	// (That was the first channel rollout's failure: every siteless machine
+	// reported "decompress artifact: context canceled" and never updated.)
 	ctx, cancel := context.WithTimeout(context.Background(), artifactHTTPTimeout)
-	defer cancel()
-	return signedArtifactStream(ctx, s.client, id, artifactKindAgentBinary, platform, maxAgentArtifactBytes)
+	stream, err := signedArtifactStream(ctx, s.client, id, artifactKindAgentBinary, platform, maxAgentArtifactBytes)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	return &cancelOnClose{ReadCloser: stream, cancel: cancel}, nil
+}
+
+// cancelOnClose ties a request context's lifetime to the stream it produced.
+type cancelOnClose struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (c *cancelOnClose) Close() error {
+	err := c.ReadCloser.Close()
+	c.cancel()
+	return err
 }
 
 func (s *channelSource) identity() (*NodeIdentity, error) {
