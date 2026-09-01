@@ -54,7 +54,7 @@ func TestApprovalChallengeFixture(t *testing.T) {
 	// compare an answer against.
 	plaintext := approvalPlaintext([]byte("a-one-time-secret-value-32-bytes"), 4242, strings.Repeat("ab", 32))
 
-	challenge, err := sealToRecoveryKey(public, plaintext)
+	challenge, err := sealToRecoveryKey(approvalInfoPrefix, public, plaintext)
 	if err != nil {
 		t.Fatal(err)
 	}

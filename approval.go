@@ -114,23 +114,83 @@ type dbSettings struct{ db *DB }
 func (d dbSettings) Read(name string) (string, error) { return readAgentSetting(d.db, name) }
 func (d dbSettings) Write(name, value string) error   { return writeAgentSetting(d.db, name, value) }
 
-// SettingsApproval asks this machine's own operator, through this machine's own
-// site, using this machine's own recovery key.
+// approvalScope is what varies between destructive operations: which settings
+// rows carry the handoff, which HKDF context seals the challenge, and how the
+// refusals read. Everything else — the sealing, the binding, the constant-time
+// compare, the polling — is one mechanism.
+//
+// Domain separation is the restore spec's own rule: a challenge sealed under
+// one scope's infoPrefix can never be the answer to another scope's, even if
+// their plaintexts were ever to converge — and the plaintextTag separates them
+// a second time inside the box.
+type approvalScope struct {
+	requestSetting string
+	answerSetting  string
+	infoPrefix     string
+	plaintextTag   string
+	// act is the operation as the refusals name it: "restore", "decommission".
+	act string
+	// party is whose site and whose key answers: "this machine" for a restore,
+	// "the site being removed" for a decommission staged into a victim.
+	party string
+	// page is where the operator answers.
+	page string
+}
+
+// restoreScope is the original: this machine's own operator, through this
+// machine's own site, using this machine's own recovery key.
+var restoreScope = approvalScope{
+	requestSetting: settingApprovalRequest,
+	answerSetting:  settingApprovalAnswer,
+	infoPrefix:     approvalInfoPrefix,
+	plaintextTag:   "joinery-restore-approval",
+	act:            "restore",
+	party:          "this machine",
+	page:           "this machine's own Backups page",
+}
+
+// decommissionScope is the victim's: the site being destroyed renders the
+// approval on ITS admin and answers with ITS recovery key. The setting names
+// and context are decommission's own — staging a decommission into the restore
+// rows would render consent copy for the wrong act, and informed consent is
+// the point of the ceremony. Mirrored by DecommissionApproval on the PHP side.
+var decommissionScope = approvalScope{
+	requestSetting: "decommission_approval_request",
+	answerSetting:  "decommission_approval_answer",
+	infoPrefix:     "joinery-decommission-approval:",
+	plaintextTag:   "joinery-decommission-approval",
+	act:            "decommission",
+	party:          "the site being removed",
+	page:           "the site's own Backups page",
+}
+
+// SettingsApproval asks an operator to approve a destructive job through a
+// site's settings table, sealed to that site's proven recovery key. Which site
+// and which operation is the scope: its own (restore) or a victim's
+// (decommission).
 type SettingsApproval struct {
 	store approvalStore
+	scope approvalScope
 	// now is the clock, overridable so the expiry can be tested without waiting
 	// a quarter of an hour. Nil means time.Now().UTC().
 	now func() time.Time
 }
 
-// NewSettingsApproval builds the gate. A nil DB is not an error here — Require
-// refuses, naming the reason, which is the honest answer on a machine whose
-// database is down: it cannot ask, so it will not act.
+// NewSettingsApproval builds the gate for this machine's own restores. A nil
+// DB is not an error here — Require refuses, naming the reason, which is the
+// honest answer on a machine whose database is down: it cannot ask, so it will
+// not act.
 func NewSettingsApproval(db *DB) *SettingsApproval {
 	if db == nil {
-		return &SettingsApproval{}
+		return &SettingsApproval{scope: restoreScope}
 	}
-	return &SettingsApproval{store: dbSettings{db: db}}
+	return &SettingsApproval{store: dbSettings{db: db}, scope: restoreScope}
+}
+
+// newScopedApproval builds the gate over an explicit store and scope — the
+// victim path hands it the victim's connection.
+func newScopedApproval(store approvalStore, scope approvalScope) *SettingsApproval {
+	return &SettingsApproval{store: store, scope: scope}
 }
 
 func (a *SettingsApproval) clock() time.Time {
@@ -138,6 +198,16 @@ func (a *SettingsApproval) clock() time.Time {
 		return a.now()
 	}
 	return time.Now().UTC()
+}
+
+// scoped returns the gate's scope, defaulting a zero value to the restore
+// scope so a bare &SettingsApproval{} (the tests' construction) keeps the
+// original behavior.
+func (a *SettingsApproval) scoped() approvalScope {
+	if a.scope.requestSetting == "" {
+		return restoreScope
+	}
+	return a.scope
 }
 
 // approvalRequest is what the node's own admin page renders. Every field is
@@ -166,9 +236,14 @@ type approvalAnswer struct {
 // and returns nil only when the answer is the one that was sealed.
 func (a *SettingsApproval) Require(ctx context.Context, jobID int64, statement primitives.ApprovalStatement) error {
 	if a == nil || a.store == nil {
-		return &primitives.RefusalError{Reason: "this machine cannot reach its own database, so it cannot " +
-			"ask its operator to approve a restore — and it will not run one unasked"}
+		act, party := "restore", "this machine"
+		if a != nil {
+			act, party = a.scoped().act, a.scoped().party
+		}
+		return &primitives.RefusalError{Reason: fmt.Sprintf("%s's database cannot be reached, so its "+
+			"operator cannot be asked to approve a %s — and none runs unasked", party, act)}
 	}
+	scope := a.scoped()
 
 	recipient, err := a.provenRecoveryKey()
 	if err != nil {
@@ -211,9 +286,9 @@ func (a *SettingsApproval) Require(ctx context.Context, jobID int64, statement p
 	// Comparing the whole line also makes the binding part of the CHECK rather
 	// than only part of the ciphertext: an answer for another job differs in the
 	// bytes being compared, not merely in a field alongside them.
-	plaintext := approvalPlaintext(secret, jobID, hex.EncodeToString(statementSHA[:]))
+	plaintext := scopedApprovalPlaintext(scope.plaintextTag, secret, jobID, hex.EncodeToString(statementSHA[:]))
 
-	challenge, err := sealToRecoveryKey(recipient, plaintext)
+	challenge, err := sealToRecoveryKey(scope.infoPrefix, recipient, plaintext)
 	if err != nil {
 		return fmt.Errorf("could not seal the approval challenge: %w", err)
 	}
@@ -227,7 +302,7 @@ func (a *SettingsApproval) Require(ctx context.Context, jobID int64, statement p
 		StatementSHA: hex.EncodeToString(statementSHA[:]),
 		Challenge:    challenge,
 		PublicKey:    base64.StdEncoding.EncodeToString(recipient),
-		Info:         approvalInfoPrefix,
+		Info:         scope.infoPrefix,
 		IssuedTime:   issued.Format("2006-01-02 15:04:05"),
 		ExpiresTime:  issued.Add(primitives.ApprovalWindow).Format("2006-01-02 15:04:05"),
 	}
@@ -239,13 +314,13 @@ func (a *SettingsApproval) Require(ctx context.Context, jobID int64, statement p
 	// A stale answer from an earlier job must not satisfy this one. Cleared
 	// before the request is published rather than after, so there is no instant
 	// in which a fresh challenge sits beside somebody else's answer.
-	if err := a.store.Write(settingApprovalAnswer, ""); err != nil {
-		return &primitives.RefusalError{Reason: "this machine could not clear the previous approval " +
-			"answer from its own settings, so it will not ask for a new one: " + err.Error()}
+	if err := a.store.Write(scope.answerSetting, ""); err != nil {
+		return &primitives.RefusalError{Reason: "the previous approval answer could not be cleared from " +
+			scope.party + "'s settings, so a new one will not be asked for: " + err.Error()}
 	}
-	if err := a.store.Write(settingApprovalRequest, string(body)); err != nil {
-		return &primitives.RefusalError{Reason: "this machine could not put the approval request on its " +
-			"own site, so nobody would ever have been shown it: " + err.Error()}
+	if err := a.store.Write(scope.requestSetting, string(body)); err != nil {
+		return &primitives.RefusalError{Reason: "the approval request could not be staged on " +
+			scope.party + "'s site, so nobody would ever have been shown it: " + err.Error()}
 	}
 
 	// READ IT BACK. The write reported success; this asks the row whether it
@@ -254,22 +329,22 @@ func (a *SettingsApproval) Require(ctx context.Context, jobID int64, statement p
 	// other refusal names itself, and this one would present as "no one
 	// approved", fifteen minutes later, on a node whose operator was watching an
 	// empty page the whole time.
-	if back, err := a.store.Read(settingApprovalRequest); err != nil || strings.TrimSpace(back) == "" {
-		return &primitives.RefusalError{Reason: "this machine wrote the approval request and could not " +
-			"read it back, so its own site would not have shown it. The restore was not run"}
+	if back, err := a.store.Read(scope.requestSetting); err != nil || strings.TrimSpace(back) == "" {
+		return &primitives.RefusalError{Reason: "the approval request was written and could not be read " +
+			"back, so " + scope.party + "'s site would not have shown it. The " + scope.act + " was not run"}
 	}
 
 	// Whatever happens next, the challenge does not outlive this job. An
-	// unanswered one left on the admin page is an approval screen for a restore
+	// unanswered one left on the admin page is an approval screen for a job
 	// that is no longer running, which is the shape of an operator approving
 	// something that then happens later for reasons they cannot see.
 	defer func() {
-		_ = a.store.Write(settingApprovalRequest, "")
-		_ = a.store.Write(settingApprovalAnswer, "")
+		_ = a.store.Write(scope.requestSetting, "")
+		_ = a.store.Write(scope.answerSetting, "")
 	}()
 
-	log.Printf("  job #%d is destructive and is waiting for approval on this machine's own site (%s)",
-		jobID, primitives.ApprovalWindow)
+	log.Printf("  job #%d is destructive and is waiting for approval on %s (%s)",
+		jobID, scope.page, primitives.ApprovalWindow)
 
 	return a.await(ctx, jobID, plaintext, issued)
 }
@@ -277,18 +352,20 @@ func (a *SettingsApproval) Require(ctx context.Context, jobID int64, statement p
 // await polls the handoff row until the operator answers, declines, or the
 // window closes.
 func (a *SettingsApproval) await(ctx context.Context, jobID int64, expected string, issued time.Time) error {
+	scope := a.scoped()
 	deadline := issued.Add(primitives.ApprovalWindow)
 	ticker := time.NewTicker(restoreApprovalPollInterval)
 	defer ticker.Stop()
 
 	for {
-		raw, err := a.store.Read(settingApprovalAnswer)
+		raw, err := a.store.Read(scope.answerSetting)
 		if err == nil && raw != "" {
 			var answer approvalAnswer
 			if json.Unmarshal([]byte(raw), &answer) == nil && answer.JobID == jobID {
 				if answer.Declined {
 					return &primitives.RefusalError{
-						Reason: "the operator of this machine declined this restore on its own admin page"}
+						Reason: "the operator of " + scope.party + " declined this " + scope.act +
+							" on its own admin page"}
 				}
 				// Constant time, because the comparison is against a secret and
 				// the loser of a timing race here is the machine's own data.
@@ -298,7 +375,7 @@ func (a *SettingsApproval) await(ctx context.Context, jobID int64, expected stri
 				// over a stray newline would read as "my recovery key does not
 				// work" at the worst possible moment.
 				if hmac.Equal([]byte(trimSpace(answer.Answer)), []byte(expected)) {
-					log.Printf("  job #%d approved on this machine with its own recovery key", jobID)
+					log.Printf("  job #%d approved on %s with its own recovery key", jobID, scope.page)
 					return nil
 				}
 				// A wrong answer is not a retry. It is either the wrong key or
@@ -306,28 +383,29 @@ func (a *SettingsApproval) await(ctx context.Context, jobID int64, expected stri
 				// should look at what they are approving rather than paste
 				// again into a window that is still counting down.
 				return &primitives.RefusalError{
-					Reason: "the answer given on this machine's admin page is not what this node's " +
-						"approval challenge opens to, so the restore was not run"}
+					Reason: "the answer given on " + scope.party + "'s admin page is not what the " +
+						"approval challenge opens to, so the " + scope.act + " was not run"}
 			}
 			// An answer for a different job: somebody else's, or a leftover.
 			// Cleared rather than treated as an error, so a stale row cannot
 			// wedge every future approval.
 			if err == nil {
-				_ = a.store.Write(settingApprovalAnswer, "")
+				_ = a.store.Write(scope.answerSetting, "")
 			}
 		}
 
 		if !a.clock().Before(deadline) {
 			return &primitives.RefusalError{
-				Reason: fmt.Sprintf("no one approved this restore on this machine's own Backups page "+
-					"within %s, so it was not run. Dispatch it again when someone is at the keyboard "+
-					"with the recovery key", primitives.ApprovalWindow)}
+				Reason: fmt.Sprintf("no one approved this %s on %s within %s, so it was not run. "+
+					"Dispatch it again when someone is at the keyboard with the recovery key",
+					scope.act, scope.page, primitives.ApprovalWindow)}
 		}
 
 		select {
 		case <-ctx.Done():
 			return &primitives.RefusalError{
-				Reason: "the wait for approval ended before anyone answered, so this restore was not run"}
+				Reason: "the wait for approval ended before anyone answered, so this " + scope.act +
+					" was not run"}
 		case <-ticker.C:
 		}
 	}
@@ -344,25 +422,26 @@ func (a *SettingsApproval) await(ctx context.Context, jobID int64, expected stri
 // restores. Proven means an operator opened a challenge with the private half,
 // on this site, and that is the only state this accepts.
 func (a *SettingsApproval) provenRecoveryKey() ([]byte, error) {
+	scope := a.scoped()
 	b64, err := a.store.Read(settingRecoveryPublicKey)
 	if err != nil && err != sql.ErrNoRows {
 		return nil, &primitives.RefusalError{
-			Reason: "this machine could not read its own recovery key setting, so it cannot ask for approval"}
+			Reason: scope.party + "'s recovery key setting could not be read, so approval cannot be asked for"}
 	}
 	raw, decodeErr := base64.StdEncoding.DecodeString(trimSpace(b64))
 	if trimSpace(b64) == "" || decodeErr != nil || len(raw) != curve25519.ScalarSize {
 		return nil, &primitives.RefusalError{
-			Reason: "this machine has no usable backup recovery key, so there is no one it can ask to " +
-				"approve a restore. Set one up on its own Backups page first — it is the same key that " +
-				"opens this machine's backups"}
+			Reason: scope.party + " has no usable backup recovery key, so there is no one to ask to " +
+				"approve a " + scope.act + ". Set one up on its own Backups page first — it is the same " +
+				"key that opens its backups"}
 	}
 
 	proof, _ := a.store.Read(settingRecoveryProof)
 	sum := sha256.Sum256(raw)
 	if !hmac.Equal([]byte(trimSpace(proof)), []byte(hex.EncodeToString(sum[:]))) {
 		return nil, &primitives.RefusalError{
-			Reason: "this machine's recovery key has never been proven here, so a challenge sealed to it " +
-				"might be one nobody can open. Prove it on this machine's own Backups page first"}
+			Reason: scope.party + "'s recovery key has never been proven on its own site, so a challenge " +
+				"sealed to it might be one nobody can open. Prove it on its own Backups page first"}
 	}
 	return raw, nil
 }
@@ -377,8 +456,15 @@ func (a *SettingsApproval) provenRecoveryKey() ([]byte, error) {
 // JavaScript to reproduce it, so a change here that broke the round trip fails
 // the gate rather than the next real restore.
 func approvalPlaintext(secret []byte, jobID int64, statementSHA string) string {
-	return fmt.Sprintf("joinery-restore-approval %s job:%d statement:%s",
-		base64.StdEncoding.EncodeToString(secret), jobID, statementSHA)
+	return scopedApprovalPlaintext(restoreScope.plaintextTag, secret, jobID, statementSHA)
+}
+
+// scopedApprovalPlaintext is approvalPlaintext with the scope's own leading
+// tag, so a decommission answer differs from a restore answer in the compared
+// bytes themselves, on top of the HKDF domain separation.
+func scopedApprovalPlaintext(tag string, secret []byte, jobID int64, statementSHA string) string {
+	return fmt.Sprintf("%s %s job:%d statement:%s",
+		tag, base64.StdEncoding.EncodeToString(secret), jobID, statementSHA)
 }
 
 // sealToRecoveryKey produces the blob the browser opens: ephemeral X25519 →
@@ -387,12 +473,12 @@ func approvalPlaintext(secret []byte, jobID int64, statementSHA string) string {
 //
 // Byte-for-byte the construction BackupRecoveryKey::browser_challenge() uses,
 // because the browser code that opens it is the same code — only the HKDF info
-// string differs, which is what keeps an approval challenge and a possession
-// challenge from ever being answers to each other. It is NOT libsodium's sealed
-// box: that is the backup envelope's construction, and it has no WebCrypto
-// equivalent, so a challenge built that way could not be opened on the page
-// where the operator actually is.
-func sealToRecoveryKey(recipient []byte, plaintext string) (string, error) {
+// string differs, which is what keeps an approval challenge, a possession
+// challenge, and each scope's approval challenges from ever being answers to
+// one another. It is NOT libsodium's sealed box: that is the backup envelope's
+// construction, and it has no WebCrypto equivalent, so a challenge built that
+// way could not be opened on the page where the operator actually is.
+func sealToRecoveryKey(infoPrefix string, recipient []byte, plaintext string) (string, error) {
 	var ephSecret [32]byte
 	if _, err := rand.Read(ephSecret[:]); err != nil {
 		return "", err
@@ -407,7 +493,7 @@ func sealToRecoveryKey(recipient []byte, plaintext string) (string, error) {
 	}
 	zero(ephSecret[:])
 
-	info := append([]byte(approvalInfoPrefix), ephPublic...)
+	info := append([]byte(infoPrefix), ephPublic...)
 	info = append(info, recipient...)
 	aesKey := make([]byte, 32)
 	if _, err := hkdf.New(sha256.New, shared, nil, info).Read(aesKey); err != nil {

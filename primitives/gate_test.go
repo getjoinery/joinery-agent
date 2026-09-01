@@ -80,6 +80,13 @@ var pinnedVocabulary = map[string]Class{
 	"restore_database": ClassDestructive,
 	"restore_project":  ClassDestructive,
 	"restore_chain":    ClassDestructive,
+
+	// The first destructive primitive whose approving party is NOT the machine
+	// running it: a host-posture agent removes a container site, and the
+	// VICTIM approves on its own admin with its own recovery key
+	// (specs/docker_host_agent.md). The Ceremony field is what carries that;
+	// Execute still runs no destructive job without a gate answering.
+	"decommission_site": ClassDestructive,
 }
 
 func TestVocabularyIsPinned(t *testing.T) {
@@ -347,6 +354,12 @@ func TestPrimitiveExecutionEnvIsExplicit(t *testing.T) {
 		// machine's own site decides. Pinned deliberately, and worth reading
 		// the approval.go type comment before changing.
 		"Approval": true,
+
+		// The victim's ceremony for decommission_site: a host-posture agent
+		// staging an approval on the site it would destroy, answered with the
+		// VICTIM's recovery key. Set only on a siteless machine; the widening
+		// is deliberate and documented in specs/docker_host_agent.md.
+		"VictimCeremony": true,
 	}
 
 	fset := token.NewFileSet()

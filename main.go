@@ -20,7 +20,7 @@ import (
 // must stay ABOVE 1.1.0 forever - install_agent.sh's downgrade guard sorts
 // with sort -V and refuses to replace a "newer" binary, so anything below
 // 1.1.0 strands those agents permanently.
-var version = "1.14.0"
+var version = "1.15.0"
 
 // How often the idle loop looks at the shipped agent_dist manifest. Update
 // checks never run while a job is executing.
@@ -148,6 +148,12 @@ func startRemoteSource(cfg *Config, db *DB, jobLock *sync.Mutex, agentVersion st
 		// destructive job without one, but a nil here would be a deployment
 		// mistake presenting as a policy.
 		Approval: NewSettingsApproval(db),
+
+		// How a HOST asks the site it would destroy for that site's own
+		// consent (decommission_site). Only a machine in host posture — no
+		// site of its own — gets one; everywhere else the field is nil and
+		// the primitive refuses. See victim.go.
+		VictimCeremony: victimCeremonyFor(cfg),
 	}
 
 	source := NewRemoteSource(identity, policy, env, jobLock, agentVersion)

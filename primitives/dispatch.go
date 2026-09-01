@@ -87,6 +87,17 @@ type ExecEnv struct {
 	// gives: everything a primitive can touch is named in this struct, so
 	// widening the boundary is a visible change rather than an import.
 	Approval ApprovalGate
+
+	// VictimCeremony builds the approval ceremony for a destructive primitive
+	// whose approving party is NOT this machine's own site: the removal of a
+	// container site on this host, where the site being destroyed renders the
+	// approval on ITS own admin and answers with ITS own recovery key. The
+	// returned cleanup releases the victim connection and may be nil.
+	//
+	// Set only on a machine in host posture (siteless). Nil everywhere else,
+	// and a primitive that needs it refuses when it is nil — a machine with a
+	// site of its own has no business destroying a co-resident one.
+	VictimCeremony func(ctx context.Context, site string) (ApprovalStatement, ApprovalGate, func(), error)
 }
 
 // DBProvider hands back a usable database connection, or says why not.
@@ -127,11 +138,11 @@ func Execute(ctx context.Context, env *ExecEnv, policy *Policy, req Request) (ma
 	// a deployment that could not reach the database to ask, is a machine that
 	// does not restore.
 	if p.Class == ClassDestructive {
-		if env == nil || env.Approval == nil {
+		if p.Ceremony == nil && (env == nil || env.Approval == nil) {
 			return nil, refusedf("this node has no way to ask its own operator to approve a %s, "+
 				"so it will not run one", p.Name)
 		}
-		if p.Describe == nil {
+		if p.Ceremony == nil && p.Describe == nil {
 			// Register refuses to build such a primitive, so reaching this is a
 			// broken binary rather than a bad job. Refuse anyway: an
 			// unapprovable destructive primitive must never fall through to
@@ -178,11 +189,34 @@ func Execute(ctx context.Context, env *ExecEnv, policy *Policy, req Request) (ma
 	// state; folding the approval into it would have meant either approving a
 	// class in the abstract or giving the policy a dependency on everything.
 	if p.Class == ClassDestructive {
-		statement, err := p.Describe(ctx, env, params)
-		if err != nil {
-			return nil, err
+		var statement ApprovalStatement
+		var gate ApprovalGate
+		if p.Ceremony != nil {
+			// The victim's own ceremony: statement and gate from the same
+			// connection to the party whose data this destroys. A ceremony
+			// that cannot be built is a job that does not run.
+			var cleanup func()
+			var err error
+			statement, gate, cleanup, err = p.Ceremony(ctx, env, params)
+			if err != nil {
+				return nil, err
+			}
+			if cleanup != nil {
+				defer cleanup()
+			}
+			if gate == nil {
+				return nil, refusedf("primitive %q produced no approval gate, so there is no one "+
+					"to ask — it will not run", p.Name)
+			}
+		} else {
+			var err error
+			statement, err = p.Describe(ctx, env, params)
+			if err != nil {
+				return nil, err
+			}
+			gate = env.Approval
 		}
-		if err := env.Approval.Require(ctx, req.JobID, statement); err != nil {
+		if err := gate.Require(ctx, req.JobID, statement); err != nil {
 			return nil, err
 		}
 	}

@@ -75,14 +75,28 @@ type Primitive struct {
 	Script *ScriptSpec
 
 	// Describe composes this node's own account of what a job would do, for the
-	// operator who has to approve it. REQUIRED on ClassDestructive and
-	// meaningless anywhere else; Register enforces both.
+	// operator who has to approve it. ClassDestructive requires exactly one of
+	// Describe or Ceremony, and both are meaningless anywhere else; Register
+	// enforces all of it.
 	//
 	// The node composes it, from the node's own records — not the plane, which
 	// is the party whose word is not being taken. It receives validated params
 	// and the same ExecEnv a run would, so it can state the real archive, its
 	// real age and its real size rather than what a job row claimed.
 	Describe func(ctx context.Context, env *ExecEnv, p Params) (ApprovalStatement, error)
+
+	// Ceremony is Describe's sibling for a destructive primitive whose
+	// APPROVING PARTY IS NOT THIS MACHINE'S OWN SITE — the decommission case,
+	// where a host-posture agent destroys a container site and the party whose
+	// data dies is the one that must consent, on its own admin, with its own
+	// recovery key. It composes the statement AND supplies the gate in one
+	// step, because both come from the same victim connection; the returned
+	// cleanup releases that connection and may be nil.
+	//
+	// With Ceremony set, ExecEnv.Approval is not consulted for this primitive
+	// at all — a host machine has no site and no gate of its own, and the
+	// whole point is that its victim answers instead.
+	Ceremony func(ctx context.Context, env *ExecEnv, p Params) (ApprovalStatement, ApprovalGate, func(), error)
 
 	// Timeout is how long this primitive may run before the node kills it.
 	// Zero means DefaultTimeout.
@@ -145,12 +159,13 @@ func Register(p Primitive) {
 	// approval a formality. A panic at process start rather than a refusal at
 	// job time, for the reason every other check here is: a malformed
 	// vocabulary is a build mistake, and an agent that started with one is an
-	// agent whose refusals cannot be trusted.
-	if p.Class == ClassDestructive && p.Describe == nil {
-		panic(fmt.Sprintf("primitives: destructive primitive %q has no Describe", p.Name))
+	// agent whose refusals cannot be trusted. Exactly one source of the
+	// statement, so "who is being asked" has one answer per primitive.
+	if p.Class == ClassDestructive && (p.Describe == nil) == (p.Ceremony == nil) {
+		panic(fmt.Sprintf("primitives: destructive primitive %q must set exactly one of Describe or Ceremony", p.Name))
 	}
-	if p.Class != ClassDestructive && p.Describe != nil {
-		panic(fmt.Sprintf("primitives: primitive %q is not destructive but declares Describe", p.Name))
+	if p.Class != ClassDestructive && (p.Describe != nil || p.Ceremony != nil) {
+		panic(fmt.Sprintf("primitives: primitive %q is not destructive but declares Describe or Ceremony", p.Name))
 	}
 	if p.Timeout < 0 || p.Timeout > MaxTimeout {
 		panic(fmt.Sprintf("primitives: primitive %q declares a timeout of %v, outside (0, %v]", p.Name, p.Timeout, MaxTimeout))

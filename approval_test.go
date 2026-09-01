@@ -286,7 +286,7 @@ func TestAnAnswerNobodyOpenedIsRefused(t *testing.T) {
 	if !primitives.Refused(err) {
 		t.Fatalf("a guessed answer must be refused, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "not what this node's approval challenge opens to") {
+	if !strings.Contains(err.Error(), "not what the approval challenge opens to") {
 		t.Errorf("the refusal should say the answer is wrong, got %q", err)
 	}
 }
@@ -378,7 +378,7 @@ func TestAnUnprovenRecoveryKeyMeansNoRestore(t *testing.T) {
 	if !primitives.Refused(err) {
 		t.Fatalf("an unproven key must refuse, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "never been proven here") {
+	if !strings.Contains(err.Error(), "never been proven") {
 		t.Errorf("the refusal should name the missing proof, got %q", err)
 	}
 }
@@ -486,7 +486,7 @@ func TestAStagingWriteThatStoresNothingIsCaughtByReadingItBack(t *testing.T) {
 	if err == nil {
 		t.Fatal("a restore whose approval was never actually stored was allowed to proceed")
 	}
-	if !strings.Contains(err.Error(), "could not read it back") {
+	if !strings.Contains(err.Error(), "could not be read back") {
 		t.Errorf("the refusal does not name the read-back: %v", err)
 	}
 }
