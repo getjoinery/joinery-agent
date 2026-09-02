@@ -190,8 +190,8 @@ func (w *JoinWatcher) attemptJoin(ctx context.Context, request *joinRequest) boo
 	}
 	fingerprint := Fingerprint(rawPub)
 
-	hostname, _ := os.Hostname()
-	log.Printf("join: asking %s to adopt this node (key %s)", request.URL, fingerprint)
+	hostname := w.claimedName()
+	log.Printf("join: asking %s to adopt this node (key %s) as %q", request.URL, fingerprint, hostname)
 
 	sendJoin := true
 	for {
@@ -333,6 +333,35 @@ type joinStatusResponse struct {
 	NodeID       int64  `json:"node_id"`
 	NodeSlug     string `json:"node_slug"`
 	PollInterval int    `json:"poll_interval"`
+}
+
+// claimedName is what a site-driven ask calls this machine on the plane.
+//
+// A machine carrying a site claims the SITE's name — the site root's directory
+// name, which is what its operator, its installer and its plane already call
+// it. A siteless machine has nothing better than its OS hostname (the docker
+// installer names those explicitly through the CLI's --name). Found live: a
+// bare-metal site on a fresh cloud instance whose hostname was "localhost"
+// asked to join as "localhost", and the operator approving it had to match a
+// fingerprint against a name that named nothing.
+func (w *JoinWatcher) claimedName() string {
+	return claimedNameFor(func() string {
+		if w.cfg == nil {
+			return ""
+		}
+		return w.cfg.SiteRoot
+	}())
+}
+
+func claimedNameFor(siteRoot string) string {
+	if siteRoot != "" {
+		base := filepath.Base(filepath.Clean(siteRoot))
+		if base != "" && base != "." && base != string(filepath.Separator) {
+			return base
+		}
+	}
+	hostname, _ := os.Hostname()
+	return hostname
 }
 
 // callJoin sends the join (first ask, or renewal) or the lighter status poll.

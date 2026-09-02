@@ -80,6 +80,60 @@ type Config struct {
 // Default path to the Joinery config file. Override with JOINERY_CONFIG env var.
 const defaultJoineryConfig = "/var/www/html/joinerytest/config/Globalvars_site.php"
 
+// agentEnvFile is the environment file the systemd unit loads
+// (EnvironmentFile=-/etc/joinery-agent/joinery-agent.env); install_agent.sh
+// writes JOINERY_CONFIG there. A variable so tests can point it elsewhere.
+var agentEnvFile = "/etc/joinery-agent/joinery-agent.env"
+
+// joineryConfigPath is where this process looks for the site's config: the
+// JOINERY_CONFIG variable if the environment carries it, else the same
+// variable out of the unit's environment file, else the compiled default.
+//
+// The daemon always has the variable, because systemd loads the file for it.
+// `joinery-agent status` or `join` run by hand from a root shell does not, and
+// before the file was consulted such a run fell through to the default — a
+// path that exists on one development box — and reported "machine posture (no
+// site)" on a machine whose daemon was serving a site. The daemon and the CLI
+// now resolve the site the same way.
+func joineryConfigPath() string {
+	if v := os.Getenv("JOINERY_CONFIG"); v != "" {
+		return v
+	}
+	if v := envFileValue(agentEnvFile, "JOINERY_CONFIG"); v != "" {
+		return v
+	}
+	return defaultJoineryConfig
+}
+
+// envFileValue reads KEY=VALUE lines the way systemd's EnvironmentFile does
+// for the simple case: blank lines and # comments skipped, optional matching
+// quotes around the value stripped. Absent file or key → "".
+func envFileValue(path, key string) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	found := ""
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		k, v, ok := strings.Cut(line, "=")
+		if !ok || strings.TrimSpace(k) != key {
+			continue
+		}
+		v = strings.TrimSpace(v)
+		if len(v) >= 2 && ((v[0] == '"' && v[len(v)-1] == '"') || (v[0] == '\'' && v[len(v)-1] == '\'')) {
+			v = v[1 : len(v)-1]
+		}
+		found = v // last assignment wins, as in a shell
+	}
+	return found
+}
+
 func LoadConfig() (*Config, error) {
 	// Start with defaults
 	cfg := &Config{
@@ -93,7 +147,7 @@ func LoadConfig() (*Config, error) {
 	}
 
 	// Step 1: Try to read DB credentials from Globalvars_site.php
-	configPath := getEnv("JOINERY_CONFIG", defaultJoineryConfig)
+	configPath := joineryConfigPath()
 	phpSettings, err := parseGlobalvars(configPath)
 	if err != nil {
 		// ABSENT is a posture; UNREADABLE is an outage. os.IsNotExist is the

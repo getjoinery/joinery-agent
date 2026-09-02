@@ -70,3 +70,21 @@ func TestStagedIdentitySurvivesReload(t *testing.T) {
 		t.Fatal("discard left the staged identity behind")
 	}
 }
+
+// A site-driven join claims the site's name; only a siteless machine falls
+// back to the OS hostname.
+func TestClaimedNameIsTheSiteNameWhenThereIsASite(t *testing.T) {
+	if got := claimedNameFor("/var/www/html/keyless9"); got != "keyless9" {
+		t.Fatalf("site root /var/www/html/keyless9 should claim keyless9, got %q", got)
+	}
+	if got := claimedNameFor("/var/www/html/keyless9/"); got != "keyless9" {
+		t.Fatalf("a trailing slash must not change the name, got %q", got)
+	}
+	host, _ := os.Hostname()
+	if got := claimedNameFor(""); got != host {
+		t.Fatalf("a siteless machine claims its hostname %q, got %q", host, got)
+	}
+	if got := claimedNameFor("/"); got != host {
+		t.Fatalf("a site root of / names nothing and falls back to the hostname, got %q", got)
+	}
+}
