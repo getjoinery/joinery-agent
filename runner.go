@@ -4,8 +4,11 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"os/exec"
 	"time"
+
+	"joinery-agent/primitives"
 )
 
 const defaultStepTimeout = 30 * time.Minute
@@ -222,6 +225,11 @@ func (r *Runner) executeLocal(ctx context.Context, step *Step) (string, error) {
 	}
 
 	cmd := exec.CommandContext(ctx, "bash", "-c", resolved)
+	// The same HOME rule the primitives apply: a systemd unit with no User= hands
+	// this process no HOME at all, and a local step inherits that. Scripts under
+	// `set -u` then die on their first `$HOME` — six test gates did, in the
+	// publish job of 2026-09-02 — and Go and cargo cannot find their caches.
+	cmd.Env = primitives.EnvWithHome(os.Environ())
 	output, err := cmd.CombinedOutput()
 
 	if ctx.Err() == context.DeadlineExceeded {

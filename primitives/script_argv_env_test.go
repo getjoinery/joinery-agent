@@ -120,7 +120,7 @@ func TestAScriptStartedByThisAgentAlwaysHasAHome(t *testing.T) {
 	// restore_database.sh silently looks for /.joinery_backup_key and reports
 	// the node has no key, while restore_project.sh runs under `set -u` and dies
 	// on the unbound variable mid-restore.
-	got := envWithHome([]string{"PATH=/usr/bin", "LANG=C"})
+	got := EnvWithHome([]string{"PATH=/usr/bin", "LANG=C"})
 	var home string
 	for _, entry := range got {
 		if strings.HasPrefix(entry, "HOME=") {
@@ -139,7 +139,7 @@ func TestAnExistingHomeIsLeftAlone(t *testing.T) {
 	// The value is the account's, not a job's — but where the environment
 	// already carries one, that is the operator's answer and this must not
 	// second-guess it.
-	got := envWithHome([]string{"HOME=/home/operator", "PATH=/usr/bin"})
+	got := EnvWithHome([]string{"HOME=/home/operator", "PATH=/usr/bin"})
 	if len(got) != 2 || got[0] != "HOME=/home/operator" {
 		t.Errorf("an existing HOME should survive untouched, got %q", got)
 	}
@@ -147,7 +147,7 @@ func TestAnExistingHomeIsLeftAlone(t *testing.T) {
 	// An EMPTY one is not an answer, though: "$HOME/.joinery_backup_key" with
 	// HOME set to nothing is /.joinery_backup_key, which is the same silent
 	// miss as having none.
-	got = envWithHome([]string{"HOME=", "PATH=/usr/bin"})
+	got = EnvWithHome([]string{"HOME=", "PATH=/usr/bin"})
 	if len(got) != 3 || !strings.HasPrefix(got[2], "HOME=/") {
 		t.Errorf("an empty HOME should be overridden, got %q", got)
 	}

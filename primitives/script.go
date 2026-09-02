@@ -169,7 +169,7 @@ func runScriptPrimitive(ctx context.Context, env *ExecEnv, p Primitive, params P
 	// The value is resolved from the passwd database, never from a job: it is a
 	// property of the account this process runs as, and nothing on the wire can
 	// influence it.
-	cmd.Env = envWithHome(os.Environ())
+	cmd.Env = EnvWithHome(os.Environ())
 
 	var out bytes.Buffer
 	cmd.Stdout = &out
@@ -299,14 +299,14 @@ func trimPartialRuneAtStart(b []byte) []byte {
 	return b
 }
 
-// envWithHome returns env unchanged when it already carries a usable HOME, and
+// EnvWithHome returns env unchanged when it already carries a usable HOME, and
 // otherwise appends one resolved from the passwd entry of the account this
 // process runs as. A later assignment wins in execve, so appending is enough.
 //
 // It falls back to /root only when the passwd lookup itself fails, which on a
 // managed node means a broken account database — and a root process with no
 // home at all is worse than one pointed at the conventional answer.
-func envWithHome(env []string) []string {
+func EnvWithHome(env []string) []string {
 	for _, entry := range env {
 		if strings.HasPrefix(entry, "HOME=") && len(entry) > len("HOME=") {
 			return env
