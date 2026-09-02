@@ -60,6 +60,15 @@ var pinnedVocabulary = map[string]Class{
 	"managed_domain_prepare": ClassOperate,
 	"managed_domain_notice":  ClassOperate,
 
+	// Two more compiled-names settings writers, the same shape as the notice
+	// and pinned for the same reason: each writes SETTINGS, and what bounds it
+	// is that the names live in the node-side script. clone_export_arm hands
+	// the SOURCE of a clone one export key for the length of a provision;
+	// fleet_enroll seeds a new site's fleet-service credentials. Both retire
+	// an SSH session (specs/ssh_single_bootstrap.md).
+	"clone_export_arm": ClassOperate,
+	"fleet_enroll":     ClassOperate,
+
 	// Bringing a backup back off the shelf, so there is something to restore
 	// FROM. Both are operate, and that classification is the load-bearing part
 	// of the pin: writing a file into a backup directory destroys nothing, so
