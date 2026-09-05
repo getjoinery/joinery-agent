@@ -150,3 +150,112 @@ func TestAnExpiredAskIsRenewedWithTheSameKeyAndName(t *testing.T) {
 		t.Fatalf("the renewed ask must still complete, got %+v", id)
 	}
 }
+
+// A management node pairs to itself with `joinery-agent join` on a machine that
+// HAS a site. The watcher is the same one, and it must not depend on the
+// machine being siteless: found live on dev, where the CLI's five-minute wait
+// ran out, the approval landed afterwards, and nothing in the running agent
+// noticed until it was restarted.
+func TestASitedMachineFinishesItsOwnCLIJoin(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("AGENT_IDENTITY_PATH", filepath.Join(dir, "node_identity.json"))
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path != pathJoinStatus {
+			http.NotFound(w, r)
+			return
+		}
+		planeReply(w, map[string]interface{}{
+			"status": "approved", "fingerprint": "x", "node_id": 24776, "node_slug": "dev-getjoinery-com", "poll_interval": 30,
+		})
+	}))
+	defer srv.Close()
+
+	pub, priv, err := GenerateIdentityKeys()
+	if err != nil {
+		t.Fatal(err)
+	}
+	staged := &stagedIdentity{PlaneURL: srv.URL, PublicKey: pub, PrivateKey: priv, ClaimedName: "dev.getjoinery.com"}
+	if err := staged.save(); err != nil {
+		t.Fatal(err)
+	}
+
+	started := 0
+	w := &StagedJoinWatcher{
+		cfg:          &Config{Siteless: false, SiteRoot: "/var/www/html/joinerytest"},
+		agentVersion: "test",
+		interval:     5 * time.Millisecond,
+		start:        func() { started++ },
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	w.Run(ctx)
+
+	identity, err := LoadIdentity(IdentityPath())
+	if err != nil || identity == nil {
+		t.Fatalf("a sited machine must store the credential its CLI join was approved for, got identity=%v err=%v", identity, err)
+	}
+	if identity.NodeID != 24776 {
+		t.Fatalf("credential carries the wrong approval: %+v", identity)
+	}
+	if started != 1 {
+		t.Fatalf("the remote source must be started exactly once, got %d", started)
+	}
+}
+
+// A credential the CLI stored while the operator waited must also start the
+// source on a sited machine — the case dev actually hit.
+func TestACredentialTheCLIFinishedStartsTheSourceOnASitedMachine(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("AGENT_IDENTITY_PATH", filepath.Join(dir, "node_identity.json"))
+
+	pub, priv, err := GenerateIdentityKeys()
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := &NodeIdentity{PlaneURL: "https://dev.getjoinery.com", NodeID: 24776, NodeSlug: "dev-getjoinery-com",
+		PublicKey: pub, PrivateKey: priv, PairedTime: nowRFC3339(), PollSeconds: 30}
+	if err := identity.Save(IdentityPath()); err != nil {
+		t.Fatal(err)
+	}
+
+	started := 0
+	w := &StagedJoinWatcher{
+		cfg:          &Config{Siteless: false},
+		agentVersion: "test",
+		interval:     5 * time.Millisecond,
+		start:        func() { started++ },
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	w.Run(ctx)
+
+	if started != 1 {
+		t.Fatalf("a stored credential must start the remote source once, got %d", started)
+	}
+}
+
+// Two watchers can each finish a join on a site machine. The second to arrive
+// must find the source already running rather than start another one.
+func TestTheRemoteSourceStartsAtMostOncePerProcess(t *testing.T) {
+	remoteStart.mu.Lock()
+	previous := remoteStart.source
+	remoteStart.source = &RemoteSource{}
+	remoteStart.mu.Unlock()
+	t.Cleanup(func() {
+		remoteStart.mu.Lock()
+		remoteStart.source = previous
+		remoteStart.mu.Unlock()
+	})
+
+	// No identity file, no policy, no database: a first start would fail on
+	// all three. Getting the running source back proves the guard answered
+	// before any of that was consulted.
+	dir := t.TempDir()
+	t.Setenv("AGENT_IDENTITY_PATH", filepath.Join(dir, "node_identity.json"))
+	got := startRemoteSource(&Config{Siteless: true}, nil, &sync.Mutex{}, "test")
+	if got == nil {
+		t.Fatal("a running remote source must be returned to a second starter, not nil")
+	}
+}

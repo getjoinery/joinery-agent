@@ -20,7 +20,7 @@ import (
 // must stay ABOVE 1.1.0 forever - install_agent.sh's downgrade guard sorts
 // with sort -V and refuses to replace a "newer" binary, so anything below
 // 1.1.0 strands those agents permanently.
-var version = "1.18.0"
+var version = "1.19.0"
 
 // How often the idle loop looks at the shipped agent_dist manifest. Update
 // checks never run while a job is executing.
@@ -82,6 +82,12 @@ func loadConfigWaiting() *Config {
 // Every failure here is a log line and a nil return, never a fatal: an agent
 // that cannot reach its management node must keep serving its local job queue.
 func startRemoteSource(cfg *Config, db *DB, jobLock *sync.Mutex, agentVersion string) *RemoteSource {
+	remoteStart.mu.Lock()
+	defer remoteStart.mu.Unlock()
+	if remoteStart.source != nil {
+		return remoteStart.source
+	}
+
 	identity, err := LoadIdentity(IdentityPath())
 	if err != nil {
 		log.Printf("ERROR: node identity unusable, so this agent takes no remote work: %v", err)
@@ -158,7 +164,19 @@ func startRemoteSource(cfg *Config, db *DB, jobLock *sync.Mutex, agentVersion st
 
 	source := NewRemoteSource(identity, policy, env, jobLock, agentVersion)
 	go source.Run(context.Background())
+	remoteStart.source = source
 	return source
+}
+
+// remoteStart is the one remote source this process runs. Two watchers can
+// each finish a join — the settings-driven JoinWatcher and the CLI-driven
+// StagedJoinWatcher both run on a site machine — and whichever gets there
+// second must find the source already polling, not start a second one that
+// claims jobs alongside the first. The lock is held across the whole start so
+// two approvals landing in the same second cannot both pass the nil check.
+var remoteStart struct {
+	mu     sync.Mutex
+	source *RemoteSource
 }
 
 // recoverStaleJobs force-fails jobs a previous process left running and replays
@@ -333,14 +351,21 @@ func main() {
 			leaver := &LeaveWatcher{db: db, identity: remote.identity, jobLock: &jobLock}
 			go leaver.Run(context.Background())
 		}
-	} else if !cfg.Siteless {
-		clearStaleLeaveRequest(db)
-		watcher := &JoinWatcher{cfg: cfg, db: db, jobLock: &jobLock, agentVersion: version}
-		go watcher.Run(context.Background())
 	} else {
-		log.Printf("machine posture — not enrolled; run `joinery-agent join --management-node=URL` to ask a management node to adopt this machine")
+		if !cfg.Siteless {
+			clearStaleLeaveRequest(db)
+			watcher := &JoinWatcher{cfg: cfg, db: db, jobLock: &jobLock, agentVersion: version}
+			go watcher.Run(context.Background())
+		} else {
+			log.Printf("machine posture — not enrolled; run `joinery-agent join --management-node=URL` to ask a management node to adopt this machine")
+		}
 		// The CLI lodges the ask; this finishes it. An approval can be hours
-		// away, and a machine we created has nobody at its terminal.
+		// away, and a machine we created has nobody at its terminal. On a site
+		// machine too: `joinery-agent join` is how a management node pairs to
+		// itself, and the operator who ran it at the terminal is not going to
+		// restart the agent afterwards to make the credential count. This
+		// watcher reads one file and asks the plane; it never touches the
+		// settings table, so it is the same cost on both postures.
 		stagedWatcher := &StagedJoinWatcher{cfg: cfg, db: db, jobLock: &jobLock, agentVersion: version}
 		go stagedWatcher.Run(context.Background())
 	}

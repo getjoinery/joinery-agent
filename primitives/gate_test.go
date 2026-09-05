@@ -78,6 +78,15 @@ var pinnedVocabulary = map[string]Class{
 	"download_backup": ClassOperate,
 	"stage_chain":     ClassOperate,
 
+	// The management node's own release build, dispatched to the plane's own
+	// agent once the plane has paired to itself
+	// (specs/agent_local_queue_retirement.md, G1). Operate, not destructive:
+	// it writes archives and manifests into a tree the operator asked to
+	// publish, and the publisher's own guards refuse a duplicate or lower
+	// number. The signing key it reads is root-only, and this is root's one
+	// reason to read it.
+	"publish_upgrade": ClassOperate,
+
 	// The restore family. The destructive primitives, and the pin is doing more
 	// work here than anywhere else in this list: it is the line a reviewer
 	// reads to see that this release taught nine nodes to replace their own

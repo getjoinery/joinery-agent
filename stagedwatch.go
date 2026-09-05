@@ -14,17 +14,20 @@ import (
 // than the sited watcher's poll.
 const stagedPollInterval = 30 * time.Second
 
-// StagedJoinWatcher finishes a join on a machine that has no settings table.
+// StagedJoinWatcher finishes a join that was asked for at the CLI.
 //
 // A sited node's JoinWatcher reads the admin page's request from stg_settings
-// and completes the join itself. A siteless machine asks through the CLI
-// instead — and the CLI cannot sit at a terminal for an approval that may be
-// hours away, nor should an operator have to come back to one. So the running
-// agent watches the staged keypair the CLI left behind and completes the join
-// the moment the plane approves it, starting the remote source in this
-// process without a restart. It also notices a credential the CLI finished on
-// its own (an operator who did wait), for the same reason: a join that is
-// approved must become a working channel without anyone touching the box.
+// and completes the join itself. A join asked for with `joinery-agent join` —
+// the only way on a siteless machine, and the way a management node pairs to
+// itself — leaves a staged keypair instead, and the CLI cannot sit at a
+// terminal for an approval that may be hours away, nor should an operator have
+// to come back to one. So the running agent watches the staged keypair the CLI
+// left behind and completes the join the moment the plane approves it,
+// starting the remote source in this process without a restart. It also
+// notices a credential the CLI finished on its own (an operator who did wait),
+// for the same reason: a join that is approved must become a working channel
+// without anyone touching the box. It runs on both postures; it reads one
+// file and asks the plane, and never touches the settings table.
 //
 // Nothing here is a second ask. A staged keypair is one request; it is
 // re-sent only when the plane says it has expired, and a rejection discards
@@ -51,7 +54,17 @@ func (w *StagedJoinWatcher) Run(ctx context.Context) {
 	}
 	start := w.start
 	if start == nil {
-		start = func() { startRemoteSource(w.cfg, w.db, w.jobLock, w.agentVersion) }
+		start = func() {
+			source := startRemoteSource(w.cfg, w.db, w.jobLock, w.agentVersion)
+			// Connected mid-process on a site machine, so the leave watcher
+			// main() starts for an already-connected agent starts here —
+			// the same hand-off JoinWatcher.promote makes. A siteless machine
+			// leaves through the CLI and has no settings table to watch.
+			if source != nil && !w.cfg.Siteless && w.db != nil {
+				leaver := &LeaveWatcher{db: w.db, identity: source.identity, jobLock: w.jobLock}
+				go leaver.Run(ctx)
+			}
+		}
 	}
 	caller := &JoinWatcher{cfg: w.cfg, agentVersion: w.agentVersion}
 	lastWarning := ""

@@ -119,6 +119,14 @@ func (w *JoinWatcher) Run(ctx context.Context) {
 		case <-time.After(joinCheckInterval):
 		}
 
+		// The CLI path may have finished a join in the meantime — the staged
+		// watcher stores the credential and starts the source. This watcher
+		// then has nothing left to do, and must not answer a later ask from
+		// the admin page by joining a second plane over a live credential.
+		if identity, err := LoadIdentity(IdentityPath()); err == nil && identity != nil {
+			return
+		}
+
 		request := w.readJoinRequest()
 		if request == nil {
 			continue
