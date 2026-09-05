@@ -20,7 +20,7 @@ import (
 // must stay ABOVE 1.1.0 forever - install_agent.sh's downgrade guard sorts
 // with sort -V and refuses to replace a "newer" binary, so anything below
 // 1.1.0 strands those agents permanently.
-var version = "1.17.2"
+var version = "1.18.0"
 
 // How often the idle loop looks at the shipped agent_dist manifest. Update
 // checks never run while a job is executing.
@@ -393,6 +393,28 @@ func main() {
 			}
 		}
 	}()
+
+	// Manifest recovery, on its own slower clock and under the same job lock.
+	//
+	// Separate from the two above because it is not the same hazard: those
+	// replace things a running job might be using, while this replaces a
+	// manifest that — by the time it runs at all — is refusing every job there
+	// is. It still takes the lock, because writing the file a running job is
+	// verifying against is precisely the race the lock exists for.
+	//
+	// nil on a machine with nothing to heal: no site tree, or no release key.
+	if healer := newManifestHealer(cfg, releaseVerifier(cfg.SiteRoot)); healer != nil {
+		go func() {
+			// Once at startup: an agent that has just been restarted onto a
+			// wedged node should not wait out the first interval before trying.
+			attemptUpdate(&jobLock, healer.CheckAndHeal)
+			ticker := time.NewTicker(healCheckInterval)
+			defer ticker.Stop()
+			for range ticker.C {
+				attemptUpdate(&jobLock, healer.CheckAndHeal)
+			}
+		}()
+	}
 
 	switch {
 	case localQueue.Available():

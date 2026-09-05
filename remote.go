@@ -70,13 +70,14 @@ const (
 )
 
 // What the artifact endpoint may be asked for. A flat, compiled-in set: the
-// node names one of these four things and nothing else, so there is no shape
+// node names one of these five things and nothing else, so there is no shape
 // in which a request from here becomes a path over there.
 const (
-	artifactKindAgentManifest = "agent_manifest"
-	artifactKindAgentBinary   = "agent_binary"
-	artifactKindBundleInfo    = "bundle_manifest"
-	artifactKindBundleBody    = "bundle_body"
+	artifactKindAgentManifest   = "agent_manifest"
+	artifactKindAgentBinary     = "agent_binary"
+	artifactKindBundleInfo      = "bundle_manifest"
+	artifactKindBundleBody      = "bundle_body"
+	artifactKindReleaseManifest = "release_manifest"
 )
 
 // RemoteJob is one unit of work as the plane offers it. A primitive name and
@@ -228,6 +229,31 @@ func (r *RemoteSource) noteFailure(err error) {
 	}
 }
 
+// scriptTrust is this node's own answer to whether it can verify the scripts it
+// would run as root — the state that otherwise only becomes visible when a job
+// is dispatched and refused.
+//
+// It reports on the MANIFEST, never on a file, for the same reason recovery
+// fires only on the manifest: a file that fails its hash is a different event
+// with an opposite remedy, and flattening the two into one health colour would
+// have the dashboard recommend the wrong thing.
+//
+// Empty when there is nothing to report on — a machine with no site tree, or a
+// verifier that is not manifest-backed. Silence, not a claim of health.
+func (r *RemoteSource) scriptTrust() string {
+	if r.env == nil {
+		return ""
+	}
+	artifacts, ok := r.env.Manifest.(*primitives.ArtifactManifests)
+	if !ok || artifacts == nil {
+		return ""
+	}
+	if err := artifacts.Usable(""); err != nil {
+		return "untrusted_manifest"
+	}
+	return "ok"
+}
+
 // claim asks the plane for one job.
 func (r *RemoteSource) claim(ctx context.Context) (*RemoteJob, error) {
 	claimBody := map[string]interface{}{
@@ -246,6 +272,17 @@ func (r *RemoteSource) claim(ctx context.Context) (*RemoteJob, error) {
 		// that has a site tree to verify scripts against. It is the only
 		// evidence the plane gets that the bundle actually landed somewhere.
 		claimBody["bundle_version"] = installedBundleVersion()
+		// Whether this node can verify the scripts it would run as root.
+		//
+		// The plane can already work this out from a refusal, but only for a
+		// node it has sent a job to. A node that is refusing and has nothing
+		// dispatched to it says nothing at all — and it polls every cycle, so
+		// this is the one moment it can. Empty means "no answer", which is what
+		// an older agent and a siteless machine both look like; the plane must
+		// not read that as good news.
+		if v := r.scriptTrust(); v != "" {
+			claimBody["script_trust"] = v
+		}
 	}
 	body, _ := json.Marshal(claimBody)
 
@@ -482,6 +519,40 @@ func artifactRequestBody(id *NodeIdentity, kind, platform string) []byte {
 	return body
 }
 
+// releaseManifestRequestBody asks for the signed manifest of one artifact at one
+// version.
+//
+// The node names an ARTIFACT and a VERSION; the plane resolves both against its
+// own layout. Same discipline as asking for a binary by architecture: a request
+// that cannot contain a path cannot be made to fetch one.
+func releaseManifestRequestBody(id *NodeIdentity, owner, version string) []byte {
+	body, _ := json.Marshal(map[string]interface{}{
+		"node_id": id.NodeID,
+		"kind":    artifactKindReleaseManifest,
+		"owner":   owner,
+		"version": version,
+	})
+	return body
+}
+
+// signedPlanePostCapped is signedPlanePost for the one answer that is legitimately
+// larger than a job: the signed release manifest. The cap is still a cap — the
+// caller names it, it is bounded, and nothing here reads an unbounded body.
+func signedPlanePostCapped(ctx context.Context, client *http.Client, id *NodeIdentity,
+	path string, body []byte, max int) (json.RawMessage, error) {
+	req, url, err := newSignedRequest(ctx, id, path, body)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	return readEnvelopeUpTo(resp, url, max)
+}
+
 // signedArtifactEnvelope asks for one of the small, JSON answers the artifact
 // endpoint gives — a manifest, or the bundle's identity. These come back
 // through the ordinary capped envelope reader, unchanged.
@@ -559,13 +630,25 @@ func (c *cappedBody) Close() error { return c.body.Close() }
 // longer one — so a truncated response would be handed to the JSON parser and
 // come back as "the plane sent nonsense" instead of "the plane sent too much".
 func readCappedEnvelope(resp *http.Response, url string) (json.RawMessage, error) {
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, agentMaxJobBody+1))
+	return readEnvelopeUpTo(resp, url, agentMaxJobBody)
+}
+
+// readEnvelopeUpTo is readCappedEnvelope with the cap named by the caller.
+//
+// Every ordinary plane answer is a job or an acknowledgement and belongs under
+// agentMaxJobBody. One answer legitimately is not: a signed release manifest is
+// a few hundred kilobytes (0.8.370 is 186,343 bytes), and reading it is the only
+// way a node that can no longer verify its own scripts gets back. Giving that
+// one call its own bounded cap keeps the tight default everywhere else, which is
+// the point of having a default at all.
+func readEnvelopeUpTo(resp *http.Response, url string, max int) (json.RawMessage, error) {
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, int64(max)+1))
 	if err != nil {
 		return nil, fmt.Errorf("reading response from %s: %w", url, err)
 	}
-	if len(raw) > agentMaxJobBody {
+	if len(raw) > max {
 		return nil, fmt.Errorf("plane response from %s exceeds this agent's %d-byte limit — refused unread",
-			url, agentMaxJobBody)
+			url, max)
 	}
 
 	var envelope struct {
