@@ -69,6 +69,15 @@ var pinnedVocabulary = map[string]Class{
 	"clone_export_arm": ClassOperate,
 	"fleet_enroll":     ClassOperate,
 
+	// The hosted tier's two, and they are the same shape as the three above for
+	// the same reason: each writes SETTINGS, and what bounds it is that the
+	// names live in the node-side script. hosted_mail_settings is the one to
+	// read carefully — its nine names are the mail credentials, so a primitive
+	// that let a name arrive from the wire would let a plane redirect any
+	// managed site's password-reset email.
+	"hosted_mail_settings": ClassOperate,
+	"hosted_plan_notice":   ClassOperate,
+
 	// Bringing a backup back off the shelf, so there is something to restore
 	// FROM. Both are operate, and that classification is the load-bearing part
 	// of the pin: writing a file into a backup directory destroys nothing, so
