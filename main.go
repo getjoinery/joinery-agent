@@ -7,7 +7,6 @@ import (
 	"log"
 	"os"
 	"os/signal"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -20,7 +19,7 @@ import (
 // must stay ABOVE 1.1.0 forever - install_agent.sh's downgrade guard sorts
 // with sort -V and refuses to replace a "newer" binary, so anything below
 // 1.1.0 strands those agents permanently.
-var version = "1.19.0"
+var version = "1.21.0"
 
 // How often the idle loop looks at the shipped agent_dist manifest. Update
 // checks never run while a job is executing.
@@ -79,8 +78,10 @@ func loadConfigWaiting() *Config {
 // Enrollment itself is NOT here: it is the node-initiated join (join.go),
 // driven by the local admin page — no env-file credential exists (A6).
 //
-// Every failure here is a log line and a nil return, never a fatal: an agent
-// that cannot reach its management node must keep serving its local job queue.
+// Every failure here is a log line and a nil return, never a fatal. An agent
+// that cannot take remote work must still run: it heartbeats, it self-updates,
+// it heals its own manifest, and it watches for the join that would give it a
+// management node. Exiting would strand exactly the machine that needs it.
 func startRemoteSource(cfg *Config, db *DB, jobLock *sync.Mutex, agentVersion string) *RemoteSource {
 	remoteStart.mu.Lock()
 	defer remoteStart.mu.Unlock()
@@ -177,30 +178,6 @@ func startRemoteSource(cfg *Config, db *DB, jobLock *sync.Mutex, agentVersion st
 var remoteStart struct {
 	mu     sync.Mutex
 	source *RemoteSource
-}
-
-// recoverStaleJobs force-fails jobs a previous process left running and replays
-// their teardown steps — they never reached teardown and never will otherwise.
-//
-// Runs when the local queue becomes servable, not at startup: those are the same
-// moment on a healthy control plane and are not the same moment on one whose
-// database was down when it started. Never runs without a local queue, where the
-// jobs in that table belong to an agent that does serve it — force-failing
-// another agent's running work would be a fine way to break it.
-func recoverStaleJobs(db *DB, runner *Runner) {
-	stale, err := db.RecoverStaleJobs()
-	if err != nil {
-		log.Printf("WARNING: failed to recover stale jobs: %v", err)
-		return
-	}
-	if len(stale) == 0 {
-		return
-	}
-	log.Printf("recovered %d stale running job(s) — marked as failed", len(stale))
-	for _, job := range stale {
-		log.Printf("replaying teardown for stale job #%d", job.ID)
-		runner.ReplayTeardown(job)
-	}
 }
 
 // attemptUpdate runs one self-update check unless a job is running, and reports
@@ -318,21 +295,13 @@ func main() {
 	// the update watchdog needs to be told.
 	updater.ConfirmHealthy()
 
-	runner := NewRunner(db, cfg.SecretBoxKey)
-
-	// One job at a time on this machine. A control plane paired to itself runs
-	// both job sources in one process, and neither source's concurrency guard
-	// was built expecting the other.
+	// One job at a time on this machine. The management node's own job source
+	// is now the same one every other node uses — its dispatch arrives over the
+	// signed channel and names a primitive — so there is one source here rather
+	// than two. The lock stays because the self-update, bundle and manifest
+	// checks take it to keep a binary or a script from being swapped out from
+	// under a job the remote source is running.
 	var jobLock sync.Mutex
-
-	// Plane-local work, asked as a live question rather than settled at startup.
-	// Stale-job recovery hangs off the transition, not off this line, because a
-	// queue that appears ten minutes late still has jobs a dead process left
-	// running in it.
-	localQueue := NewLocalQueue(cfg.LocalJobs, db.MissingLocalJobTables, func() {
-		recoverStaleJobs(db, runner)
-	})
-	go localQueue.Run(context.Background())
 
 	// Node posture. An agent with an identity polls its management node; one
 	// without watches for the local admin page to name one (the node-initiated
@@ -380,17 +349,21 @@ func main() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 
-	// Heartbeat goroutine. Plane-local, like the queue it reports alongside: the
-	// row lands in server_manager's table for its dashboard. A node-posture agent
-	// has no such table, and its management node learns liveness from the polling
-	// itself, so there is nothing here for it to write.
+	// Heartbeat goroutine. The one thing this agent writes to its own site's
+	// database about itself: a row in server_manager's table, which that
+	// machine's own dashboard reads to show the agent's version, its pending
+	// update and when it was last seen. It reports; it is never asked anything.
+	//
+	// A machine without that table — a plain managed node, or one with no site
+	// at all — writes nothing, and needs to: its management node learns its
+	// liveness from the polling itself.
 	//
 	// The goroutine always runs and asks per tick, rather than being started or
-	// not at boot — the queue can arrive later, and a heartbeat that never came
+	// not at boot — the table can arrive later, and a heartbeat that never came
 	// back after an outage would read on the dashboard as an agent that died.
 	go func() {
 		for {
-			if localQueue.Available() {
+			if !cfg.Siteless && db.HasHeartbeatTable() {
 				bundled, updateState := updater.HeartbeatInfo()
 				if err := db.UpdateHeartbeat(cfg.AgentName, version, bundled, updateState); err != nil {
 					log.Printf("WARNING: heartbeat update failed: %v", err)
@@ -441,59 +414,24 @@ func main() {
 		}()
 	}
 
-	switch {
-	case localQueue.Available():
-		log.Printf("agent ready — polling the local job queue every %s", cfg.PollInterval)
-	case !cfg.LocalJobs:
-		// Latched off, so the recheck below never runs and saying it would is
-		// simply untrue. A machine with no site has no local queue to wait for,
-		// and an operator reading this log should not be left watching for a
-		// state change that cannot arrive.
-		log.Printf("agent ready — machine posture; no local job queue on this machine")
-	default:
-		log.Printf("agent ready — node posture only for now, rechecking for local work every %s",
-			localQueueRecheckInterval)
+	if pairedIdentity != nil {
+		log.Printf("agent ready — taking work only from the management node it joined")
+	} else {
+		log.Printf("agent ready — not joined to a management node, so it takes no work at all")
 	}
 
-	// Main poll loop
-	ticker := time.NewTicker(cfg.PollInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case sig := <-sigCh:
-			log.Printf("received signal %v — shutting down", sig)
-			os.Exit(0)
-		case <-ticker.C:
-			if !localQueue.Available() {
-				continue
-			}
-
-			jobLock.Lock()
-			job, err := db.ClaimNextJob()
-			if err == nil && job == nil {
-				jobLock.Unlock()
-			}
-			if err != nil {
-				jobLock.Unlock()
-				// Distinguish transient DB errors from permanent ones
-				errStr := err.Error()
-				if strings.Contains(errStr, "does not exist") {
-					log.Printf("ERROR: database schema issue: %v", err)
-					log.Printf("  The server_manager plugin tables may not be installed.")
-					log.Printf("  Install and activate the plugin from /admin/admin_plugins, then restart the agent.")
-				} else {
-					log.Printf("ERROR claiming job: %v", err)
-				}
-				continue
-			}
-			if job == nil {
-				continue
-			}
-
-			log.Printf("claimed job #%d (type=%s, node=%d)", job.ID, job.JobType, job.NodeID)
-			runner.Execute(job)
-			jobLock.Unlock()
-		}
-	}
+	// Nothing to poll here any more. Every job this agent runs arrives over the
+	// signed channel and is claimed by the remote source in its own goroutine;
+	// the watchers, the heartbeat, the self-update and the manifest healer each
+	// have their own clock. So main's whole remaining job is to stay alive until
+	// it is told to stop.
+	//
+	// What used to be here was the plane-local queue: a loop that read rows out
+	// of the site database and ran their command strings as root. Anything able
+	// to write that database was therefore root on the management node, and from
+	// there the fleet. Its removal is the point of this version — a row inserted
+	// into mjb_management_jobs by hand now executes nothing, anywhere.
+	sig := <-sigCh
+	log.Printf("received signal %v — shutting down", sig)
+	os.Exit(0)
 }

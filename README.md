@@ -1,69 +1,52 @@
 # Joinery Agent
 
-A generic job executor for the [Joinery](https://github.com/getjoinery/joinery) Server Manager plugin. The agent polls a PostgreSQL job queue for pending work, executes steps via SSH/SCP/local commands, and writes output back to the database.
+A machine's own manager. The agent runs as root on a managed machine, asks the management node it joined whether there is work for it, and runs only the operations compiled into this binary — named primitives with fixed, validated parameters. It never takes a command string from anyone, and it has no shell of its own.
 
-The agent has no knowledge of job types. All intelligence about what commands to run lives in the PHP plugin's `JobCommandBuilder` class. Adding a new operation (e.g., "restart Apache") requires only a new PHP method -- no Go changes, no agent redeployment.
+Adding an operation means adding a primitive here and a `build_<op>_primitive` method in the plugin. The Go side is not a generic executor and adding a PHP method alone does not reach a node.
 
 ## How It Works With Joinery
 
-[Joinery](https://github.com/getjoinery/joinery) is a PHP membership and event management platform. Its **Server Manager** plugin (`plugins/server_manager/`) provides a web-based admin interface for managing remote Joinery instances -- backups, database operations, updates, and health monitoring.
+[Joinery](https://github.com/getjoinery/joinery) is a PHP membership and event management platform. Its **Server Manager** plugin (`plugins/server_manager/`) provides a web-based admin interface for managing Joinery instances -- backups, restores, updates, certificates and health.
 
-The plugin handles all the decision-making: an admin triggers an operation from the web UI, and the plugin's `JobCommandBuilder` translates that into an ordered array of shell commands. These are written to the `mjb_management_jobs` table as a JSON step list with status `pending`. That's where the PHP side ends and this Go agent takes over.
+An admin triggers an operation, and the plugin's `JobCommandBuilder` produces a `{primitive, params}` envelope: the NAME of an operation, not an instruction. The management node holds that until the node's own agent asks for it.
 
-The agent runs as a systemd service on the same server, polling the job table every few seconds. When it finds a pending job, it claims it, executes each step in order (SSH into a remote host, transfer files via SCP, or run local commands), writes output back to the database after each step, and marks the job completed or failed. The plugin's admin UI polls for status updates and streams the output in real time.
+The agent polls its management node over a signed channel, outbound only. When it is handed a job it looks the name up in its own compiled-in vocabulary, validates the parameters itself, checks the operation's class against its root-owned policy, runs it, and posts the result back signed. **A job it does not recognise, or whose parameters do not validate, is refused** — and a refusal is recorded as such, so it can be counted rather than grepped for.
 
-**Supported operations** (all defined in PHP, not Go):
+Anything destructive needs one thing more: an approval the node issues itself, sealed to its own backup recovery key and answered by a human on that node's own site. The answer never passes through the management node in either direction, so a fully compromised management node still cannot destroy anything.
 
-| Operation | What it does |
-|-----------|-------------|
-| Test Connection | SSH echo to verify node reachability |
-| Check Status | Collects disk, memory, uptime, PostgreSQL stats, error logs |
-| Backup Database | Runs `pg_dump` on the remote node with optional encryption |
-| Backup Project | Archives the remote Joinery installation files |
-| Fetch Backup | SCP downloads a backup file from a remote node |
-| Copy Database | Dumps source DB, transfers to target node, restores (with auto-safety backup) |
-| Restore Database | Restores a database from a backup file (with auto-safety backup) |
-| Apply Update | Runs `upgrade.php` on a remote node to apply a Joinery version update |
-| Publish Upgrade | Runs `publish_upgrade.php` locally to package a new release |
-| Discover Nodes | Probes a remote host via SSH to find Joinery instances (Docker and bare metal) |
+**Where the database fits.** The agent reads its own site's database to answer questions about the machine it runs on, and writes one row to it — its own heartbeat. It takes no work from it. Inserting a row into `mjb_management_jobs` by hand executes nothing.
 
 **Key database tables:**
 
-- `mjb_management_jobs` -- Job queue with status tracking, step JSON, and output
-- `mgn_managed_nodes` -- Remote server inventory with SSH credentials and health data
-- `ahb_agent_heartbeats` -- Agent liveness tracking (the admin dashboard shows online/offline based on heartbeat age)
+- `mgn_managed_nodes` -- the management node's inventory: each node's public key, agent version, reported vocabulary and health
+- `mjb_management_jobs` -- the management node's queue, handed out over the channel; not a source of work for any agent
+- `ahb_agent_heartbeats` -- agent liveness on a machine that runs the plugin (the dashboard shows version, pending update and last-seen)
 
 ## Architecture
 
 ```
-Plugin (PHP)                          Agent (Go)
+Management node (PHP)                 Agent (Go), on the managed machine
   |                                      |
-  |  1. Admin triggers operation         |
-  |  2. JobCommandBuilder generates      |
-  |     ordered step array               |
-  |  3. Writes job row to DB             |
-  |     (status = 'pending')             |
+  |  1. Admin triggers an operation      |
+  |  2. JobCommandBuilder emits          |
+  |     {primitive, params}              |
+  |  3. Job stored, awaiting a claim     |
   |                                      |
-  |                                      |  4. Agent polls, finds pending job
-  |                                      |  5. Claims job (status = 'running')
-  |                                      |  6. Executes steps sequentially:
-  |                                      |     - ssh: SSH to host, run command
-  |                                      |     - scp: file transfer
-  |                                      |     - local: run on control plane
-  |                                      |  7. Writes output to mjb_output
-  |                                      |  8. Marks job completed/failed
+  |         <---- signed claim --------  |  4. Agent asks: anything for me?
+  |         ----- job envelope ------->  |
+  |                                      |  5. Name looked up in THIS binary's
+  |                                      |     vocabulary; unknown = refused
+  |                                      |  6. Params validated here, not there
+  |                                      |  7. Policy check; destructive also
+  |                                      |     needs the node's own approval
+  |                                      |  8. Runs. Scripts are verified
+  |                                      |     against the signed manifest
+  |         <---- signed result -------  |  9. completed | failed | refused
   |                                      |
-  |  9. UI polls ajax/job_status.php     |
-  |     for live output                  |
+  | 10. UI streams the result            |
 ```
 
-## Three Primitives
-
-| Type | Description |
-|------|-------------|
-| `ssh` | Connect to host via SSH, run a command. Auto-wraps in `docker exec` for container nodes. |
-| `scp` | Copy a file between control plane and remote host (upload or download). |
-| `local` | Run a command on the control plane itself. |
+The one exception is a machine's first minutes: `install_node` and `retire_install_password` run plane-side, over the provision's sealed password, because there is no agent yet to dispatch to. They are the only SSH the platform does, and the only jobs that carry steps rather than a name.
 
 ## Prerequisites
 
@@ -155,33 +138,43 @@ Database credentials are read automatically from `Globalvars_site.php`. Environm
 | `DB_NAME` | _(from Globalvars)_ | Database name (override) |
 | `DB_USER` | _(from Globalvars)_ | Database user (override) |
 | `DB_PASSWORD` | _(from Globalvars)_ | Database password (override) |
-| `POLL_INTERVAL` | `5s` | Job queue poll interval |
 | `HEARTBEAT_INTERVAL` | `30s` | Heartbeat update interval |
 | `AGENT_NAME` | `joinery-agent` | Agent identifier (shown in admin UI) |
 
 ## Safety Features
 
-1. **Stale job recovery**: On startup, any jobs stuck in `running` state are marked `failed` with a descriptive message. This handles agent crashes mid-job.
+1. **A bounded vocabulary**: the agent runs the operations compiled into this binary and nothing else. It cannot be sent a command, a script path, a version source or an arbitrary argument, because no primitive declares a parameter that could carry one.
 
-2. **Per-node concurrency lock**: The agent skips pending jobs if another job is already `running` on the same node, preventing conflicting operations (e.g., backup + update on the same server).
+2. **The node validates its own parameters**: every primitive checks what it was handed before acting. A management node cannot talk a node into an operation the node would not do on its own.
 
-3. **Step timeout**: Each step has a 30-minute default timeout. Override per-step with a `timeout` field in the step JSON. On timeout, the SSH session is killed and the job fails.
+3. **A root-owned policy**: which classes of operation this machine accepts is a file only root can write, on the machine itself. Destructive operations additionally need an approval the node issues and verifies itself, answered by a human on that node's own site.
 
-4. **Single-threaded execution**: One job at a time. Queued jobs run sequentially. This simplifies concurrency, SSH connection management, and output logging.
+4. **Scripts are verified before they run**: a script primitive checks the file against the signed release manifest, using the release key compiled into this binary. A machine with nothing to verify against refuses rather than running unverified.
 
-5. **SSH connection pooling**: Within a single job, SSH connections to the same host are reused across steps, avoiding repeated authentication overhead.
+5. **Single-threaded execution**: one job at a time, under a lock the self-update, bundle sync and manifest healer also take — so nothing swaps the binary or its scripts out from under a running job.
+
+6. **A claim that never comes back is returned**: the management node re-queues a claim older than its budget and fails the job after three, so a crash mid-job strands nothing.
 
 ## File Structure
 
 ```
 joinery-agent/
-  main.go          Entry point, signal handling, poll loop
-  config.go        Configuration from environment variables
-  db.go            PostgreSQL: job claiming, output writing, heartbeat
-  runner.go        Step executor: dispatches to ssh/scp/local handlers
-  ssh.go           SSH connection pooling and remote command execution
-  scp.go           SCP file transfer (upload/download)
-  server.go        Node connection info struct
+  main.go          Entry point: starts the job source and the watchers, then waits
+  config.go        This machine's own configuration and posture
+  remote.go        The signed channel: claim, run, post the result
+  primitives/      The vocabulary — one file per operation, plus the policy
+  approval.go      Destructive approval: the node's own challenge and its answer
+  victim.go        A host asking a site for consent to its own removal
+  join.go          Node-initiated enrollment
+  leave.go         Ending a pairing from this side
+  stagedwatch.go   Finishing a CLI join once the management node approves
+  identity.go      This node's Ed25519 identity
+  update.go        Signed self-update, with a watchdog rollback
+  bundle.go        The support bundle, for a machine with no site tree
+  manifestheal.go  Recovering a node that has stopped trusting its own files
+  quiet.go         The run switch
+  db.go            This machine's own site database: facts out, heartbeat in
+  cli.go           One-shot operator subcommands
   Makefile          build / test / release targets
   go.mod            Go module definition
   install/

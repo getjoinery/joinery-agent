@@ -20,16 +20,12 @@ type Config struct {
 	DBUser     string
 	DBPassword string
 
-	PollInterval      time.Duration
+	// How often the heartbeat row is refreshed. There is no poll interval
+	// beside it: how often this agent asks its management node for work is the
+	// management node's decision, delivered at join and clamped on arrival
+	// (RemoteSource, clampPollInterval), not a local setting.
 	HeartbeatInterval time.Duration
 	AgentName         string
-
-	// SecretBoxKey is the site's secret_box_key (base64, 32 bytes) read from
-	// Globalvars_site.php. Used to unseal backup-target credentials resolved
-	// from __SM_CREDS_<id>__ placeholders at step-execution time. Empty on a
-	// site that has no key configured — placeholder resolution then works only
-	// for legacy plaintext targets and fails loudly for encrypted ones.
-	SecretBoxKey string
 
 	// SiteRoot is the directory holding config/ and public_html/ — the tree a
 	// script-invoking primitive's paths resolve against, and the tree the signed
@@ -47,14 +43,6 @@ type Config struct {
 
 	// PolicyPath is the root-owned acceptance policy (§3.3).
 	PolicyPath string
-
-	// LocalJobs is whether this agent also serves the plane-local job queue in
-	// its own database. Starts true and is settled at startup by looking for
-	// the tables that queue lives in: a machine that is purely a managed node
-	// has no plane-local work, and polling a queue that is not its business is
-	// not something to leave to configuration. AGENT_LOCAL_JOBS=0 forces it off
-	// on a control plane that should not serve its own queue.
-	LocalJobs bool
 
 	// AgentDistDir is where platform releases deliver the shipped agent
 	// artifact (manifest.json + signed binaries). Derived from the site tree
@@ -141,9 +129,7 @@ func LoadConfig() (*Config, error) {
 		DBPort:            "5432",
 		DBUser:            "postgres",
 		AgentName:         "joinery-agent",
-		PollInterval:      5 * time.Second,
 		HeartbeatInterval: 30 * time.Second,
-		LocalJobs:         true,
 	}
 
 	// Step 1: Try to read DB credentials from Globalvars_site.php
@@ -171,9 +157,6 @@ func LoadConfig() (*Config, error) {
 		}
 		if v, ok := phpSettings["dbpassword"]; ok {
 			cfg.DBPassword = v
-		}
-		if v, ok := phpSettings["secret_box_key"]; ok {
-			cfg.SecretBoxKey = v
 		}
 	}
 
@@ -231,13 +214,6 @@ func LoadConfig() (*Config, error) {
 	}
 	cfg.PlaneTLSInsecure = os.Getenv("JOINERY_PLANE_TLS_INSECURE") == "1"
 	cfg.PolicyPath = getEnv("AGENT_POLICY_PATH", primitives.DefaultPolicyPath)
-	if os.Getenv("AGENT_LOCAL_JOBS") == "0" {
-		cfg.LocalJobs = false
-	}
-
-	if d, err := time.ParseDuration(os.Getenv("POLL_INTERVAL")); err == nil {
-		cfg.PollInterval = d
-	}
 	if d, err := time.ParseDuration(os.Getenv("HEARTBEAT_INTERVAL")); err == nil {
 		cfg.HeartbeatInterval = d
 	}
@@ -249,7 +225,6 @@ func LoadConfig() (*Config, error) {
 	// a siteless machine CAN be pointed at a database if it ever has a reason
 	// to; it simply is not required to have one.
 	if cfg.Siteless {
-		cfg.LocalJobs = false // no plane-local queue without a plane-local database
 		return cfg, nil
 	}
 

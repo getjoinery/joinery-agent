@@ -68,9 +68,6 @@ func TestASitelessMachineInventsNoPaths(t *testing.T) {
 				"and never a relative path", name, value)
 		}
 	}
-	if cfg.LocalJobs {
-		t.Error("a machine with no database cannot serve a plane-local job queue")
-	}
 }
 
 func TestAnUnreadableSiteConfigIsNotASitelessMachine(t *testing.T) {
@@ -143,9 +140,6 @@ func TestASiteHavingMachineIsUnchanged(t *testing.T) {
 	}
 	if want := filepath.Join(root, "public_html", "agent_dist"); cfg.AgentDistDir != want {
 		t.Errorf("AgentDistDir is %q, want %q", cfg.AgentDistDir, want)
-	}
-	if !cfg.LocalJobs {
-		t.Error("a site-having machine still probes for its local job queue")
 	}
 }
 
