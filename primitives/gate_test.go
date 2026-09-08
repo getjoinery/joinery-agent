@@ -34,7 +34,11 @@ var pinnedVocabulary = map[string]Class{
 	"check_status":        ClassObserve,
 	"list_backups":        ClassObserve,
 	"recovery_key_report": ClassObserve,
-	"backup_run":          ClassOperate,
+	// How the first-boot install went, read off the logs it left. Observe: it
+	// reads a compiled-in list of files and takes no parameter — a path
+	// parameter would make it "read this file for me", whatever its name.
+	"install_report": ClassObserve,
+	"backup_run":     ClassOperate,
 
 	"restart_agent":         ClassOperate,
 	"upload_backup":         ClassOperate,
