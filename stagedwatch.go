@@ -14,6 +14,9 @@ import (
 // than the sited watcher's poll.
 const stagedPollInterval = 30 * time.Second
 
+// After a rejection the ask continues, but slowly: the plane may reopen it.
+const rejectedPollInterval = 5 * time.Minute
+
 // StagedJoinWatcher finishes a join that was asked for at the CLI.
 //
 // A sited node's JoinWatcher reads the admin page's request from stg_settings
@@ -68,6 +71,7 @@ func (w *StagedJoinWatcher) Run(ctx context.Context) {
 	}
 	caller := &JoinWatcher{cfg: w.cfg, agentVersion: w.agentVersion}
 	lastWarning := ""
+	rejectedSaid := false
 
 	for {
 		select {
@@ -104,6 +108,9 @@ func (w *StagedJoinWatcher) Run(ctx context.Context) {
 			continue
 		}
 		lastWarning = ""
+		if status.Status != "rejected" {
+			rejectedSaid = false
+		}
 
 		switch status.Status {
 		case "approved":
@@ -127,9 +134,19 @@ func (w *StagedJoinWatcher) Run(ctx context.Context) {
 			start()
 			return
 		case "rejected":
-			// The key was declined; it is never presented again.
-			log.Printf("join: %s rejected this machine's request; the staged key has been discarded", staged.PlaneURL)
-			discardStagedIdentity()
+			// Declined — for now. A rejection can be a mis-click, and the
+			// plane can reopen the request for a day; the staged key stays so
+			// a reopened request is answered by the same fingerprint the
+			// human already compared. Ask slowly, and say so once.
+			if !rejectedSaid {
+				log.Printf("join: %s rejected this machine's request; keeping the key and checking every %s in case it is reopened there (run `joinery-agent leave` to stop)", staged.PlaneURL, rejectedPollInterval)
+				rejectedSaid = true
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(rejectedPollInterval - interval):
+			}
 		case "expired", "unknown":
 			// The plane no longer holds the ask (its hour passed, or it was
 			// rebuilt). Ask again with the SAME key: the fingerprint the

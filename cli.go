@@ -135,8 +135,9 @@ func cliJoin(args []string) int {
 	watcher := &JoinWatcher{cfg: cfg, agentVersion: version}
 
 	// A staged keypair belongs to one ask. Asking a different plane discards it
-	// rather than presenting the same key twice — the node-side half of "a
-	// rejected key is never re-presented".
+	// rather than presenting the same key to two planes. The SAME plane may see
+	// it again: a rejection there is reversible for a day, and the reopened
+	// request is answered by the fingerprint the human already compared.
 	staged := loadStagedIdentity()
 	if staged != nil && staged.PlaneURL != planeURL {
 		discardStagedIdentity()
@@ -195,9 +196,9 @@ func cliJoin(args []string) int {
 	case "approved":
 		return finishJoin(planeURL, staged, status, fingerprint)
 	case "rejected":
-		discardStagedIdentity()
-		fmt.Printf("The management node REJECTED this request. The staged key has been discarded;\n")
-		fmt.Printf("running join again asks with a fresh one.\n")
+		fmt.Printf("The management node REJECTED this request. The key is kept: if the request is\n")
+		fmt.Printf("reopened there, the running agent finishes the join on its own, and running join\n")
+		fmt.Printf("again asks with the same fingerprint. `joinery-agent leave` discards it.\n")
 		return 1
 	}
 
@@ -222,8 +223,8 @@ func cliJoin(args []string) int {
 		case "approved":
 			return finishJoin(planeURL, staged, status, fingerprint)
 		case "rejected":
-			discardStagedIdentity()
-			fmt.Printf("The management node REJECTED this request. The staged key has been discarded.\n")
+			fmt.Printf("The management node REJECTED this request. The key is kept in case it is reopened\n")
+			fmt.Printf("there; the running agent keeps checking. `joinery-agent leave` discards it.\n")
 			return 1
 		}
 	}
