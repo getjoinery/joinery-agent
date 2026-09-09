@@ -210,7 +210,7 @@ func TestCheckStatusCollectsWithoutADatabase(t *testing.T) {
 	if err != nil {
 		t.Fatalf("check_status failed: %v", err)
 	}
-	for _, key := range []string{"disk_usage_percent", "memory_total_mb", "load_1m", "uptime"} {
+	for _, key := range []string{"disk_usage_percent", "memory_total_mb", "swap_total_mb", "swap_used_mb", "load_1m", "uptime"} {
 		if _, ok := result[key]; !ok {
 			t.Errorf("result is missing %q — the key set must match the management API's stats endpoint", key)
 		}

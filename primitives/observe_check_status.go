@@ -96,13 +96,17 @@ func collectMemory(result map[string]interface{}) {
 	if err != nil {
 		return
 	}
-	var totalKB, availKB int64
+	var totalKB, availKB, swapTotalKB, swapFreeKB int64
 	for _, line := range strings.Split(string(raw), "\n") {
 		switch {
 		case strings.HasPrefix(line, "MemTotal:"):
 			totalKB = parseMeminfoKB(line)
 		case strings.HasPrefix(line, "MemAvailable:"):
 			availKB = parseMeminfoKB(line)
+		case strings.HasPrefix(line, "SwapTotal:"):
+			swapTotalKB = parseMeminfoKB(line)
+		case strings.HasPrefix(line, "SwapFree:"):
+			swapFreeKB = parseMeminfoKB(line)
 		}
 	}
 	if totalKB <= 0 {
@@ -116,6 +120,16 @@ func collectMemory(result map[string]interface{}) {
 		result["memory_used_mb"] = used
 	} else {
 		result["memory_used_mb"] = int64(0)
+	}
+	// Swap is reported even when there is none: a box running without swap
+	// is a fact the dashboard shows, not a reading that failed to arrive.
+	swapTotalMB := (swapTotalKB + 512) / 1024
+	swapFreeMB := (swapFreeKB + 512) / 1024
+	result["swap_total_mb"] = swapTotalMB
+	if used := swapTotalMB - swapFreeMB; used > 0 {
+		result["swap_used_mb"] = used
+	} else {
+		result["swap_used_mb"] = int64(0)
 	}
 }
 
