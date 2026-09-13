@@ -91,6 +91,13 @@ var pinnedVocabulary = map[string]Class{
 	"download_backup": ClassOperate,
 	"stage_chain":     ClassOperate,
 
+	// Proving a backup is recoverable without restoring it: the set is read to
+	// the end, or replayed into scratch and a throwaway database. Nothing on
+	// the live site is touched at any level, which is what lets a schedule
+	// dispatch it with no approval. A level that touched the live tree would
+	// belong in the restore family below.
+	"verify_backup": ClassOperate,
+
 	// The management node's own release build, dispatched to the plane's own
 	// agent once the plane has paired to itself
 	// (specs/agent_local_queue_retirement.md, G1). Operate, not destructive:

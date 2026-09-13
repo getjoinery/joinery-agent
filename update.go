@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"bytes"
 	"compress/gzip"
 	"crypto/ed25519"
@@ -9,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -45,8 +45,8 @@ const (
 )
 
 type distManifest struct {
-	Version  string                  `json:"version"`
-	Binaries map[string]distBinary   `json:"binaries"`
+	Version  string                `json:"version"`
+	Binaries map[string]distBinary `json:"binaries"`
 }
 
 type distBinary struct {
