@@ -198,17 +198,44 @@ func (r *RemoteSource) Run(ctx context.Context) {
 		case <-time.After(wait):
 		}
 
-		job, err := r.claim(ctx)
-		if err != nil {
-			r.noteFailure(err)
-			continue
-		}
-		r.backoff = 0
-		if job == nil {
-			continue
-		}
-		r.runJob(ctx, job)
+		r.pollOnce(ctx)
 	}
+}
+
+// pollOnce claims at most one job and runs it, holding the job lock across
+// BOTH steps.
+//
+// The lock is taken before the claim, not after, and it is tried rather than
+// waited for. A claim is a promise to the plane: the job is marked running
+// the moment the plane hands it over, and only this process can keep that
+// promise. The self-update holds the same lock while it swaps the binary and
+// then exits the process. Claiming first and locking second let this loop
+// make the promise while the updater held the lock, and the updater's exit
+// then took the claimed job down with it: never run, never reported, stuck in
+// running until the plane's claim budget gave it back. Seen on the plane's own
+// node after a publish that shipped a new agent version, since the publish
+// queues a converge job seconds after the artifact appears.
+//
+// Skipping the tick is the right answer when the lock is held: whoever holds
+// it is either running a job (so this agent is busy anyway) or about to exit
+// (so the next process polls). The job waits in the queue a poll interval
+// longer and is claimed by a process that will live to report it.
+func (r *RemoteSource) pollOnce(ctx context.Context) {
+	if !r.jobLock.TryLock() {
+		return
+	}
+	defer r.jobLock.Unlock()
+
+	job, err := r.claim(ctx)
+	if err != nil {
+		r.noteFailure(err)
+		return
+	}
+	r.backoff = 0
+	if job == nil {
+		return
+	}
+	r.runJobLocked(ctx, job)
 }
 
 // noteFailure backs off exponentially and logs the first occurrence of each
@@ -341,13 +368,20 @@ func (r *RemoteSource) dropExtrasIfRefused(err error) bool {
 	return true
 }
 
-// runJob executes one primitive and reports the outcome.
+// runJob executes one primitive and reports the outcome, taking the job lock
+// for the duration. The poll loop does not use it: it holds the lock from
+// before the claim (see pollOnce) and calls runJobLocked directly.
 func (r *RemoteSource) runJob(ctx context.Context, job *RemoteJob) {
 	r.jobLock.Lock()
 	defer r.jobLock.Unlock()
+	r.runJobLocked(ctx, job)
+}
 
-	// Held for exactly as long as the lock is, because they answer the same
-	// question from two sides: the lock stops this agent swapping its own binary
+// runJobLocked executes one primitive and reports the outcome. The caller
+// holds the job lock.
+func (r *RemoteSource) runJobLocked(ctx context.Context, job *RemoteJob) {
+	// Held for as long as the lock is, because they answer the same question
+	// from two sides: the lock stops this agent swapping its own binary
 	// mid-job, and the marker stops install_agent.sh doing it from the outside
 	// when a job runs the upgrade or the host installers. See jobmarker.go.
 	clearJobMarker := markJobRunning(job.JobID)
