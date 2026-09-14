@@ -52,6 +52,14 @@ var pinnedVocabulary = map[string]Class{
 	"upload_backup":         ClassOperate,
 	"delete_backup":         ClassOperate,
 	"run_plugin_installers": ClassOperate,
+	// The first operate word of specs/agent_tier1_recipes.md: run
+	// host_housekeeping.sh (fail2ban and the host's daily housekeeping)
+	// through the same runner as run_plugin_installers, in its
+	// single-installer mode. The one argv element is a compiled constant —
+	// no parameter, no slot, no builder — and the runner refuses any name
+	// outside its CORE_INSTALLERS anyway. Operate: it rewrites configuration
+	// the release owns, as the host timer already does daily unattended.
+	"host_converge": ClassOperate,
 
 	"ssl_probe_place": ClassOperate,
 	"ssl_probe_clear": ClassOperate,
