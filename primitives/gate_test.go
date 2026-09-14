@@ -38,7 +38,15 @@ var pinnedVocabulary = map[string]Class{
 	// reads a compiled-in list of files and takes no parameter — a path
 	// parameter would make it "read this file for me", whatever its name.
 	"install_report": ClassObserve,
-	"backup_run":     ClassOperate,
+	// The machine, as one bounded JSON object: units, jails, an SSH
+	// auth-failure COUNT, sshd posture, disk, memory, reboot-required,
+	// unattended-upgrades (specs/agent_tier1_recipes.md). Observe, and a
+	// script word with NO parameters: the shipped host_report.sh is the whole
+	// of what runs, verified against the manifest first. The owner accepted
+	// what it discloses to a hostile plane on 2026-09-13; what it never
+	// discloses is who failed to log in or from where.
+	"host_report": ClassObserve,
+	"backup_run":  ClassOperate,
 
 	"restart_agent":         ClassOperate,
 	"upload_backup":         ClassOperate,

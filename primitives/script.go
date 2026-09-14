@@ -1,6 +1,8 @@
 package primitives
 
 // script.go is the ONLY file in this package permitted to start a process.
+// Every process it starts leads its own process group, and a timeout kills
+// the group: see runScriptPrimitive.
 // gate_test.go asserts that: it fails the build's tests if any other file here
 // imports os/exec, and it fails if the string "-c" ever appears next to a shell
 // name anywhere in the package. A future primitive that wants to run something
@@ -16,8 +18,15 @@ import (
 	"os/user"
 	"path/filepath"
 	"strings"
+	"syscall"
+	"time"
 	"unicode/utf8"
 )
+
+// processGroupWaitDelay bounds how long Wait lingers on an output pipe held
+// open by something that escaped the process-group kill. See the cancel
+// block in runScriptPrimitive.
+const processGroupWaitDelay = 5 * time.Second
 
 // MaxScriptOutputBytes bounds what one script may hand back. Output beyond it
 // is dropped and reported as dropped — the count is what the caller reads, not
@@ -136,6 +145,34 @@ func runScriptPrimitive(ctx context.Context, env *ExecEnv, p Primitive, params P
 	}
 
 	cmd := exec.CommandContext(ctx, p.Script.Interpreter, append([]string{scriptPath}, argv...)...)
+
+	// THE WHOLE PROCESS GROUP DIES ON TIMEOUT, not only the interpreter.
+	//
+	// exec.CommandContext on its own kills the direct child when the context
+	// ends. A script that backgrounded something and hung waiting on it — an
+	// installer's keepalive, a stuck apt, a sleep in a fixture — leaves that
+	// grandchild running under init, and after _plugin_installers_start.sh 2.16
+	// a surviving grandchild is a surviving holder of the runner lock: the lock
+	// is a kernel flock on a descriptor every child inherits, so the next
+	// runner waits its full bound on a process nobody started on purpose.
+	//
+	// So the script starts as the leader of its own process group, and cancel
+	// signals the group (the negative pid) rather than the one pid. Every
+	// script word inherits this; there is no per-primitive switch, because a
+	// primitive that opted out would be a primitive that could leave a root
+	// process behind. What it does not cover is a process that calls setsid
+	// and leaves the group on purpose — that is a script deciding to outlive
+	// its caller, and the platform's host_installer contract forbids it.
+	//
+	// WaitDelay is the second half. Wait blocks until the output pipe closes,
+	// and a process that escaped the group still holds the write end; the
+	// delay bounds that wait so a runaway costs the job seconds, not the
+	// primitive's whole timeout a second time.
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
+	cmd.WaitDelay = processGroupWaitDelay
 
 	// Resolved here and handed straight to the process. It is deliberately not
 	// held anywhere that gets logged, returned, or attached to an error — see
