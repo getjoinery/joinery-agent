@@ -21,7 +21,7 @@ import (
 // must stay ABOVE 1.1.0 forever - install_agent.sh's downgrade guard sorts
 // with sort -V and refuses to replace a "newer" binary, so anything below
 // 1.1.0 strands those agents permanently.
-var version = "1.27.0"
+var version = "1.28.0"
 
 // How often the idle loop looks at the shipped agent_dist manifest. Update
 // checks never run while a job is executing.
@@ -139,8 +139,19 @@ func startRecipes(cfg *Config, db *DB, jobLock *sync.Mutex) {
 	loop := recipes.NewLoop(recipes.All(), &recipes.Env{Exec: execEnvFor(cfg, db), Policy: policy}, recipes.Options{
 		Lock:        jobLock,
 		MarkRunning: markRecipeRunning,
+		// The rendered case says whether a management node is polling for it
+		// or the site's own notice is the only reader.
+		Paired: remotePaired,
 	})
 	go loop.Run(context.Background())
+}
+
+// remotePaired reports whether a remote source is running: a management node
+// is polling this agent, so a case it opens rides the claim.
+func remotePaired() bool {
+	remoteStart.mu.Lock()
+	defer remoteStart.mu.Unlock()
+	return remoteStart.source != nil
 }
 
 // execEnvFor is everything a primitive may reach on this machine, built from

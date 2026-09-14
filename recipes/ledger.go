@@ -92,14 +92,35 @@ type Entry struct {
 	Detail  string    `json:"detail,omitempty"`
 }
 
-// Attempt is an attempt as read back: when it started, and how and when it
-// ended, if the ledger says.
+// Attempt is an attempt as read back: when it started, which word it ran in
+// which mode, and how and when it ended, if the ledger says.
 type Attempt struct {
 	ID      int
 	Started time.Time
+	Word    string
+	Mode    string
 	Outcome string
 	Ended   time.Time
+	Detail  string
 }
+
+// Escalation is the most recent escalation as read back, open or closed: the
+// one fact the case is built from (case.go). Opened is the time of its opening
+// line, or of its oldest surviving note when the opening line has been
+// trimmed. Notes counts the failing ticks appended to it.
+type Escalation struct {
+	ID           int
+	Opened       time.Time
+	Reason       string
+	Notes        int
+	LastNote     string
+	LastNoteTime time.Time
+	Closed       time.Time
+	CloseReason  string
+}
+
+// open reports whether the escalation has no closing line.
+func (e Escalation) open() bool { return e.ID != 0 && e.Closed.IsZero() }
 
 // finished reports whether the attempt has an outcome line.
 func (a Attempt) finished() bool { return a.Outcome != "" }
@@ -113,6 +134,7 @@ type AttemptLedger struct {
 
 	attempts     []Attempt
 	openEscalate int // id of the open escalation, 0 for none
+	latest       *Escalation
 	nextID       int
 }
 
@@ -166,14 +188,16 @@ func (l *AttemptLedger) readBack() error {
 		switch e.Event {
 		case EventAttempt:
 			byID[e.ID] = len(l.attempts)
-			l.attempts = append(l.attempts, Attempt{ID: e.ID, Started: e.Time})
+			l.attempts = append(l.attempts, Attempt{ID: e.ID, Started: e.Time, Word: e.Word, Mode: e.Mode})
 		case EventOutcome:
 			if i, ok := byID[e.ID]; ok {
 				l.attempts[i].Outcome = e.Outcome
 				l.attempts[i].Ended = e.Time
+				l.attempts[i].Detail = e.Detail
 			}
 		case EventEscalation:
 			l.openEscalate = e.ID
+			l.latest = &Escalation{ID: e.ID, Opened: e.Time, Reason: e.Reason}
 		case EventEscalationNote:
 			// A note carries the id of the escalation it was appended to, and
 			// an escalation only takes notes while it is open. So a note is
@@ -182,9 +206,19 @@ func (l *AttemptLedger) readBack() error {
 			// newest half of the cap (an escalation held open for weeks
 			// outlives its own first line).
 			l.openEscalate = e.ID
+			if l.latest == nil || l.latest.ID != e.ID {
+				l.latest = &Escalation{ID: e.ID, Opened: e.Time, Reason: e.Reason}
+			}
+			l.latest.Notes++
+			l.latest.LastNote = e.Reason
+			l.latest.LastNoteTime = e.Time
 		case EventEscalationClosed:
 			if l.openEscalate == e.ID {
 				l.openEscalate = 0
+			}
+			if l.latest != nil && l.latest.ID == e.ID {
+				l.latest.Closed = e.Time
+				l.latest.CloseReason = e.Reason
 			}
 		}
 	}
@@ -230,11 +264,21 @@ func (l *AttemptLedger) AttemptsSince(t time.Time) []Attempt {
 // OpenEscalation is the id of the open escalation, or 0.
 func (l *AttemptLedger) OpenEscalation() int { return l.openEscalate }
 
+// Latest is the most recent escalation the ledger records, open or closed, or
+// nil when it records none. A copy: the case built from it is a snapshot.
+func (l *AttemptLedger) Latest() *Escalation {
+	if l.latest == nil {
+		return nil
+	}
+	e := *l.latest
+	return &e
+}
+
 // beginAttempt appends the attempt line and returns its id.
 func (l *AttemptLedger) beginAttempt(word, mode string) int {
 	id := l.nextID
 	l.nextID++
-	l.attempts = append(l.attempts, Attempt{ID: id, Started: l.now()})
+	l.attempts = append(l.attempts, Attempt{ID: id, Started: l.now(), Word: word, Mode: mode})
 	l.write(Entry{Event: EventAttempt, ID: id, Word: word, Mode: mode})
 	return id
 }
@@ -245,6 +289,7 @@ func (l *AttemptLedger) endAttempt(id int, outcome, detail string) {
 		if l.attempts[i].ID == id {
 			l.attempts[i].Outcome = outcome
 			l.attempts[i].Ended = l.now()
+			l.attempts[i].Detail = bounded(detail)
 		}
 	}
 	l.write(Entry{Event: EventOutcome, ID: id, Outcome: outcome, Detail: detail})
@@ -255,14 +300,32 @@ func (l *AttemptLedger) openEscalation(reason string) int {
 	id := l.nextID
 	l.nextID++
 	l.openEscalate = id
+	l.latest = &Escalation{ID: id, Opened: l.now().UTC(), Reason: bounded(reason)}
 	l.write(Entry{Event: EventEscalation, ID: id, Reason: reason})
 	return id
+}
+
+// noteEscalation appends a failing tick to the open escalation by id.
+func (l *AttemptLedger) noteEscalation(reason string) {
+	if l.openEscalate == 0 {
+		return
+	}
+	if l.latest != nil && l.latest.ID == l.openEscalate {
+		l.latest.Notes++
+		l.latest.LastNote = bounded(reason)
+		l.latest.LastNoteTime = l.now().UTC()
+	}
+	l.write(Entry{Event: EventEscalationNote, ID: l.openEscalate, Reason: reason})
 }
 
 // closeEscalation appends the closing line for the open escalation.
 func (l *AttemptLedger) closeEscalation(reason string) {
 	if l.openEscalate == 0 {
 		return
+	}
+	if l.latest != nil && l.latest.ID == l.openEscalate {
+		l.latest.Closed = l.now().UTC()
+		l.latest.CloseReason = bounded(reason)
 	}
 	l.write(Entry{Event: EventEscalationClosed, ID: l.openEscalate, Reason: reason})
 	l.openEscalate = 0

@@ -43,6 +43,8 @@ func newHarness(t *testing.T) *harness {
 	HoldDir = filepath.Join(root, "hold")
 	OutwardDir = filepath.Join(root, "cache", "recipes")
 	t.Cleanup(func() { LedgerDir, HoldDir, OutwardDir = restoreLedger, restoreHold, restoreOut })
+	ResetCasesForTests()
+	t.Cleanup(ResetCasesForTests)
 
 	h := &harness{t: t, now: time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)}
 	h.verdict = Verdict{Pass, "fine"}

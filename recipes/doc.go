@@ -80,4 +80,19 @@
 // and the escalation count exactly as if it had run. The burn-in ledger
 // therefore shows the path the armed loop would have taken, on every node,
 // with nothing acting (specs/agent_tier1_recipes.md, "Burn-in").
+//
+// The case (case.go) is the escalation given a body and a delivery, and it
+// changes none of the above. It is the one thing the node pushes at the
+// plane on its own initiative, so the review runs the other way for it: the
+// plane is told, and a compromised node may write what it likes into every
+// field. Here the fields are capped before they leave, so a lie is a bounded
+// lie; on the plane every field is capped again on intake and escaped on
+// render, and nothing in a case reaches a shell, a template or a link. The
+// claim response is not read for anything about cases: the plane cannot
+// close one, reopen one, or tell this node a fault is gone — the recipe's
+// own check passing is the only close. The rendered copy written outward
+// under the site's cache directory is written and never read, like the
+// outward ledger, so a forged one is a lie to the site's admin and one mail,
+// and nothing root acts on. A report-only escalation opens a case just the
+// same: the burn-in's product is exactly those cases.
 package recipes

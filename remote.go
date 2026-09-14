@@ -284,6 +284,7 @@ func (r *RemoteSource) scriptTrust() string {
 
 // claim asks the plane for one job.
 func (r *RemoteSource) claim(ctx context.Context) (*RemoteJob, error) {
+	casesDelivered := func() {}
 	claimBody := map[string]interface{}{
 		"node_id":       r.identity.NodeID,
 		"agent_version": r.agentVersion,
@@ -302,6 +303,16 @@ func (r *RemoteSource) claim(ctx context.Context) (*RemoteJob, error) {
 		// node is report-only (specs/agent_tier1_recipes.md, "Rules of the
 		// loop" — reported at poll beside the vocabulary).
 		claimBody["recipes"] = recipes.Report()
+		// And its cases: for each recipe, the most recent escalation, open or
+		// closed, with the body until a claim carrying it has succeeded. The
+		// one thing a node pushes at the plane on its own initiative
+		// (specs/agent_tier1_recipes.md, "The case"); the plane stores it,
+		// appends to it, records its close — and never tells this node a
+		// fault is gone. Nothing in the claim response is read for it.
+		if cases, ack := recipes.ClaimCases(); cases != nil {
+			claimBody["cases"] = cases
+			casesDelivered = ack
+		}
 		// Empty on a machine with no support bundle, which is every machine
 		// that has a site tree to verify scripts against. It is the only
 		// evidence the plane gets that the bundle actually landed somewhere.
@@ -327,6 +338,7 @@ func (r *RemoteSource) claim(ctx context.Context) (*RemoteJob, error) {
 		}
 		return nil, err
 	}
+	casesDelivered()
 
 	var payload struct {
 		Job *RemoteJob `json:"job"`

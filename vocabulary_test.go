@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"joinery-agent/primitives"
 	"joinery-agent/recipes"
@@ -151,6 +153,9 @@ func TestAnOlderPlaneStillGetsClaimsFromANewerAgent(t *testing.T) {
 	if _, sent := bodies[1]["recipes"]; sent {
 		t.Error("the recipe list is one of the extras, and goes with them")
 	}
+	if _, sent := bodies[1]["cases"]; sent {
+		t.Error("the cases are one of the extras, and go with them")
+	}
 	if bodies[1]["agent_version"] == nil {
 		t.Error("dropping the extras must not drop the version the plane has always accepted")
 	}
@@ -172,5 +177,93 @@ func TestAnUnrelatedRefusalIsStillAnError(t *testing.T) {
 	}
 	if src.extrasDropped {
 		t.Error("an unrelated refusal must not be read as an older plane")
+	}
+}
+
+// A case rides the claim beside the recipe list, in the same extras block,
+// and the body rides until a claim carrying it has succeeded: the plane is
+// told, the plane never answers (specs/agent_tier1_recipes.md, "The case").
+func TestClaimCarriesTheCasesAndTheBodyUntilOneSucceeds(t *testing.T) {
+	root := t.TempDir()
+	restoreLedger, restoreHold, restoreOut := recipes.LedgerDir, recipes.HoldDir, recipes.OutwardDir
+	recipes.LedgerDir = filepath.Join(root, "ledger")
+	recipes.HoldDir = filepath.Join(root, "hold")
+	recipes.OutwardDir = filepath.Join(root, "cache", "recipes")
+	recipes.ResetCasesForTests()
+	t.Cleanup(func() {
+		recipes.LedgerDir, recipes.HoldDir, recipes.OutwardDir = restoreLedger, restoreHold, restoreOut
+		recipes.ResetCasesForTests()
+	})
+
+	// A recipe that always fails, driven to its escalation on a fake clock.
+	now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
+	probe := recipes.Recipe{
+		Name: "probe", MinInterval: recipes.TickInterval, CheckWord: "host_report", RepairWord: "host_converge",
+		Check: func(context.Context, *recipes.Env) recipes.Verdict {
+			return recipes.Verdict{Kind: recipes.Fail, Reason: "down"}
+		},
+		Repair: func(context.Context, *recipes.Env) (string, error) { return "", nil },
+	}
+	loop := recipes.NewLoop([]recipes.Recipe{probe}, nil, recipes.Options{
+		Now:  func() time.Time { return now },
+		Logf: func(string, ...interface{}) {},
+	})
+	for i := 0; i < 7; i++ {
+		now = now.Add(recipes.TickInterval)
+		loop.Tick(context.Background())
+	}
+	if len(recipes.OpenCases()) != 1 {
+		t.Fatalf("setup: expected one open case, got %v", recipes.OpenCases())
+	}
+
+	var bodies []map[string]interface{}
+	refuse := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		var body map[string]interface{}
+		json.NewDecoder(req.Body).Decode(&body)
+		bodies = append(bodies, body)
+		if refuse {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			w.Write([]byte(`{"api_version":"1.0","error":"down for a moment"}`))
+			return
+		}
+		w.Write([]byte(`{"api_version":"1.0","data":{"job":null}}`))
+	}))
+	defer server.Close()
+	src := testSource(t, testIdentity(t, server.URL, 7))
+
+	caseIn := func(body map[string]interface{}) map[string]interface{} {
+		cases, _ := body["cases"].(map[string]interface{})
+		c, _ := cases["recipe:probe"].(map[string]interface{})
+		return c
+	}
+
+	// A claim the plane refused for its own reasons: the body rides again.
+	refuse = true
+	if _, err := src.claim(context.Background()); err == nil {
+		t.Fatal("setup: the refused claim should be an error")
+	}
+	if c := caseIn(bodies[0]); c == nil || c["body"] == nil || c["status"] != "open" {
+		t.Fatalf("the first claim carries the open case with its body: %v", bodies[0]["cases"])
+	}
+	refuse = false
+	if _, err := src.claim(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if c := caseIn(bodies[1]); c == nil || c["body"] == nil {
+		t.Fatal("a claim that failed did not deliver the body, so the next one carries it again")
+	}
+	if _, err := src.claim(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	c := caseIn(bodies[2])
+	if c == nil || c["status"] != "open" {
+		t.Fatalf("the summary rides every claim: %v", bodies[2]["cases"])
+	}
+	if c["body"] != nil {
+		t.Error("once a claim carrying the body succeeded, the summary rides alone")
+	}
+	if bodies[2]["recipes"] == nil || bodies[2]["primitives"] == nil {
+		t.Error("the cases ride beside the recipe list and the vocabulary, not instead of them")
 	}
 }

@@ -53,6 +53,9 @@ type Options struct {
 	MarkRunning func(recipe string) func()
 	// Logf is the agent's log. Default log.Printf.
 	Logf func(format string, args ...interface{})
+	// Paired reports whether a management node is polling this agent, so
+	// the rendered case says which delivery it has. Default: not paired.
+	Paired func() bool
 }
 
 // Loop runs every registered recipe on the tick.
@@ -63,6 +66,7 @@ type Loop struct {
 	lock        Locker
 	markRunning func(recipe string) func()
 	logf        func(format string, args ...interface{})
+	paired      func() bool
 
 	// reportOnly is ReportOnly, held in a field so the state machine's tests
 	// can exercise both the armed and the report-only paths. Nothing outside
@@ -99,6 +103,7 @@ func NewLoop(recipes []Recipe, env *Env, opts Options) *Loop {
 		lock:        opts.Lock,
 		markRunning: opts.MarkRunning,
 		logf:        opts.Logf,
+		paired:      opts.Paired,
 		reportOnly:  ReportOnly,
 		state:       map[string]*recipeState{},
 	}
@@ -114,7 +119,21 @@ func NewLoop(recipes []Recipe, env *Env, opts Options) *Loop {
 	if l.logf == nil {
 		l.logf = log.Printf
 	}
+	if l.paired == nil {
+		l.paired = func() bool { return false }
+	}
 	return l
+}
+
+// postCase puts a recipe's case on the board for the next claim and writes
+// the rendered copy outward. A nil body keeps the body the board already
+// holds for the same id (a note or a close never recomposes it).
+func (l *Loop) postCase(r Recipe, c Case, body *CaseBody) {
+	board.post(c, body)
+	board.mu.Lock()
+	kept := board.entries[c.Source].body
+	board.mu.Unlock()
+	writeOutwardCase(r.Name, c, kept, l.paired(), l.now())
 }
 
 // Run ticks every TickInterval until the context ends. The first tick is one
@@ -190,6 +209,17 @@ func (l *Loop) tickOne(ctx context.Context, r Recipe) {
 		if st.escalation != 0 {
 			l.logf("recipe %s: escalation #%d is open from a previous process; checking only until the check passes", r.Name, st.escalation)
 		}
+		// The case is the escalation, and the plane may not have heard it: an
+		// open one is composed again and rides with its body; a closed one
+		// rides as a summary until the next escalation replaces it, so the
+		// close reaches a plane that was not listening when it happened.
+		if latest := led.Latest(); latest != nil {
+			var body *CaseBody
+			if latest.open() {
+				body = l.composeBody(ctx, r, led, latest.Opened)
+			}
+			l.postCase(r, caseOf(r, *latest), body)
+		}
 	}
 
 	verdict := r.Check(ctx, l.env)
@@ -206,6 +236,9 @@ func (l *Loop) tickOne(ctx context.Context, r Recipe) {
 			l.logf("recipe %s: check passes again; escalation #%d closed", r.Name, st.escalation)
 			if led != nil {
 				led.closeEscalation("the check passes: " + verdict.Reason)
+				if latest := led.Latest(); latest != nil {
+					l.postCase(r, caseOf(r, *latest), nil)
+				}
 			}
 			st.escalation = 0
 		}
@@ -241,7 +274,12 @@ func (l *Loop) tickOne(ctx context.Context, r Recipe) {
 	}
 
 	if st.escalation != 0 {
-		led.note(Entry{Event: EventEscalationNote, ID: st.escalation, Reason: verdict.Reason})
+		// One open case per recipe: a failing tick while it is open is a note
+		// appended by id, never a second escalation and never a second case.
+		led.noteEscalation(verdict.Reason)
+		if latest := led.Latest(); latest != nil {
+			l.postCase(r, caseOf(r, *latest), nil)
+		}
 		return
 	}
 
@@ -256,6 +294,12 @@ func (l *Loop) tickOne(ctx context.Context, r Recipe) {
 			len(attempts), verdict.Reason)
 		st.escalation = led.openEscalation(reason)
 		l.logf("recipe %s: ESCALATION #%d: %s", r.Name, st.escalation, reason)
+		// The escalation is a case: composed now, with a fresh host_report,
+		// and on the board for the next claim (case.go).
+		if latest := led.Latest(); latest != nil {
+			l.postCase(r, caseOf(r, *latest), l.composeBody(ctx, r, led, latest.Opened))
+			l.logf("recipe %s: case #%d opened (%s); it rides the next poll and closes when the check passes", r.Name, st.escalation, CaseSourceRecipe+r.Name)
+		}
 		return
 	}
 	if n := len(attempts); n > 0 {
