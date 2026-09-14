@@ -67,6 +67,34 @@ func TestTheMarkerNamesThisProcessFirst(t *testing.T) {
 	}
 }
 
+func TestARecipeAttemptWritesTheSameMarkerWithItsName(t *testing.T) {
+	// A recipe attempt (recipes/loop.go) runs an installer that may restart the
+	// agent exactly as a job does. Same file, same pid first — that is all
+	// install_agent.sh reads — and the recipe's name where a job's id would be.
+	path := withTempMarker(t)
+	clear := markRecipeRunning("fail2ban")
+
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(body)), "\n")
+	if len(lines) < 2 {
+		t.Fatalf("the marker should carry the pid and the recipe, got %q", body)
+	}
+	if pid, err := strconv.Atoi(strings.TrimSpace(lines[0])); err != nil || pid != os.Getpid() {
+		t.Errorf("the first line must stay the bare pid of this process, got %q", lines[0])
+	}
+	if strings.TrimSpace(lines[1]) != "recipe fail2ban" {
+		t.Errorf("the second line should name the recipe, got %q", lines[1])
+	}
+
+	clear()
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Error("the marker outlived the attempt")
+	}
+}
+
 func TestAnUnwritableMarkerDoesNotStopTheJob(t *testing.T) {
 	// The consequence of no marker is the old behaviour — a restart mid-job and
 	// a requeue — which is wasteful. The consequence of refusing to run would be

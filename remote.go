@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"joinery-agent/primitives"
+	"joinery-agent/recipes"
 )
 
 // The node-posture job source: the agent polls its control plane outbound over
@@ -295,6 +296,12 @@ func (r *RemoteSource) claim(ctx context.Context) (*RemoteJob, error) {
 		// agents that predated it and all nine refused — a plane reading a
 		// version number and inferring a capability from it.
 		claimBody["primitives"] = strings.Join(primitives.Names(), ",")
+		// And the recipes it runs on its own clock, each with its mode, for
+		// the same reason: the plane must never guess which recipes a node
+		// has or whether they act, and the node page shows a person that a
+		// node is report-only (specs/agent_tier1_recipes.md, "Rules of the
+		// loop" — reported at poll beside the vocabulary).
+		claimBody["recipes"] = recipes.Report()
 		// Empty on a machine with no support bundle, which is every machine
 		// that has a site tree to verify scripts against. It is the only
 		// evidence the plane gets that the bundle actually landed somewhere.

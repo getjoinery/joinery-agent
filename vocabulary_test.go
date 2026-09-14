@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"joinery-agent/primitives"
+	"joinery-agent/recipes"
 )
 
 // The plane must never GUESS a node's vocabulary. It did once, from a version
@@ -51,6 +52,32 @@ func TestClaimReportsThisAgentsVocabulary(t *testing.T) {
 			if !(r >= 'a' && r <= 'z') && !(r >= '0' && r <= '9') && r != '_' {
 				t.Errorf("primitive name %q carries a character the wire format does not allow", name)
 			}
+		}
+	}
+}
+
+// The recipe list rides beside the vocabulary, with its mode: the plane must
+// never guess which recipes a node runs, and a person on the node page must
+// be able to see that a node is report-only.
+func TestClaimReportsThisAgentsRecipesWithTheirMode(t *testing.T) {
+	var claimed map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		json.NewDecoder(req.Body).Decode(&claimed)
+		w.Write([]byte(`{"api_version":"1.0","data":{"job":null}}`))
+	}))
+	defer server.Close()
+
+	src := testSource(t, testIdentity(t, server.URL, 7))
+	if _, err := src.claim(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	reported, _ := claimed["recipes"].(string)
+	if reported != recipes.Report() {
+		t.Fatalf("a claim must report the recipes this binary compiles in; got %q, want %q", reported, recipes.Report())
+	}
+	for _, name := range recipes.Names() {
+		if !strings.Contains(","+reported+",", ","+name+":"+recipes.Mode()+",") {
+			t.Errorf("recipe %s should be reported with its mode %s, got %q", name, recipes.Mode(), reported)
 		}
 	}
 }
@@ -120,6 +147,9 @@ func TestAnOlderPlaneStillGetsClaimsFromANewerAgent(t *testing.T) {
 	}
 	if _, sent := bodies[1]["primitives"]; sent {
 		t.Error("the second claim still carried the field the plane refused")
+	}
+	if _, sent := bodies[1]["recipes"]; sent {
+		t.Error("the recipe list is one of the extras, and goes with them")
 	}
 	if bodies[1]["agent_version"] == nil {
 		t.Error("dropping the extras must not drop the version the plane has always accepted")

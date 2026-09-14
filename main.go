@@ -7,11 +7,13 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
 
 	"joinery-agent/primitives"
+	"joinery-agent/recipes"
 )
 
 // Version numbering note: agents deployed before the 2026-07 repo reset carry
@@ -19,7 +21,7 @@ import (
 // must stay ABOVE 1.1.0 forever - install_agent.sh's downgrade guard sorts
 // with sort -V and refuses to replace a "newer" binary, so anything below
 // 1.1.0 strands those agents permanently.
-var version = "1.26.1"
+var version = "1.27.0"
 
 // How often the idle loop looks at the shipped agent_dist manifest. Update
 // checks never run while a job is executing.
@@ -104,6 +106,48 @@ func startRemoteSource(cfg *Config, db *DB, jobLock *sync.Mutex, agentVersion st
 		return nil
 	}
 
+	env := execEnvFor(cfg, db)
+
+	source := NewRemoteSource(identity, policy, env, jobLock, agentVersion)
+	go source.Run(context.Background())
+	remoteStart.source = source
+	return source
+}
+
+// startRecipes starts the check loop over every compiled recipe.
+//
+// It runs whether or not the machine is paired: a self-hosted box with no
+// management node is exactly the machine that has nobody else to repair it.
+// The words it runs go through the same env and policy a plane job would, so
+// a node whose policy refuses operate words gets a ledgered refusal, not a
+// repair. A policy that cannot be loaded at all stops the loop before it
+// starts and says so; nothing here may act on a node whose own rules it
+// cannot read.
+//
+// The outward ledger copy goes under the site's cache directory, where the
+// site's admin can render it; a machine with no site has nowhere to render
+// one and writes none.
+func startRecipes(cfg *Config, db *DB, jobLock *sync.Mutex) {
+	policy, err := primitives.LoadPolicy(cfg.PolicyPath)
+	if err != nil {
+		log.Printf("ERROR: acceptance policy unusable, so no recipe runs: %v", err)
+		return
+	}
+	if !cfg.Siteless {
+		recipes.OutwardDir = filepath.Join(cfg.SiteRoot, "cache", "recipes")
+	}
+	loop := recipes.NewLoop(recipes.All(), &recipes.Env{Exec: execEnvFor(cfg, db), Policy: policy}, recipes.Options{
+		Lock:        jobLock,
+		MarkRunning: markRecipeRunning,
+	})
+	go loop.Run(context.Background())
+}
+
+// execEnvFor is everything a primitive may reach on this machine, built from
+// this machine's own config. One builder for both callers — the remote source
+// for plane-dispatched jobs, and the recipe loop for the words it runs unasked
+// — so a recipe runs its words under exactly the env a job would.
+func execEnvFor(cfg *Config, db *DB) *primitives.ExecEnv {
 	// Nil on a machine with no site, and that nil is load-bearing. ExecEnv.DB
 	// is the collectors' test for "is there a database to ask about" —
 	// check_status skips its database section when it is nil, and REPORTS A
@@ -116,7 +160,7 @@ func startRemoteSource(cfg *Config, db *DB, jobLock *sync.Mutex, agentVersion st
 		dbForPrimitives = db.Provider()
 	}
 
-	env := &primitives.ExecEnv{
+	return &primitives.ExecEnv{
 		SiteRoot: cfg.SiteRoot,
 		WebRoot:  cfg.WebRoot,
 		DB:       dbForPrimitives,
@@ -162,11 +206,6 @@ func startRemoteSource(cfg *Config, db *DB, jobLock *sync.Mutex, agentVersion st
 		// the primitive refuses. See victim.go.
 		VictimCeremony: victimCeremonyFor(cfg),
 	}
-
-	source := NewRemoteSource(identity, policy, env, jobLock, agentVersion)
-	go source.Run(context.Background())
-	remoteStart.source = source
-	return source
 }
 
 // remoteStart is the one remote source this process runs. Two watchers can
@@ -391,6 +430,15 @@ func main() {
 			}
 		}
 	}()
+
+	// The recipe loop: the agent's own judgment on its own clock, in BOTH
+	// postures. An unpaired self-hosted box runs its recipes with no plane,
+	// which is the point of tier 1; a paired one runs the same loop and
+	// reports the list at poll. It shares jobLock with the remote source and
+	// the self-updater — an attempt TryLocks it, never waits — and the job
+	// marker with a job, so an installer a recipe runs defers the agent's
+	// restart the same way. See recipes/doc.go for what it can and cannot do.
+	startRecipes(cfg, db, &jobLock)
 
 	// Manifest recovery, on its own slower clock and under the same job lock.
 	//

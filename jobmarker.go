@@ -55,6 +55,21 @@ var jobMarkerPath = "/etc/joinery-agent/job-running"
 // wasteful rather than harmful. Refusing to run the job over it would turn a
 // missing directory into a node that cannot be upgraded at all.
 func markJobRunning(jobID int64) func() {
+	return writeJobMarker(fmt.Sprintf("%d", jobID))
+}
+
+// markRecipeRunning is markJobRunning for a recipe attempt (recipes/loop.go):
+// the same file, the same pid on the first line, and the recipe's name where a
+// job's id would be, so a person reading the marker sees which of the two
+// wrote it. A recipe attempt runs an installer that may want to restart the
+// agent exactly as a job does, and needs the same deferral.
+func markRecipeRunning(recipe string) func() {
+	return writeJobMarker("recipe " + recipe)
+}
+
+// writeJobMarker writes the marker with the pid first and the caller's
+// description of itself second.
+func writeJobMarker(what string) func() {
 	if err := os.MkdirAll(filepath.Dir(jobMarkerPath), 0o755); err != nil {
 		log.Printf("job marker: could not create %s: %v", filepath.Dir(jobMarkerPath), err)
 		return func() {}
@@ -63,7 +78,7 @@ func markJobRunning(jobID int64) func() {
 	// pid first, on its own line: it is the field the installer must read, and
 	// putting it first means a truncated or half-written file still answers the
 	// only question that gates a restart.
-	body := fmt.Sprintf("%d\n%d\n%s\n", os.Getpid(), jobID, time.Now().UTC().Format(time.RFC3339))
+	body := fmt.Sprintf("%d\n%s\n%s\n", os.Getpid(), what, time.Now().UTC().Format(time.RFC3339))
 	if err := os.WriteFile(jobMarkerPath, []byte(body), 0o644); err != nil {
 		log.Printf("job marker: could not write %s: %v — an installer run by this job may restart the agent mid-job", jobMarkerPath, err)
 		return func() {}
