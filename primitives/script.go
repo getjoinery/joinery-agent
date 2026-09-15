@@ -12,6 +12,7 @@ package primitives
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -123,10 +124,7 @@ func runScriptPrimitive(ctx context.Context, env *ExecEnv, p Primitive, params P
 	// NEITHER refuses exactly as it always did. The script path is the same
 	// string in both cases, because bundle paths are recorded relative to a
 	// site root too, so no primitive has to know which posture it is running in.
-	root, verifier := env.SiteRoot, env.Manifest
-	if root == "" {
-		root, verifier = env.ToolRoot, env.ToolManifest
-	}
+	root, verifier := env.ScriptTree()
 	if root == "" {
 		return nil, refusedf("primitive %q cannot run: this machine has no site root and no support bundle, so there is no tree to resolve %s in", p.Name, p.Script.ScriptPath)
 	}
@@ -136,6 +134,17 @@ func runScriptPrimitive(ctx context.Context, env *ExecEnv, p Primitive, params P
 
 	scriptPath := filepath.Join(root, filepath.FromSlash(p.Script.ScriptPath))
 	if err := verifier.Verify(scriptPath); err != nil {
+		// A script the support bundle does not carry is a primitive that has
+		// no meaning on a machine with no site — the bundle lists the host
+		// installers and nothing that reads a site's config or database. That
+		// is a posture, not a file that fails to match its release, and the
+		// refusal says so in words the plane does not read as a trust event.
+		// A file the bundle DOES list and that does not match stays the
+		// mismatch it is.
+		var missing *NotInManifestError
+		if env.SiteRoot == "" && errors.As(err, &missing) {
+			return nil, refusedf("primitive %q cannot run here: this machine has no site, and its support bundle does not carry %s", p.Name, missing.Rel)
+		}
 		return nil, refusedf("primitive %q refused: %v", p.Name, err)
 	}
 

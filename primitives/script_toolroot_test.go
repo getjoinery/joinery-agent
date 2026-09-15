@@ -2,6 +2,7 @@ package primitives
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -146,5 +147,124 @@ func TestABundleRootWithoutAVerifierRefuses(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "manifest verifier") {
 		t.Errorf("the refusal should name the missing verifier; got %q", err)
+	}
+}
+
+// fixedErrVerifier refuses every path with one chosen error, so a test can
+// hand the runner the exact refusal a real verifier would make and read what
+// the runner says about it.
+type fixedErrVerifier struct{ err error }
+
+func (v fixedErrVerifier) Verify(string) error { return v.err }
+
+// The support bundle carries the host installers and nothing that reads a
+// site. A site-only primitive dispatched to a machine with no site therefore
+// asks for a script the bundle was never meant to list — a posture, not a
+// file that fails its release. The refusal names the posture, in words the
+// plane does not read as a trust event (docker-prod, 2026-09-15: the plane
+// coloured the host as tampered with over recovery_key_report).
+func TestASitelessMachineNamesItsPostureForAScriptTheBundleDoesNotCarry(t *testing.T) {
+	p := toolScriptPrimitive()
+	env := &ExecEnv{
+		ToolRoot:     t.TempDir(),
+		ToolManifest: fixedErrVerifier{&NotInManifestError{Rel: p.Script.ScriptPath}},
+	}
+	params, _ := Validate(nil, nil)
+	_, err := runScriptPrimitive(context.Background(), env, p, params)
+	if !Refused(err) {
+		t.Fatalf("a script the bundle does not carry must be refused; got %v", err)
+	}
+	msg := err.Error()
+	for _, want := range []string{"has no site", "support bundle does not carry " + p.Script.ScriptPath} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("the refusal should say %q; got %q", want, msg)
+		}
+	}
+	for _, trust := range []string{"signed release manifest", "signed hash", "modified since release", "verified before running as root"} {
+		if strings.Contains(msg, trust) {
+			t.Errorf("the refusal must not carry the trust-event wording %q; got %q", trust, msg)
+		}
+	}
+}
+
+// A file the bundle DOES list and that does not match is the mismatch it is,
+// on a siteless machine as on any other: the posture wording is for a script
+// the bundle never carried, never for one it carries and cannot vouch for.
+func TestABundleFileThatDoesNotMatchStaysAMismatch(t *testing.T) {
+	p := toolScriptPrimitive()
+	mismatch := "file does not match its signed hash — it has been modified since release: " + p.Script.ScriptPath
+	env := &ExecEnv{ToolRoot: t.TempDir(), ToolManifest: fixedErrVerifier{errors.New(mismatch)}}
+	params, _ := Validate(nil, nil)
+	_, err := runScriptPrimitive(context.Background(), env, p, params)
+	if !Refused(err) || !strings.Contains(err.Error(), mismatch) {
+		t.Fatalf("a listed file that does not match must refuse with the mismatch itself; got %v", err)
+	}
+	if strings.Contains(err.Error(), "has no site") {
+		t.Errorf("a mismatch is not a posture; got %q", err)
+	}
+}
+
+// On a site tree an unlisted file is a stranger in a root-run path, and the
+// plane reads exactly this wording as one. Nothing about the siteless refusal
+// may leak into it.
+func TestASiteMachineStillReportsAnUnlistedFileAsUnlisted(t *testing.T) {
+	p := toolScriptPrimitive()
+	env := &ExecEnv{
+		SiteRoot: t.TempDir(),
+		Manifest: fixedErrVerifier{&NotInManifestError{Rel: p.Script.ScriptPath}},
+		// A bundle beside a site changes nothing: the site's answer is the answer.
+		ToolRoot:     t.TempDir(),
+		ToolManifest: fixedErrVerifier{errors.New("never consulted")},
+	}
+	params, _ := Validate(nil, nil)
+	_, err := runScriptPrimitive(context.Background(), env, p, params)
+	if !Refused(err) {
+		t.Fatalf("expected a refusal; got %v", err)
+	}
+	if !strings.Contains(err.Error(), "file is not in the signed release manifest: "+p.Script.ScriptPath) {
+		t.Errorf("a site tree's unlisted file keeps its wording; got %q", err)
+	}
+	if strings.Contains(err.Error(), "has no site") {
+		t.Errorf("a site machine must never claim to have no site; got %q", err)
+	}
+}
+
+// The signed-tree verifier reports an unlisted file as the typed error the
+// runner reads, with the wording the plane matches unchanged.
+func TestAnUnlistedFileIsATypedRefusalWithThePlanesWording(t *testing.T) {
+	root := t.TempDir()
+	v := &SignedTreeVerifier{Root: root, Hashes: map[string]string{}}
+	stranger := writeScript(t, root, "public_html/utils/stranger.php")
+	err := v.Verify(stranger)
+	var missing *NotInManifestError
+	if !errors.As(err, &missing) {
+		t.Fatalf("an unlisted file must be a NotInManifestError; got %T %v", err, err)
+	}
+	if missing.Rel != "public_html/utils/stranger.php" {
+		t.Errorf("the error names the tree-relative path; got %q", missing.Rel)
+	}
+	if err.Error() != "file is not in the signed release manifest: public_html/utils/stranger.php" {
+		t.Errorf("the plane matches this wording; got %q", err.Error())
+	}
+}
+
+// ScriptTree is the one place the choice of tree is made. Pinned so the runner
+// and the node's poll-time trust report can never disagree about which tree
+// they mean.
+func TestScriptTreeIsTheSiteWhereThereIsOneAndTheBundleOtherwise(t *testing.T) {
+	site, bundle := fixedErrVerifier{errors.New("site")}, fixedErrVerifier{errors.New("bundle")}
+	root, v := (&ExecEnv{SiteRoot: "/srv/site", Manifest: site, ToolRoot: "/opt/tree", ToolManifest: bundle}).ScriptTree()
+	if root != "/srv/site" || v != ManifestVerifier(site) {
+		t.Errorf("a site wins: got %q %v", root, v)
+	}
+	root, v = (&ExecEnv{ToolRoot: "/opt/tree", ToolManifest: bundle}).ScriptTree()
+	if root != "/opt/tree" || v != ManifestVerifier(bundle) {
+		t.Errorf("no site means the bundle: got %q %v", root, v)
+	}
+	if root, _ := (&ExecEnv{}).ScriptTree(); root != "" {
+		t.Errorf("neither means no tree: got %q", root)
+	}
+	if root, v := (*ExecEnv)(nil).ScriptTree(); root != "" || v != nil {
+		t.Errorf("a nil env has no tree")
 	}
 }

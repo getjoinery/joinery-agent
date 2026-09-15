@@ -266,13 +266,29 @@ func (r *RemoteSource) noteFailure(err error) {
 // with an opposite remedy, and flattening the two into one health colour would
 // have the dashboard recommend the wrong thing.
 //
-// Empty when there is nothing to report on — a machine with no site tree, or a
-// verifier that is not manifest-backed. Silence, not a claim of health.
+// It answers for the tree this machine runs scripts from: a site tree where
+// there is one, the signed support bundle on a machine with none. Empty when
+// there is nothing to report on — a siteless machine whose bundle has not
+// landed yet, or a verifier that is not manifest-backed. Silence, not a claim
+// of health.
 func (r *RemoteSource) scriptTrust() string {
 	if r.env == nil {
 		return ""
 	}
-	artifacts, ok := r.env.Manifest.(*primitives.ArtifactManifests)
+	// The tree this machine actually runs scripts from: the site where there
+	// is one, the support bundle where there is not. A machine with no site
+	// and no bundle yet has been handed nothing to verify, so it has nothing
+	// to say — the bundle lands on its own clock minutes after the join, and
+	// a red "cannot be managed" across that gap would be the plane reading a
+	// pause as a fault.
+	root, verifier := r.env.ScriptTree()
+	if root == "" {
+		return ""
+	}
+	if r.env.SiteRoot == "" && installedBundleVersion() == "" {
+		return ""
+	}
+	artifacts, ok := verifier.(*primitives.ArtifactManifests)
 	if !ok || artifacts == nil {
 		return ""
 	}
@@ -323,8 +339,8 @@ func (r *RemoteSource) claim(ctx context.Context) (*RemoteJob, error) {
 		// node it has sent a job to. A node that is refusing and has nothing
 		// dispatched to it says nothing at all — and it polls every cycle, so
 		// this is the one moment it can. Empty means "no answer", which is what
-		// an older agent and a siteless machine both look like; the plane must
-		// not read that as good news.
+		// an older agent and a siteless machine still waiting for its bundle
+		// both look like; the plane must not read that as good news.
 		if v := r.scriptTrust(); v != "" {
 			claimBody["script_trust"] = v
 		}

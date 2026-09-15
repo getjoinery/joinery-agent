@@ -100,6 +100,22 @@ type ExecEnv struct {
 	VictimCeremony func(ctx context.Context, site string) (ApprovalStatement, ApprovalGate, func(), error)
 }
 
+// ScriptTree is the one answer to "which tree does this machine run scripts
+// from, and which manifest speaks for it". A site root wins wherever there is
+// one; a machine with no site uses the signed support bundle; a machine with
+// neither gets an empty root. Every caller that resolves or vouches for a
+// script goes through here — the runner and the node's own trust report on
+// each poll — so the two can never disagree about which tree they mean.
+func (e *ExecEnv) ScriptTree() (root string, verifier ManifestVerifier) {
+	if e == nil {
+		return "", nil
+	}
+	if e.SiteRoot != "" {
+		return e.SiteRoot, e.Manifest
+	}
+	return e.ToolRoot, e.ToolManifest
+}
+
 // DBProvider hands back a usable database connection, or says why not.
 type DBProvider func() (*sql.DB, error)
 

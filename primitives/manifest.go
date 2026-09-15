@@ -42,6 +42,27 @@ type UnavailableVerifier struct{}
 // Verify always refuses.
 func (UnavailableVerifier) Verify(path string) error { return ErrNoManifest }
 
+// NotInManifestError is the one refusal a verifier makes about a file it was
+// never told about: absent from the signed manifest, as opposed to listed and
+// altered. The two are different facts and are kept apart as types because a
+// caller reads them differently. On a site tree an unlisted file is a stranger
+// in a root-run path. On a machine running from the support bundle it is
+// usually a script the bundle was never meant to carry, and the runner names
+// that posture instead of reporting a file mismatch the plane would then chase
+// (docker-prod, 2026-09-15: a site-only report primitive dispatched to the host
+// coloured the node as tampered with).
+//
+// The wording is the plane's contract: NodeMonitorHealth::classify_script_trust
+// matches "is not in the signed release manifest" and must keep doing so.
+type NotInManifestError struct {
+	// Rel is the tree-relative path, slash-separated, as the manifest would list it.
+	Rel string
+}
+
+func (e *NotInManifestError) Error() string {
+	return "file is not in the signed release manifest: " + e.Rel
+}
+
 // SignedTreeVerifier verifies files against a signed per-file manifest. It is
 // the shape component G fills: the manifest maps a tree-relative path to a
 // sha256, and the whole manifest carries one Ed25519 signature made with the
@@ -82,7 +103,7 @@ func (v *SignedTreeVerifier) Verify(path string) error {
 	}
 	want, listed := v.Hashes[filepath.ToSlash(rel)]
 	if !listed {
-		return errors.New("file is not in the signed release manifest: " + rel)
+		return &NotInManifestError{Rel: filepath.ToSlash(rel)}
 	}
 	got, err := fileSha256(abs)
 	if err != nil {
