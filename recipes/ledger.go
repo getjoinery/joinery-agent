@@ -61,6 +61,9 @@ const (
 	// The job lock was held by something else when an attempt was due: a job
 	// or a self-update. Not an attempt.
 	EventBusy = "busy"
+	// EventNotApplicable: once per process, a host-scoped recipe this agent
+	// cannot see the subject of (a container). Never counts, never repairs.
+	EventNotApplicable = "not_applicable"
 	// The budget ran out. Carries id; held open until the check passes.
 	EventEscalation = "escalation"
 	// A failing tick while an escalation is open, appended to it by id.

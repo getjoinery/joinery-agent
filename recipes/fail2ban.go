@@ -39,6 +39,7 @@ import (
 func init() {
 	Register(Recipe{
 		Name:        "fail2ban",
+		Scope:       ScopeHost,
 		Description: "fail2ban is active with at least one jail; otherwise run host_housekeeping.sh through the host runner.",
 		MinInterval: TickInterval,
 		CheckWord:   "host_report",

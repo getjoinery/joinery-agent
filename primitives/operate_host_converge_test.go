@@ -56,7 +56,6 @@ func TestHostConvergeRefusesEveryKeyACallerWouldReachFor(t *testing.T) {
 
 func TestHostConvergeArgvIsTheCompiledConstant(t *testing.T) {
 	p, _ := Lookup("host_converge")
-
 	if p.Script == nil {
 		t.Fatal("host_converge should be a script primitive")
 	}
@@ -66,33 +65,41 @@ func TestHostConvergeArgvIsTheCompiledConstant(t *testing.T) {
 	if p.Script.Interpreter != "/bin/bash" {
 		t.Errorf("the runner is a bash script; interpreter is %q", p.Script.Interpreter)
 	}
-
-	// Exactly one element, and it is the constant. Compared element for
-	// element rather than by length so a second element, or a different first
-	// one, is named in the failure.
-	if len(p.Script.Args) != 1 || p.Script.Args[0] != hostConvergeOnly {
-		t.Fatalf("argv template should be exactly [%q], got %v — the installer name is a "+
-			"compiled constant and the only thing this word may pass", hostConvergeOnly, p.Script.Args)
+	if p.Script.Args != nil {
+		t.Fatalf("host_converge must carry no argv template (got %v): its argv is picked by posture in ArgsFrom, and a template beside it would be a second answer", p.Script.Args)
+	}
+	if p.Script.ArgsFrom == nil {
+		t.Fatal("host_converge picks its argv by posture; ArgsFrom must be set")
 	}
 	if !strings.HasPrefix(hostConvergeOnly, "--only=") {
-		t.Errorf("the constant %q is not the runner's single-installer mode", hostConvergeOnly)
+		t.Errorf("the site constant %q is not the runner's single-installer mode", hostConvergeOnly)
 	}
-
-	// No "{slot}" anywhere in the template, and no builder: a slot is the one
-	// thing that would let a wire value reach argv, and a builder is the
-	// other. Neither exists here, and the refused-keys test above is what
-	// makes a slot pointless anyway — but the template is pinned on its own
-	// so a slot cannot arrive in the same edit as a parameter.
-	for _, element := range p.Script.Args {
-		if strings.HasPrefix(element, "{") && strings.HasSuffix(element, "}") {
-			t.Errorf("argv contains the slot %q — nothing on the wire may reach the runner's argv", element)
+	if hostConvergeMachine != "--machine" {
+		t.Errorf("the machine constant is the runner's machine mode, got %q", hostConvergeMachine)
+	}
+	// A site node: exactly the one installer, by name.
+	argv, err := p.Script.ArgsFrom(context.Background(), &ExecEnv{SiteRoot: "/var/www/html/site"}, Params{})
+	if err != nil || len(argv) != 1 || argv[0] != hostConvergeOnly {
+		t.Fatalf("on a site the argv should be exactly [%q], got %v (%v)", hostConvergeOnly, argv, err)
+	}
+	// A machine with no site: the runner's machine mode, and nothing else.
+	argv, err = p.Script.ArgsFrom(context.Background(), &ExecEnv{SiteRoot: "", ToolRoot: "/opt/joinery-agent/tree"}, Params{})
+	if err != nil || len(argv) != 1 || argv[0] != hostConvergeMachine {
+		t.Fatalf("on a machine the argv should be exactly [%q], got %v (%v)", hostConvergeMachine, argv, err)
+	}
+	// And neither reads a parameter: a job carrying one was refused at
+	// Validate, and even handed one here the answer does not change.
+	for _, env := range []*ExecEnv{{SiteRoot: "/var/www/html/site"}, {SiteRoot: ""}} {
+		a1, _ := p.Script.ArgsFrom(context.Background(), env, Params{})
+		a2, _ := p.Script.ArgsFrom(context.Background(), env, Params{values: map[string]interface{}{"only": "install_agent.sh", "installer": "x"}})
+		if strings.Join(a1, " ") != strings.Join(a2, " ") {
+			t.Errorf("a parameter changed the argv from %v to %v", a1, a2)
 		}
-	}
-	if p.Script.ArgsFrom != nil {
-		t.Error("host_converge composes no argv at run time; the template is the whole of it")
-	}
-	if p.Script.StdinFrom != nil {
-		t.Error("the runner reads no stdin; supplying one opens a channel nothing needs")
+		for _, element := range a1 {
+			if strings.HasPrefix(element, "{") && strings.HasSuffix(element, "}") {
+				t.Errorf("argv element %q is a slot; this word has no slots", element)
+			}
+		}
 	}
 }
 

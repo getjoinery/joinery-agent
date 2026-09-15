@@ -56,6 +56,10 @@ type Options struct {
 	// Paired reports whether a management node is polling this agent, so
 	// the rendered case says which delivery it has. Default: not paired.
 	Paired func() bool
+
+	// InContainer overrides the package answer for a test. Nil means the
+	// real one.
+	InContainer func() bool
 }
 
 // Loop runs every registered recipe on the tick.
@@ -67,6 +71,7 @@ type Loop struct {
 	markRunning func(recipe string) func()
 	logf        func(format string, args ...interface{})
 	paired      func() bool
+	inContainer func() bool
 
 	// reportOnly is ReportOnly, held in a field so the state machine's tests
 	// can exercise both the armed and the report-only paths. Nothing outside
@@ -104,6 +109,7 @@ func NewLoop(recipes []Recipe, env *Env, opts Options) *Loop {
 		markRunning: opts.MarkRunning,
 		logf:        opts.Logf,
 		paired:      opts.Paired,
+		inContainer: opts.InContainer,
 		reportOnly:  ReportOnly,
 		state:       map[string]*recipeState{},
 	}
@@ -141,6 +147,7 @@ func (l *Loop) postCase(r Recipe, c Case, body *CaseBody) {
 // not run checks in a loop.
 func (l *Loop) Run(ctx context.Context) {
 	l.logf("recipes: %d compiled in (%s), mode %s, checking every %s", len(l.recipes), describe(l.recipes), Mode(), TickInterval)
+	l.noteInapplicable()
 	ticker := time.NewTicker(TickInterval)
 	defer ticker.Stop()
 	for {
@@ -149,6 +156,35 @@ func (l *Loop) Run(ctx context.Context) {
 			return
 		case <-ticker.C:
 			l.Tick(ctx)
+		}
+	}
+}
+
+// applicable is Applicable(r) through the loop's own container answer.
+func (l *Loop) applicable(r Recipe) bool {
+	if r.Scope != ScopeHost {
+		return true
+	}
+	in := l.inContainer
+	if in == nil {
+		in = InContainer
+	}
+	return !in()
+}
+
+// noteInapplicable says once per process, in the journal and the ledger,
+// which host-scoped recipes this agent cannot see the subject of. One line,
+// not one every tick: a container's ledger used to fill with "unknown" every
+// ten minutes and trim itself in seventeen days with nothing in it worth
+// keeping.
+func (l *Loop) noteInapplicable() {
+	for _, r := range l.recipes {
+		if l.applicable(r) {
+			continue
+		}
+		l.logf("recipe %s: not applicable in a container (its subject is the host); not checked here", r.Name)
+		if led, err := openLedger(r.Name, l.now); err == nil && led != nil {
+			led.note(Entry{Event: EventNotApplicable, Reason: "in a container; the recipe's subject is the host"})
 		}
 	}
 }
@@ -185,6 +221,9 @@ func (l *Loop) stateFor(name string) *recipeState {
 
 // tickOne is the state machine for one recipe on one tick.
 func (l *Loop) tickOne(ctx context.Context, r Recipe) {
+	if !l.applicable(r) {
+		return // said once at start; nothing to check from here
+	}
 	st := l.stateFor(r.Name)
 	now := l.now()
 

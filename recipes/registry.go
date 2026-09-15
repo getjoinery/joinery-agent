@@ -3,6 +3,7 @@ package recipes
 import (
 	"context"
 	"fmt"
+	"os"
 	"regexp"
 	"sort"
 	"strings"
@@ -76,6 +77,14 @@ type Recipe struct {
 	// RepairWord to be an operate word, and neither to take a parameter.
 	CheckWord  string
 	RepairWord string
+
+	// Scope says where the recipe's subject lives. ScopeHost means the
+	// machine itself (its units, its jails): an agent inside a container
+	// cannot see that machine, so the loop does not tick a host-scoped
+	// recipe there, and the claim reports it as not-applicable rather than
+	// unknown every ten minutes for ever. ScopeAny (the zero value) ticks
+	// everywhere.
+	Scope Scope
 
 	// Check runs the check word and reads its answer into a verdict. Cheap,
 	// side-effect free, run every tick the recipe is due.
@@ -166,6 +175,42 @@ func All() []Recipe {
 
 // Mode is how the loop's repair step behaves this release, as one word the
 // plane can show on the node page.
+// Scope is where a recipe's subject lives; see Recipe.Scope.
+type Scope string
+
+const (
+	ScopeAny  Scope = ""
+	ScopeHost Scope = "host"
+)
+
+// InContainer answers whether this process runs inside a container: the
+// Docker marker file, or no systemd to have units at all. A variable so a
+// test can say either; the loop and the claim read it through the same
+// answer.
+var InContainer = func() bool {
+	if _, err := os.Stat("/.dockerenv"); err == nil {
+		return true
+	}
+	if _, err := os.Stat("/run/systemd/system"); err != nil {
+		return true
+	}
+	return false
+}
+
+// Applicable answers whether a recipe ticks on this machine.
+func Applicable(r Recipe) bool {
+	return r.Scope != ScopeHost || !InContainer()
+}
+
+// ModeOf is the mode the claim reports for one recipe: the compiled mode,
+// or not-applicable where the recipe's subject is out of this agent's sight.
+func ModeOf(r Recipe) string {
+	if !Applicable(r) {
+		return ModeNotApplicable
+	}
+	return Mode()
+}
+
 func Mode() string {
 	if ReportOnly {
 		return ModeReportOnly
@@ -174,8 +219,9 @@ func Mode() string {
 }
 
 const (
-	ModeReportOnly = "report-only"
-	ModeArmed      = "armed"
+	ModeReportOnly    = "report-only"
+	ModeArmed         = "armed"
+	ModeNotApplicable = "not-applicable"
 )
 
 // Report is the recipe list as it travels in the claim: every recipe name
@@ -183,10 +229,9 @@ const (
 // guesses which recipes a node runs or whether they act. The plane validates
 // it under the same rules as the vocabulary and stores it beside it.
 func Report() string {
-	names := Names()
-	parts := make([]string, 0, len(names))
-	for _, name := range names {
-		parts = append(parts, name+":"+Mode())
+	parts := make([]string, 0, len(registry))
+	for _, r := range All() {
+		parts = append(parts, r.Name+":"+ModeOf(r))
 	}
 	return strings.Join(parts, ",")
 }

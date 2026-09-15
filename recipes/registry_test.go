@@ -135,9 +135,9 @@ func TestRegisterRefusesWhatTheContractForbids(t *testing.T) {
 
 func TestTheReportNamesEveryRecipeWithItsMode(t *testing.T) {
 	report := Report()
-	for _, name := range Names() {
-		if !strings.Contains(","+report+",", ","+name+":"+Mode()+",") {
-			t.Errorf("the claim's recipe list %q does not carry %s with mode %s", report, name, Mode())
+	for _, r := range All() {
+		if !strings.Contains(","+report+",", ","+r.Name+":"+ModeOf(r)+",") {
+			t.Errorf("the claim's recipe list %q does not carry %s with mode %s", report, r.Name, ModeOf(r))
 		}
 	}
 	// Every character must survive the plane's field pattern, or the claim is

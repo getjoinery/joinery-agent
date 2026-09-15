@@ -21,7 +21,7 @@ import (
 // must stay ABOVE 1.1.0 forever - install_agent.sh's downgrade guard sorts
 // with sort -V and refuses to replace a "newer" binary, so anything below
 // 1.1.0 strands those agents permanently.
-var version = "1.28.0"
+var version = "1.29.0"
 
 // How often the idle loop looks at the shipped agent_dist manifest. Update
 // checks never run while a job is executing.
@@ -435,7 +435,13 @@ func main() {
 		ticker := time.NewTicker(updateCheckInterval)
 		defer ticker.Stop()
 		for range ticker.C {
-			attemptUpdate(&jobLock, bundle.CheckAndApply)
+			if attemptUpdate(&jobLock, bundle.CheckAndApply) && cfg.Siteless {
+				// A new signed tree arrived on a machine with no site:
+				// converge to it now, the machine's twin of the site's path
+				// trigger, and how the host timer first gets installed on a
+				// host nobody pressed a button for (item 6b).
+				convergeAfterBundle(cfg, db, &jobLock)
+			}
 			if attemptUpdate(&jobLock, updater.CheckAndApply) {
 				os.Exit(0)
 			}
