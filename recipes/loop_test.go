@@ -335,10 +335,11 @@ func TestARepairThatDoesNotVerifyIsAFailedAttempt(t *testing.T) {
 	}
 }
 
-func TestThreeAttemptsAnHourSpacedByBackoffThenEscalation(t *testing.T) {
+func TestThreeAttemptsPerRunSpacedByBackoffThenEscalation(t *testing.T) {
 	// The loop never repairs three times in a row: after the first attempt
 	// the second waits ten minutes, after the second the third waits
-	// thirty, and a fourth inside the hour is an escalation, not an attempt.
+	// thirty, and a fourth in the same failing run is an escalation, not an
+	// attempt.
 	h := newHarness(t)
 	h.verdict = Verdict{Fail, "down"}
 
@@ -358,9 +359,9 @@ func TestThreeAttemptsAnHourSpacedByBackoffThenEscalation(t *testing.T) {
 	if h.repairs != 3 {
 		t.Fatalf("attempt 3 expected thirty minutes after attempt 2, got %d", h.repairs)
 	}
-	h.ticks(3) // t+70..t+90: three attempts in the hour; a fourth is an escalation
+	h.ticks(3) // t+70..t+90: three attempts in the run; a fourth is an escalation
 	if h.repairs != 3 {
-		t.Fatalf("a fourth attempt ran inside the hour (%d repairs)", h.repairs)
+		t.Fatalf("a fourth attempt ran in the same run (%d repairs)", h.repairs)
 	}
 	if n := h.count(EventEscalation); n != 1 {
 		t.Fatalf("expected exactly one escalation, got %d", n)
@@ -431,15 +432,15 @@ func TestAnOpenEscalationSurvivesARestart(t *testing.T) {
 	}
 }
 
-func TestTheBudgetIsARollingHour(t *testing.T) {
+func TestTheBudgetRefillsWhenTheCheckPasses(t *testing.T) {
 	h := newHarness(t)
 	h.verdict = Verdict{Fail, "down"}
 	h.ticks(6) // attempts at +20, +30, +60
 	if h.repairs != 3 {
 		t.Fatalf("setup: expected three attempts, got %d", h.repairs)
 	}
-	// Recover, so no escalation opens, then fail again after the first
-	// attempt has aged out of the window.
+	// Recover, so no escalation opens: the run is over and the budget is
+	// whole again. A new failure is a new run with fresh attempts.
 	h.verdict = Verdict{Pass, "up"}
 	h.tick() // +70
 	if h.count(EventEscalation) != 0 {
@@ -447,9 +448,78 @@ func TestTheBudgetIsARollingHour(t *testing.T) {
 	}
 	h.verdict = Verdict{Fail, "down"}
 	h.now = h.now.Add(20 * time.Minute) // +90
-	h.ticks(2)                          // +100, +110: two failing ticks; only the +60 attempt is still inside the hour
+	h.ticks(2)                          // +100, +110: two failing ticks of a new run
 	if h.repairs != 4 {
-		t.Fatalf("with one attempt left in the window and the backoff elapsed, a fourth attempt should run, got %d", h.repairs)
+		t.Fatalf("after a pass the next failing run gets a fresh first attempt, got %d repairs", h.repairs)
+	}
+	if h.count(EventEscalation) != 0 {
+		t.Fatal("the old run's attempts must not count toward the new run")
+	}
+	// And the same across a restart: the run boundary is read back from the
+	// pass line, not remembered by the process.
+	h.restart()
+	h.tick() // +120: one failing tick in the new process; no attempt yet
+	h.tick() // +130: second tick; attempt 2 of the run waits ten minutes after attempt 1 (+110) — due
+	if h.repairs != 5 {
+		t.Fatalf("the new process should count the run from the pass it read back, got %d repairs", h.repairs)
+	}
+	if h.count(EventEscalation) != 0 {
+		t.Fatal("two attempts in the run is not an escalation")
+	}
+}
+
+func TestEscalationDoesNotDependOnTheAttemptsFittingAnHour(t *testing.T) {
+	// The docker-prod host, 2026-09-15: attempts at 19:22, 19:42, 20:22,
+	// 20:52, 21:32, 22:02 and never a case, because the first attempt of the
+	// run had aged out of an hour's window before the third landed. The
+	// budget counts the run, however it is spread.
+	h := newHarness(t)
+	h.verdict = Verdict{Fail, "down"}
+	h.ticks(3) // attempts at +20 and +30
+	if h.repairs != 2 {
+		t.Fatalf("setup: expected two attempts, got %d", h.repairs)
+	}
+	h.now = h.now.Add(70 * time.Minute) // a long busy stretch; attempt 3 lands at +110
+	h.tick()
+	if h.repairs != 3 {
+		t.Fatalf("attempt 3 expected once its wait is over, got %d", h.repairs)
+	}
+	h.tick() // +120: three attempts in the run and the check still fails
+	if h.repairs != 3 {
+		t.Fatal("a fourth attempt ran instead of an escalation")
+	}
+	if n := h.count(EventEscalation); n != 1 {
+		t.Fatalf("expected the escalation, got %d; the attempts span more than an hour and that must not matter", n)
+	}
+}
+
+func TestATickThatLandsEarlyDoesNotCostAWholeWait(t *testing.T) {
+	// A systemd-like timer fires a few milliseconds off each tick. Measured
+	// against the previous attempt's end, a ten-minute wait then comes out
+	// at 9m59.99s and would take a second tick; the attempts drift to
+	// twenty and forty minutes apart. A tick within half an interval of the
+	// wait is the tick the wait ends on.
+	h := newHarness(t)
+	h.verdict = Verdict{Fail, "down"}
+	early := func() {
+		h.now = h.now.Add(TickInterval - 40*time.Millisecond)
+		h.loop.Tick(context.Background())
+	}
+	early()
+	early() // attempt 1
+	early() // ten minutes less 40ms since attempt 1: due
+	if h.repairs != 2 {
+		t.Fatalf("attempt 2 should run on the tick its wait ends on, jitter or not; got %d", h.repairs)
+	}
+	early()
+	early()
+	early() // thirty minutes less a little since attempt 2: due
+	if h.repairs != 3 {
+		t.Fatalf("attempt 3 should run on the tick its wait ends on; got %d", h.repairs)
+	}
+	early()
+	if n := h.count(EventEscalation); n != 1 {
+		t.Fatalf("expected the escalation on the tick after the third attempt, got %d", n)
 	}
 }
 

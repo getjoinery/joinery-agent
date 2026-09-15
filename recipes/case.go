@@ -168,7 +168,12 @@ func (l *Loop) composeBody(ctx context.Context, r Recipe, led *AttemptLedger, op
 		Vocabulary: strings.Join(primitives.Names(), ","),
 		Recipes:    Report(),
 	}
-	attempts := led.AttemptsSince(opened.Add(-budgetWindow))
+	var attempts []Attempt
+	for _, a := range led.AttemptsInRun() {
+		if !a.Started.After(opened) {
+			attempts = append(attempts, a)
+		}
+	}
 	if len(attempts) > maxCaseAttempts {
 		attempts = attempts[len(attempts)-maxCaseAttempts:]
 	}

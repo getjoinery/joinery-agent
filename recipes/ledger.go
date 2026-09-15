@@ -139,6 +139,10 @@ type AttemptLedger struct {
 	openEscalate int // id of the open escalation, 0 for none
 	latest       *Escalation
 	nextID       int
+	// lastPass is when the failing run last ended: the newest passing check,
+	// verified repair or closed escalation. The attempts after it are the
+	// run the budget counts (AttemptsInRun); zero when the ledger holds none.
+	lastPass time.Time
 }
 
 // openLedger reads a recipe's ledger back, creating the directory when it is
@@ -189,6 +193,10 @@ func (l *AttemptLedger) readBack() error {
 			l.nextID = e.ID + 1
 		}
 		switch e.Event {
+		case EventCheck:
+			if e.Verdict == Pass {
+				l.lastPass = e.Time
+			}
 		case EventAttempt:
 			byID[e.ID] = len(l.attempts)
 			l.attempts = append(l.attempts, Attempt{ID: e.ID, Started: e.Time, Word: e.Word, Mode: e.Mode})
@@ -197,6 +205,9 @@ func (l *AttemptLedger) readBack() error {
 				l.attempts[i].Outcome = e.Outcome
 				l.attempts[i].Ended = e.Time
 				l.attempts[i].Detail = e.Detail
+			}
+			if e.Outcome == OutcomeRepaired {
+				l.lastPass = e.Time
 			}
 		case EventEscalation:
 			l.openEscalate = e.ID
@@ -223,6 +234,7 @@ func (l *AttemptLedger) readBack() error {
 				l.latest.Closed = e.Time
 				l.latest.CloseReason = e.Reason
 			}
+			l.lastPass = e.Time
 		}
 	}
 	return scanner.Err()
@@ -264,6 +276,24 @@ func (l *AttemptLedger) AttemptsSince(t time.Time) []Attempt {
 	return out
 }
 
+// AttemptsInRun returns the attempts of the current failing run: those
+// started since the check last passed, a repair last verified, or the last
+// escalation closed — whichever is newest — oldest first. The budget counts
+// these, not the attempts of the last hour: with ten-minute ticks and waits
+// of ten and thirty minutes, the first attempt of a run is older than an
+// hour by the time the third one lands, so an hour's window could never
+// hold three and the escalation was unreachable on a real clock (docker-prod
+// host, 2026-09-15: six report-only attempts, no case).
+func (l *AttemptLedger) AttemptsInRun() []Attempt {
+	var out []Attempt
+	for _, a := range l.attempts {
+		if a.Started.After(l.lastPass) {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
 // OpenEscalation is the id of the open escalation, or 0.
 func (l *AttemptLedger) OpenEscalation() int { return l.openEscalate }
 
@@ -294,6 +324,9 @@ func (l *AttemptLedger) endAttempt(id int, outcome, detail string) {
 			l.attempts[i].Ended = l.now()
 			l.attempts[i].Detail = bounded(detail)
 		}
+	}
+	if outcome == OutcomeRepaired {
+		l.lastPass = l.now()
 	}
 	l.write(Entry{Event: EventOutcome, ID: id, Outcome: outcome, Detail: detail})
 }
@@ -332,11 +365,15 @@ func (l *AttemptLedger) closeEscalation(reason string) {
 	}
 	l.write(Entry{Event: EventEscalationClosed, ID: l.openEscalate, Reason: reason})
 	l.openEscalate = 0
+	l.lastPass = l.now()
 }
 
 // note appends any other line: a check, a held tick, a busy tick, an
-// escalation note.
+// escalation note. A passing check ends the run.
 func (l *AttemptLedger) note(e Entry) {
+	if e.Event == EventCheck && e.Verdict == Pass {
+		l.lastPass = l.now()
+	}
 	l.write(e)
 }
 

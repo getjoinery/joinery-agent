@@ -15,20 +15,28 @@ import (
 //
 //   - a repair only after two consecutive failing ticks (no pass and no
 //     unknown between them; the count starts at zero on process start);
-//   - three attempts per rolling hour, the second ten minutes after the
-//     first, the third thirty minutes after the second — never three in a
-//     row;
+//   - three attempts per failing run — the attempts since the check last
+//     passed, a repair last verified or the escalation closed — the second
+//     ten minutes after the first, the third thirty minutes after the
+//     second, never three in a row; each is due on the first tick at or
+//     after its wait, and a tick that lands a little early still counts
+//     (backoffTolerance), because a timer's jitter must not cost a whole
+//     tick and push the attempts apart;
 //   - a fourth is an escalation, not an attempt: one open per recipe, held
 //     until the check passes, and while it is open the recipe checks and
 //     never repairs.
 const (
 	consecutiveFailsToRepair = 2
 	attemptBudget            = 3
-	budgetWindow             = time.Hour
+	// A wait is over when less than this much of it remains at a tick: ticks
+	// are TickInterval apart give or take the timer's jitter, so a wait of
+	// exactly one interval measured against the previous tick comes out a
+	// few milliseconds short and would otherwise take two.
+	backoffTolerance = TickInterval / 2
 )
 
 // backoffBefore[n] is how long the loop waits after the previous attempt
-// before the n-th attempt in the window (1-based). Index 0 is unused.
+// before the n-th attempt of the run (1-based). Index 0 is unused.
 var backoffBefore = [attemptBudget + 1]time.Duration{0, 0, 10 * time.Minute, 30 * time.Minute}
 
 // Locker is the shared job lock: the mutex a plane job holds while it runs
@@ -333,9 +341,9 @@ func (l *Loop) tickOne(ctx context.Context, r Recipe) {
 		return
 	}
 
-	attempts := led.AttemptsSince(now.Add(-budgetWindow))
+	attempts := led.AttemptsInRun()
 	if len(attempts) >= attemptBudget {
-		reason := fmt.Sprintf("%d attempts in the last hour and the check still fails (%s); no more until a person looks or the check passes",
+		reason := fmt.Sprintf("%d attempts since the check last passed and it still fails (%s); no more until a person looks or the check passes",
 			len(attempts), verdict.Reason)
 		st.escalation = led.openEscalation(reason)
 		l.logf("recipe %s: ESCALATION #%d: %s", r.Name, st.escalation, reason)
@@ -353,7 +361,7 @@ func (l *Loop) tickOne(ctx context.Context, r Recipe) {
 		if !last.Ended.IsZero() {
 			since = last.Ended
 		}
-		if wait := backoffBefore[n+1]; now.Sub(since) < wait {
+		if wait := backoffBefore[n+1]; wait-now.Sub(since) > backoffTolerance {
 			l.logf("recipe %s: check fails (%s); attempt %d waits %s after the last one (%s more)",
 				r.Name, verdict.Reason, n+1, wait, (wait - now.Sub(since)).Round(time.Second))
 			return
