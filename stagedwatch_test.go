@@ -36,6 +36,9 @@ func TestASitelessMachineFinishesItsOwnJoin(t *testing.T) {
 		case pathJoin:
 			joins++
 			claimed, _ = in["claimed_name"].(string)
+			if _, has := in["addresses"]; !has {
+				t.Errorf("a join must carry the machine's addresses, so the plane can match its placement record whichever family the request came over")
+			}
 			planeReply(w, map[string]interface{}{"status": "pending", "fingerprint": "x"})
 		case pathJoinStatus:
 			polls++

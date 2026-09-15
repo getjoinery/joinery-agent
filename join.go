@@ -382,6 +382,12 @@ func (w *JoinWatcher) callJoin(ctx context.Context, planeURL string, staged *sta
 			"claimed_name":     hostname,
 			"agent_public_key": staged.PublicKey,
 			"agent_version":    w.agentVersion,
+			// Every address this machine answers on. The plane sees only
+			// the one the request came from, and on a dual-stack box that
+			// is the IPv6 one while the placement record everything else
+			// keys on carries the IPv4; without this list the plane minted
+			// a second placement for the same machine.
+			"addresses": machineAddresses(),
 		}
 	} else {
 		path = pathJoinStatus
