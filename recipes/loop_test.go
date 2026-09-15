@@ -233,6 +233,36 @@ func TestAPassBetweenTwoFailuresResetsTheCount(t *testing.T) {
 	}
 }
 
+func TestUnknownIsLedgeredOnlyWhenTheVerdictChanges(t *testing.T) {
+	// A container's fail2ban check answers unknown on every tick of its
+	// life; the ledger records that once, and again only when the answer
+	// changes. A pass after a pass is silent the same way. A failure is
+	// written every tick: it is what the ledger is for.
+	h := newHarness(t)
+	h.verdict = Verdict{Unknown, "no systemd"}
+	h.ticks(5)
+	if n := h.count(EventCheck); n != 1 {
+		t.Fatalf("five unknown ticks should write one check line, got %d", n)
+	}
+	h.verdict = Verdict{Pass, "up"}
+	h.tick()
+	h.tick()
+	if n := h.count(EventCheck); n != 2 {
+		t.Fatalf("a pass after unknown is a change (one line), a pass after a pass is not; got %d lines", n)
+	}
+	h.verdict = Verdict{Unknown, "no answer"}
+	h.ticks(3)
+	if n := h.count(EventCheck); n != 3 {
+		t.Fatalf("unknown after pass is a change (one line), unknown after unknown is not; got %d lines", n)
+	}
+	h.verdict = Verdict{Fail, "down"}
+	h.tick()
+	h.tick()
+	if n := h.count(EventCheck); n != 5 {
+		t.Fatalf("every failing tick is written; got %d lines", n)
+	}
+}
+
 func TestUnknownNeverRepairsAndBreaksTheRun(t *testing.T) {
 	h := newHarness(t)
 	h.verdict = Verdict{Unknown, "no systemd"}

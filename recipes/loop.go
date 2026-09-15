@@ -264,7 +264,13 @@ func (l *Loop) tickOne(ctx context.Context, r Recipe) {
 	verdict := r.Check(ctx, l.env)
 	previous := st.lastVerdict
 	st.lastVerdict = verdict.Kind
-	if led != nil && (verdict.Kind != Pass || previous != Pass) {
+	// A check line is written when the check fails or the verdict changed.
+	// A pass after a pass says nothing, and so does an unknown after an
+	// unknown: a machine whose check cannot answer would otherwise write a
+	// line every ten minutes for the rest of its life, and reach the trim
+	// with nothing in it worth keeping. The first tick of a process is
+	// always a change, so a restart is visible in the ledger.
+	if led != nil && (verdict.Kind == Fail || verdict.Kind != previous) {
 		led.note(Entry{Event: EventCheck, Verdict: verdict.Kind, Reason: verdict.Reason})
 	}
 
