@@ -55,11 +55,53 @@ func init() {
 	})
 }
 
-// hostConvergeOK is the runner's own line for the one installer this recipe
-// runs; the transcript must end with it. The exit code says nothing (the
+// hostConvergeOK is the runner's own line for the installer this recipe
+// cares about; the transcript must carry it. The exit code says nothing (the
 // runner is fail-safe zero by contract), so this line is the whole of what
-// "the repair ran" means before the check is asked again.
-const hostConvergeOK = "core installers: host_housekeeping.sh: ok"
+// "the repair ran" means before the check is asked again. It is the last
+// line on a site, where host_converge runs that one installer and the runner
+// exits; on a machine with no site the runner runs the whole host set and
+// says more afterwards ("plugin installers: none on a machine with no site"
+// is how a machine transcript ends), so the line is looked for, not
+// required last. hostConvergeFailed is the runner's other answer for the
+// same installer, and it is disqualifying wherever it appears.
+const (
+	hostConvergeOK     = "core installers: host_housekeeping.sh: ok"
+	hostConvergeFailed = "core installers: WARNING - host_housekeeping.sh failed"
+)
+
+// installerOutcome reads a converge result for one named installer: the
+// transcript must carry the runner's ok line for it and not its failure
+// line. Shared by every recipe whose repair is one core installer through
+// the runner (hostConvergeOutcome, agentConvergeOutcome).
+func installerOutcome(word, installer string, result map[string]interface{}, err error) (string, error) {
+	if err != nil {
+		if primitives.Refused(err) {
+			return "", fmt.Errorf("%s refused: %v", word, err)
+		}
+		return "", fmt.Errorf("%s failed: %v", word, err)
+	}
+	okLine := "core installers: " + installer + ": ok"
+	failedLine := "core installers: WARNING - " + installer + " failed"
+	output, _ := result["output"].(string)
+	ran := false
+	for _, line := range strings.Split(output, "\n") {
+		switch strings.TrimSpace(line) {
+		case failedLine:
+			return "", fmt.Errorf("the runner reports %q", failedLine)
+		case okLine:
+			ran = true
+		}
+	}
+	if !ran {
+		last := lastLine(output)
+		if last == "" {
+			return "", fmt.Errorf("%s returned an empty transcript", word)
+		}
+		return "", fmt.Errorf("the transcript does not carry %q; its last line is %q", okLine, last)
+	}
+	return installer + ": ok", nil
+}
 
 // fail2banVerdict reads a host_report result into a verdict.
 func fail2banVerdict(result map[string]interface{}, err error) Verdict {
@@ -104,27 +146,13 @@ func fail2banVerdict(result map[string]interface{}, err error) Verdict {
 	return Verdict{Pass, fmt.Sprintf("fail2ban is active with %d jail(s): %s", len(jails), strings.Join(names, ", "))}
 }
 
-// hostConvergeOutcome reads a host_converge result: the transcript must end
-// with the runner's ok line for host_housekeeping.sh. Anything else the
-// runner said instead — a WARNING, a refusal, another run holding the lock —
-// is the reason the attempt failed, and the last line is quoted so the
-// ledger says which.
+// hostConvergeOutcome reads a host_converge result: the transcript must
+// carry the runner's ok line for host_housekeeping.sh and not its failure
+// line. Anything else the runner said instead — a WARNING, a refusal,
+// another run holding the lock — is the reason the attempt failed, and the
+// last line is quoted so the ledger says which.
 func hostConvergeOutcome(result map[string]interface{}, err error) (string, error) {
-	if err != nil {
-		if primitives.Refused(err) {
-			return "", fmt.Errorf("host_converge refused: %v", err)
-		}
-		return "", fmt.Errorf("host_converge failed: %v", err)
-	}
-	output, _ := result["output"].(string)
-	last := lastLine(output)
-	if last != hostConvergeOK {
-		if last == "" {
-			return "", fmt.Errorf("host_converge returned an empty transcript")
-		}
-		return "", fmt.Errorf("the transcript does not end with %q; its last line is %q", hostConvergeOK, last)
-	}
-	return "host_housekeeping.sh: ok", nil
+	return installerOutcome("host_converge", "host_housekeeping.sh", result, err)
 }
 
 // lastLine is the last non-blank line of text, trimmed.

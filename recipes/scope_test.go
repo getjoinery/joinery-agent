@@ -107,3 +107,55 @@ func TestTheReportSaysNotApplicableInAContainer(t *testing.T) {
 		}
 	}
 }
+
+// A site-scoped recipe on a machine with no site: never checked, said once,
+// reported as not-applicable — the support bundle carries no install_agent.sh,
+// so there is nothing the recipe could run.
+func TestASiteScopedRecipeDoesNotTickWithoutASite(t *testing.T) {
+	ResetVerdictsForTests()
+	defer ResetVerdictsForTests()
+	h := newHarness(t)
+	h.recipe.Scope = ScopeSite
+	checks := 0
+	h.recipe.Check = func(context.Context, *Env) Verdict { checks++; return Verdict{Fail, "would fail"} }
+	var lines []string
+	h.loop = NewLoop([]Recipe{h.recipe}, nil, Options{
+		Now:     func() time.Time { return h.now },
+		Lock:    &h.lock,
+		Logf:    func(f string, a ...interface{}) { lines = append(lines, fmt.Sprintf(f, a...)) },
+		HasSite: func() bool { return false },
+	})
+	h.loop.noteInapplicable()
+	for i := 0; i < 3; i++ {
+		h.loop.Tick(context.Background())
+		h.now = h.now.Add(TickInterval)
+	}
+	if checks != 0 || h.repairs != 0 {
+		t.Fatalf("a site-scoped recipe ran on a siteless machine (%d checks, %d repairs)", checks, h.repairs)
+	}
+	said := 0
+	for _, l := range lines {
+		if strings.Contains(l, "not applicable on a machine with no site") {
+			said++
+		}
+	}
+	if said != 1 {
+		t.Fatalf("the journal should say once why; said %d time(s): %v", said, lines)
+	}
+	raw, _ := os.ReadFile(filepath.Join(LedgerDir, "probe.jsonl"))
+	if !strings.Contains(string(raw), `"event":"`+EventNotApplicable+`"`) || !strings.Contains(string(raw), "no site tree") {
+		t.Fatalf("the ledger should carry one not_applicable line naming the reason, got %s", raw)
+	}
+	// And the claim: the registered site-scoped recipe reads not-applicable
+	// with no verdict, and ticks normally where there is a site.
+	restore := HasSite
+	HasSite = func() bool { return false }
+	if !strings.Contains(","+Report()+",", ",agent_supervision:"+ModeNotApplicable+",") {
+		t.Errorf("the claim should carry agent_supervision:%s on a siteless machine, got %q", ModeNotApplicable, Report())
+	}
+	HasSite = func() bool { return true }
+	if strings.Contains(Report(), "agent_supervision:"+ModeNotApplicable) {
+		t.Errorf("with a site the recipe applies, got %q", Report())
+	}
+	HasSite = restore
+}

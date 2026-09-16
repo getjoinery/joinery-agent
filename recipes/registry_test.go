@@ -21,15 +21,20 @@ var pinnedRecipes = map[string][2]string{
 	// The first recipe of specs/agent_tier1_recipes.md: fail2ban active with
 	// at least one jail, or host_housekeeping.sh through the host runner.
 	// Absent counts as failed (the installer installs it); a container's
-	// "unknown" never repairs. Report-only this release (see pinnedMode).
+	// "unknown" never repairs. Armed (see pinnedMode).
 	"fail2ban": {"host_report", "host_converge"},
+	// Recipe 2: something would restart this agent if it stopped, or
+	// install_agent.sh through the host runner. Site-scoped: the bundle a
+	// siteless machine runs from carries no install_agent.sh.
+	"agent_supervision": {"agent_report", "agent_converge"},
 }
 
-// pinnedMode is the repair switch as this release ships it. Arming is a
-// release: changing ReportOnly means changing this line too, in the same
-// commit, with the burn-in ledger read first (specs/agent_tier1_recipes.md,
-// "Burn-in" and build-order item 7).
-const pinnedMode = ModeReportOnly
+// pinnedMode is the repair switch as this release ships it. Arming (or
+// disarming) is a release: changing ReportOnly means changing this line too,
+// in the same commit. Armed since 1.33.0, after the burn-in ledger was read
+// and the case proof ran (specs/agent_tier1_recipes.md, "Burn-in" and
+// build-order item 7).
+const pinnedMode = ModeArmed
 
 func TestRecipeListIsPinned(t *testing.T) {
 	for _, name := range Names() {
@@ -134,10 +139,11 @@ func TestRegisterRefusesWhatTheContractForbids(t *testing.T) {
 }
 
 func TestTheReportNamesEveryRecipeWithItsMode(t *testing.T) {
+	ResetVerdictsForTests()
 	report := Report()
 	for _, r := range All() {
 		if !strings.Contains(","+report+",", ","+r.Name+":"+ModeOf(r)+",") {
-			t.Errorf("the claim's recipe list %q does not carry %s with mode %s", report, r.Name, ModeOf(r))
+			t.Errorf("the claim's recipe list %q does not carry %s with mode %s (no verdict before the first check)", report, r.Name, ModeOf(r))
 		}
 	}
 	// Every character must survive the plane's field pattern, or the claim is
@@ -145,6 +151,35 @@ func TestTheReportNamesEveryRecipeWithItsMode(t *testing.T) {
 	for _, r := range report {
 		if !(r >= 'a' && r <= 'z') && !(r >= '0' && r <= '9') && r != '_' && r != ',' && r != ':' && r != '-' {
 			t.Errorf("the recipe report %q carries %q, which the wire format does not allow", report, r)
+		}
+	}
+}
+
+// The plane could not tell a recipe failing every tick from a healthy one
+// while the claim carried only the mode (the case proof of 2026-09-16: three
+// hours of fail on the docker-prod host, "fail2ban:report-only" throughout).
+// Once the check has run, the claim says what it said.
+func TestTheReportCarriesTheLastVerdictOnceThereIsOne(t *testing.T) {
+	ResetVerdictsForTests()
+	defer ResetVerdictsForTests()
+	r, ok := Lookup("fail2ban")
+	if !ok {
+		t.Skip("no fail2ban recipe registered")
+	}
+	if !Applicable(r) {
+		t.Skip("fail2ban does not apply in this environment; the not-applicable path is scope_test's")
+	}
+	for _, k := range []Kind{Fail, Unknown, Pass} {
+		noteVerdict("fail2ban", k)
+		want := "fail2ban:" + Mode() + ":" + string(k)
+		if !strings.Contains(","+Report()+",", ","+want+",") {
+			t.Errorf("after a %s check the claim should carry %q, got %q", k, want, Report())
+		}
+	}
+	// Every character still survives the plane's field pattern.
+	for _, c := range Report() {
+		if !(c >= 'a' && c <= 'z') && !(c >= '0' && c <= '9') && c != '_' && c != ',' && c != ':' && c != '-' {
+			t.Errorf("the recipe report %q carries %q, which the wire format does not allow", Report(), c)
 		}
 	}
 }

@@ -61,7 +61,17 @@ func TestFail2banVerdicts(t *testing.T) {
 func TestHostConvergeOutcomeReadsTheTranscriptNotTheExitCode(t *testing.T) {
 	ok := "host installers: lock taken (pid 1)\ncore installers: running host_housekeeping.sh\nfail2ban: rendered 3 drop-ins\ncore installers: host_housekeeping.sh: ok\n"
 	if detail, err := hostConvergeOutcome(map[string]interface{}{"output": ok}, nil); err != nil || detail == "" {
-		t.Errorf("a transcript ending with the ok line is a repair that ran: %v", err)
+		t.Errorf("a site transcript ending with the ok line is a repair that ran: %v", err)
+	}
+	// A machine with no site runs the whole host set and the runner keeps
+	// talking after the line this recipe cares about: what the docker-prod
+	// host's own converger log ends with, read 2026-09-16. Requiring the ok
+	// line LAST would ledger every armed repair there as failed while
+	// fail2ban came back (B5).
+	machine := "host installers: lock taken (pid 1)\ncore installers: running host_housekeeping.sh\nfail2ban: rendered 3 drop-ins\ncore installers: host_housekeeping.sh: ok\n" +
+		"core installers: running install_host_converger.sh\nhost converger: timer already active (every 1 min, systemd)\ncore installers: install_host_converger.sh: ok\nplugin installers: none on a machine with no site\n"
+	if detail, err := hostConvergeOutcome(map[string]interface{}{"output": machine}, nil); err != nil || detail == "" {
+		t.Errorf("a machine transcript carrying the ok line is a repair that ran: %v", err)
 	}
 	rows := []struct {
 		label  string
@@ -72,7 +82,9 @@ func TestHostConvergeOutcomeReadsTheTranscriptNotTheExitCode(t *testing.T) {
 		{"a warning", "core installers: running host_housekeeping.sh\ncore installers: WARNING - host_housekeeping.sh failed\n", nil, "WARNING"},
 		{"refused by the runner", "installer refused: host_housekeeping.sh is not in the manifest\n", nil, "installer refused"},
 		{"another run holds the lock", "host installers: another run holds the lock (pid 4 since T) - waited 600s, leaving it to that one\n", nil, "another run holds the lock"},
-		{"ok but not last", "core installers: host_housekeeping.sh: ok\nsomething else\n", nil, "something else"},
+		{"the other installer's ok line only", "core installers: running install_host_converger.sh\ncore installers: install_host_converger.sh: ok\nplugin installers: none on a machine with no site\n", nil, "plugin installers: none"},
+		{"ok line embedded in another line", "core installers: host_housekeeping.sh: ok (not really)\n", nil, "does not carry"},
+		{"a warning after an earlier ok", "core installers: host_housekeeping.sh: ok\ncore installers: WARNING - host_housekeeping.sh failed\n", nil, "WARNING"},
 		{"empty", "", nil, "empty transcript"},
 		{"the word refused", "", &primitives.RefusalError{Reason: "hash mismatch"}, "refused"},
 		{"the word failed", "", errors.New("killed"), "failed"},
@@ -221,10 +233,10 @@ func TestTheFail2banRecipeInReportOnlyChangesNothing(t *testing.T) {
 	recipe, _ := Lookup("fail2ban")
 	now := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
 	loop := NewLoop([]Recipe{recipe}, env, Options{Now: func() time.Time { return now }, Logf: func(string, ...interface{}) {}})
-	// The shipped value, not a test override: this is the release's posture.
-	if !loop.reportOnly {
-		t.Skip("the loop is armed in this build; the report-only proof does not apply")
-	}
+	// The release is armed (registry_test pins it); the report-only posture
+	// stays proven end to end against the real recipe and a signed tree, so
+	// a later release can disarm on a path that never stopped being tested.
+	loop.reportOnly = true
 	for i := 0; i < 3; i++ {
 		now = now.Add(TickInterval)
 		loop.Tick(context.Background())

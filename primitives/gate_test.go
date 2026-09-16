@@ -60,6 +60,14 @@ var pinnedVocabulary = map[string]Class{
 	// outside its CORE_INSTALLERS anyway. Operate: it rewrites configuration
 	// the release owns, as the host timer already does daily unattended.
 	"host_converge": ClassOperate,
+	// Recipe agent_supervision's two words (specs/agent_tier1_recipes.md,
+	// recipe 2). Observe: four files stat'd and read, no process, no
+	// parameters — the supervision facts restart_agent already proves.
+	// Operate: install_agent.sh through the runner's single-installer mode,
+	// one compiled constant, refused on a machine with no site; under a
+	// job marker the installer writes supervision and restarts nothing.
+	"agent_report":   ClassObserve,
+	"agent_converge": ClassOperate,
 
 	"ssl_probe_place": ClassOperate,
 	"ssl_probe_clear": ClassOperate,

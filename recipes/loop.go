@@ -68,6 +68,9 @@ type Options struct {
 	// InContainer overrides the package answer for a test. Nil means the
 	// real one.
 	InContainer func() bool
+	// HasSite overrides the package answer for a test. Nil means the real
+	// one.
+	HasSite func() bool
 }
 
 // Loop runs every registered recipe on the tick.
@@ -80,6 +83,7 @@ type Loop struct {
 	logf        func(format string, args ...interface{})
 	paired      func() bool
 	inContainer func() bool
+	hasSite     func() bool
 
 	// reportOnly is ReportOnly, held in a field so the state machine's tests
 	// can exercise both the armed and the report-only paths. Nothing outside
@@ -118,6 +122,7 @@ func NewLoop(recipes []Recipe, env *Env, opts Options) *Loop {
 		logf:        opts.Logf,
 		paired:      opts.Paired,
 		inContainer: opts.InContainer,
+		hasSite:     opts.HasSite,
 		reportOnly:  ReportOnly,
 		state:       map[string]*recipeState{},
 	}
@@ -168,16 +173,17 @@ func (l *Loop) Run(ctx context.Context) {
 	}
 }
 
-// applicable is Applicable(r) through the loop's own container answer.
+// applicable is Applicable(r) through the loop's own posture answers.
 func (l *Loop) applicable(r Recipe) bool {
-	if r.Scope != ScopeHost {
-		return true
-	}
 	in := l.inContainer
 	if in == nil {
 		in = InContainer
 	}
-	return !in()
+	site := l.hasSite
+	if site == nil {
+		site = HasSite
+	}
+	return applicableWith(r, in, site)
 }
 
 // noteInapplicable says once per process, in the journal and the ledger,
@@ -190,9 +196,14 @@ func (l *Loop) noteInapplicable() {
 		if l.applicable(r) {
 			continue
 		}
-		l.logf("recipe %s: not applicable in a container (its subject is the host); not checked here", r.Name)
+		reason := inapplicableReason(r)
+		if r.Scope == ScopeSite {
+			l.logf("recipe %s: not applicable on a machine with no site (%s); not checked here", r.Name, reason)
+		} else {
+			l.logf("recipe %s: not applicable in a container (its subject is the host); not checked here", r.Name)
+		}
 		if led, err := openLedger(r.Name, l.now); err == nil && led != nil {
-			led.note(Entry{Event: EventNotApplicable, Reason: "in a container; the recipe's subject is the host"})
+			led.note(Entry{Event: EventNotApplicable, Reason: reason})
 		}
 	}
 }
@@ -272,6 +283,7 @@ func (l *Loop) tickOne(ctx context.Context, r Recipe) {
 	verdict := r.Check(ctx, l.env)
 	previous := st.lastVerdict
 	st.lastVerdict = verdict.Kind
+	noteVerdict(r.Name, verdict.Kind) // what the next claim says beside the mode
 	// A check line is written when the check fails or the verdict changed.
 	// A pass after a pass says nothing, and so does an unknown after an
 	// unknown: a machine whose check cannot answer would otherwise write a
@@ -407,5 +419,6 @@ func (l *Loop) tickOne(ctx context.Context, r Recipe) {
 	led.endAttempt(id, OutcomeRepaired, detail)
 	st.consecutive = 0
 	st.lastVerdict = Pass
+	noteVerdict(r.Name, Pass) // the check after the repair said so
 	l.logf("recipe %s: attempt #%d repaired (%s)", r.Name, id, detail)
 }

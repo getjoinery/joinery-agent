@@ -82,8 +82,10 @@ type Recipe struct {
 	// machine itself (its units, its jails): an agent inside a container
 	// cannot see that machine, so the loop does not tick a host-scoped
 	// recipe there, and the claim reports it as not-applicable rather than
-	// unknown every ten minutes for ever. ScopeAny (the zero value) ticks
-	// everywhere.
+	// unknown every ten minutes for ever. ScopeSite means the recipe's
+	// repair lives in a site tree (an installer the support bundle does not
+	// carry): a machine with no site never ticks it, for the same reason.
+	// ScopeAny (the zero value) ticks everywhere.
 	Scope Scope
 
 	// Check runs the check word and reads its answer into a verdict. Cheap,
@@ -181,7 +183,14 @@ type Scope string
 const (
 	ScopeAny  Scope = ""
 	ScopeHost Scope = "host"
+	ScopeSite Scope = "site"
 )
+
+// HasSite answers whether this agent has a site tree to run installers
+// from. Set once by the agent's main from its configuration (an empty site
+// root is a machine with no site); a variable so a test can say either. The
+// default is the live answer for the common posture.
+var HasSite = func() bool { return true }
 
 // InContainer answers whether this process runs inside a container: the
 // Docker marker file, or no systemd to have units at all. A variable so a
@@ -199,7 +208,25 @@ var InContainer = func() bool {
 
 // Applicable answers whether a recipe ticks on this machine.
 func Applicable(r Recipe) bool {
-	return r.Scope != ScopeHost || !InContainer()
+	return applicableWith(r, InContainer, HasSite)
+}
+
+func applicableWith(r Recipe, inContainer, hasSite func() bool) bool {
+	switch r.Scope {
+	case ScopeHost:
+		return !inContainer()
+	case ScopeSite:
+		return hasSite()
+	}
+	return true
+}
+
+// inapplicableReason says, for a recipe that does not tick here, why not.
+func inapplicableReason(r Recipe) string {
+	if r.Scope == ScopeSite {
+		return "no site tree here; the recipe's repair is an installer the support bundle does not carry"
+	}
+	return "in a container; the recipe's subject is the host"
 }
 
 // ModeOf is the mode the claim reports for one recipe: the compiled mode,
@@ -225,13 +252,22 @@ const (
 )
 
 // Report is the recipe list as it travels in the claim: every recipe name
-// with its mode after a colon, comma-separated and sorted, so the plane never
-// guesses which recipes a node runs or whether they act. The plane validates
-// it under the same rules as the vocabulary and stores it beside it.
+// with its mode after a colon and, once the check has run, its last verdict
+// after another ("fail2ban:armed:fail"), comma-separated and sorted, so the
+// plane never guesses which recipes a node runs, whether they act, or
+// whether their subject is right. A recipe that does not apply here carries
+// no verdict: it is never checked. The plane validates the list under the
+// same rules as the vocabulary and stores it beside it.
 func Report() string {
 	parts := make([]string, 0, len(registry))
 	for _, r := range All() {
-		parts = append(parts, r.Name+":"+ModeOf(r))
+		entry := r.Name + ":" + ModeOf(r)
+		if Applicable(r) {
+			if k := LastVerdict(r.Name); k != "" {
+				entry += ":" + string(k)
+			}
+		}
+		parts = append(parts, entry)
 	}
 	return strings.Join(parts, ",")
 }

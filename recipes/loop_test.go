@@ -804,3 +804,40 @@ func TestTwoRecipesKeepSeparateState(t *testing.T) {
 		t.Error("each recipe has its own ledger file")
 	}
 }
+
+// The claim says what the check last said, and a repair's own verifying
+// check counts: a node that was just repaired reads as passing on its next
+// poll, not as failing until the next tick.
+func TestTheClaimCarriesWhatTheCheckLastSaid(t *testing.T) {
+	ResetVerdictsForTests()
+	defer ResetVerdictsForTests()
+	h := newHarness(t)
+	if LastVerdict("probe") != "" {
+		t.Fatalf("no verdict before the first check, got %q", LastVerdict("probe"))
+	}
+	h.tick()
+	if LastVerdict("probe") != Pass {
+		t.Errorf("after a passing check the board says %q, want pass", LastVerdict("probe"))
+	}
+	h.verdict = Verdict{Fail, "broken"}
+	h.tick()
+	if LastVerdict("probe") != Fail {
+		t.Errorf("after a failing check the board says %q, want fail", LastVerdict("probe"))
+	}
+	h.verdict = Verdict{Unknown, "cannot say"}
+	h.tick()
+	if LastVerdict("probe") != Unknown {
+		t.Errorf("after an unknown check the board says %q, want unknown", LastVerdict("probe"))
+	}
+	// Two failing ticks, the repair runs, its verifying check passes.
+	h.verdict = Verdict{Fail, "broken"}
+	pass := Verdict{Pass, "fixed"}
+	h.after = &pass
+	h.ticks(2)
+	if h.repairs != 1 {
+		t.Fatalf("the repair should have run once, ran %d times", h.repairs)
+	}
+	if LastVerdict("probe") != Pass {
+		t.Errorf("after a repair whose check passed the board says %q, want pass", LastVerdict("probe"))
+	}
+}
