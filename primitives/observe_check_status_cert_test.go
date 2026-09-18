@@ -348,3 +348,27 @@ func TestNoDatabaseIsNotABrokenDatabase(t *testing.T) {
 		t.Errorf("a node whose database is down should report it, got %v", broken["postgres_status"])
 	}
 }
+
+// The plane offers "publish on this node" only to a management node, which is
+// the node's own account of whether Server Manager is active there.
+func TestServerManagerActiveFollowsThePluginRegistryRow(t *testing.T) {
+	ns := func(v string) sql.NullString { return sql.NullString{String: v, Valid: true} }
+	none := sql.NullString{}
+	if !pluginActive(ns("active"), none) {
+		t.Fatal("plg_status active is active")
+	}
+	for _, st := range []string{"inactive", "error", "stale", "uninstalled"} {
+		if pluginActive(ns(st), ns("2026-01-01 00:00:00")) {
+			t.Fatalf("plg_status %q is not active, whatever plg_activated_time says", st)
+		}
+	}
+	if !pluginActive(none, ns("2026-01-01 00:00:00")) {
+		t.Fatal("a row that predates plg_status is active when it was ever activated")
+	}
+	if pluginActive(none, none) {
+		t.Fatal("never activated, no status: not active")
+	}
+	if pluginActive(ns(""), none) {
+		t.Fatal("an empty status falls back to the activation time, which is absent")
+	}
+}

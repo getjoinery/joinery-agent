@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/x509"
+	"database/sql"
 	"encoding/pem"
 	"fmt"
 	"os"
@@ -34,7 +35,7 @@ func init() {
 	Register(Primitive{
 		Name:        "check_status",
 		Class:       ClassObserve,
-		Description: "Disk, memory, load, uptime, PostgreSQL liveness, Joinery version, database list.",
+		Description: "Disk, memory, load, uptime, PostgreSQL liveness, Joinery version, database list, whether Server Manager is active.",
 		Params:      nil, // takes none, so any param at all is refused
 		Run:         runCheckStatus,
 	})
@@ -233,6 +234,31 @@ func collectDatabase(ctx context.Context, env *ExecEnv, result map[string]interf
 		"SELECT stg_value FROM stg_settings WHERE stg_name = 'scheduled_tasks_last_cron_run'").Scan(&cronLastRun); err == nil && cronLastRun != "" {
 		result["cron_last_run"] = cronLastRun
 	}
+
+	// Whether this site is a management node: the Server Manager plugin is
+	// active here, so it has a Publish page and an upgrades table it serves
+	// releases from. The plane offers "publish a release on this node" only to
+	// a node that says so. Every agent compiles publish_upgrade in, so the
+	// vocabulary cannot tell a plane from a plain site, and a plain site that
+	// republishes itself does a lot of work for a release nothing reads.
+	// Reported as a boolean either way; an absent key is an agent that
+	// predates the fact, and the plane reads that as "not a management node".
+	// Same rule as Plugin::is_active(): plg_status decides, and a row that
+	// predates plg_status is active when it was ever activated.
+	var pluginStatus, activatedTime sql.NullString
+	err = db.QueryRowContext(ctx,
+		"SELECT plg_status, plg_activated_time::text FROM plg_plugins WHERE plg_name = 'server_manager'").Scan(&pluginStatus, &activatedTime)
+	result["server_manager_active"] = err == nil && pluginActive(pluginStatus, activatedTime)
+}
+
+// pluginActive is Plugin::is_active() over a registry row: plg_status decides
+// when it is set; a row that predates plg_status is active when it was ever
+// activated. Pure, so the rule is tested without a database.
+func pluginActive(status, activatedTime sql.NullString) bool {
+	if status.Valid && status.String != "" {
+		return status.String == "active"
+	}
+	return activatedTime.Valid
 }
 
 // formatSize renders bytes the way df -h does, so the fleet view reads the same
