@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"database/sql"
+	"database/sql/driver"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -370,5 +371,33 @@ func TestServerManagerActiveFollowsThePluginRegistryRow(t *testing.T) {
 	}
 	if pluginActive(ns(""), none) {
 		t.Fatal("an empty status falls back to the activation time, which is absent")
+	}
+}
+
+// The same answer rides every poll, from the registry row through the site's
+// database: a definite active or inactive when the database answers, and no
+// answer at all — never "inactive" — when it does not.
+func TestServerManagerActiveAnswersFromTheDatabaseOrNotAtAll(t *testing.T) {
+	registry := func(status string) map[string]fakeRows {
+		return map[string]fakeRows{
+			"FROM plg_plugins WHERE plg_name = 'server_manager'": {
+				columns: []string{"plg_status", "plg_activated_time"},
+				rows:    [][]driver.Value{{status, "2026-01-01 00:00:00"}},
+			},
+		}
+	}
+	active, err := ServerManagerActive(context.Background(), &ExecEnv{DB: fakeDB(registry("active"), nil)})
+	if err != nil || !active {
+		t.Fatalf("an active registry row is a management node, got %v %v", active, err)
+	}
+	active, err = ServerManagerActive(context.Background(), &ExecEnv{DB: fakeDB(registry("inactive"), nil)})
+	if err != nil || active {
+		t.Fatalf("an inactive registry row is a plain site, got %v %v", active, err)
+	}
+	if _, err = ServerManagerActive(context.Background(), &ExecEnv{DB: fakeDB(nil, errors.New("connection refused"))}); err == nil {
+		t.Fatal("a database that does not answer is no answer, not inactive")
+	}
+	if _, err = ServerManagerActive(context.Background(), &ExecEnv{}); err == nil {
+		t.Fatal("no database resolver is no answer")
 	}
 }

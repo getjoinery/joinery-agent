@@ -343,6 +343,19 @@ func (r *RemoteSource) claim(ctx context.Context) (*RemoteJob, error) {
 		} else {
 			claimBody["log_access"] = "off"
 		}
+		// Whether the Server Manager plugin is active here — whether this is
+		// a management node, the only kind the plane offers a publish to.
+		// check_status reports the same fact, but nothing runs check_status
+		// on a schedule; the poll is where every node speaks every cycle. A
+		// database that does not answer sends nothing, and the plane keeps
+		// the last answer rather than reading silence as "plain site".
+		if active, err := primitives.ServerManagerActive(ctx, r.env); err == nil {
+			if active {
+				claimBody["server_manager"] = "active"
+			} else {
+				claimBody["server_manager"] = "inactive"
+			}
+		}
 		// Whether this node can verify the scripts it would run as root.
 		//
 		// The plane can already work this out from a refusal, but only for a

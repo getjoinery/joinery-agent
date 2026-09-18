@@ -235,20 +235,48 @@ func collectDatabase(ctx context.Context, env *ExecEnv, result map[string]interf
 		result["cron_last_run"] = cronLastRun
 	}
 
-	// Whether this site is a management node: the Server Manager plugin is
-	// active here, so it has a Publish page and an upgrades table it serves
-	// releases from. The plane offers "publish a release on this node" only to
-	// a node that says so. Every agent compiles publish_upgrade in, so the
-	// vocabulary cannot tell a plane from a plain site, and a plain site that
-	// republishes itself does a lot of work for a release nothing reads.
-	// Reported as a boolean either way; an absent key is an agent that
-	// predates the fact, and the plane reads that as "not a management node".
+	// Whether this site is a management node, as a boolean either way; an
+	// absent key is an agent that predates the fact, and the plane reads that
+	// as "not a management node". The same answer rides every poll as
+	// server_manager (ServerManagerActive), which is where the plane
+	// actually learns it — nothing runs check_status on a schedule.
+	active, err := serverManagerActive(ctx, db)
+	result["server_manager_active"] = err == nil && active
+}
+
+// ServerManagerActive answers whether the Server Manager plugin is active on
+// this node: whether it is a management node, with a Publish page and an
+// upgrades table it serves releases from. The plane offers "publish a release
+// on this node" only to a node that says so. Every agent compiles
+// publish_upgrade in, so the vocabulary cannot tell a plane from a plain site,
+// and a plain site that republishes itself does a lot of work for a release
+// nothing reads. The error is the database not answering, which is "no
+// answer", never "inactive".
+func ServerManagerActive(ctx context.Context, env *ExecEnv) (bool, error) {
+	if env == nil || env.DB == nil {
+		return false, fmt.Errorf("no database resolver")
+	}
+	db, err := env.DB()
+	if err != nil || db == nil {
+		return false, fmt.Errorf("database not accepting connections")
+	}
+	return serverManagerActive(ctx, db)
+}
+
+func serverManagerActive(ctx context.Context, db *sql.DB) (bool, error) {
 	// Same rule as Plugin::is_active(): plg_status decides, and a row that
-	// predates plg_status is active when it was ever activated.
+	// predates plg_status is active when it was ever activated. No row is a
+	// plugin never installed here, which is a definite "inactive".
 	var pluginStatus, activatedTime sql.NullString
-	err = db.QueryRowContext(ctx,
+	err := db.QueryRowContext(ctx,
 		"SELECT plg_status, plg_activated_time::text FROM plg_plugins WHERE plg_name = 'server_manager'").Scan(&pluginStatus, &activatedTime)
-	result["server_manager_active"] = err == nil && pluginActive(pluginStatus, activatedTime)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return pluginActive(pluginStatus, activatedTime), nil
 }
 
 // pluginActive is Plugin::is_active() over a registry row: plg_status decides

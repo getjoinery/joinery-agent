@@ -297,4 +297,9 @@ func TestClaimReportsTheLogAccessSwitch(t *testing.T) {
 	if claimed["log_access"] != "on" {
 		t.Fatalf("a projected on must report on, got %v", claimed["log_access"])
 	}
+	// The management-node fact rides the same poll; with no database there is
+	// no answer, and the field is left out rather than sent as "inactive".
+	if _, present := claimed["server_manager"]; present {
+		t.Fatalf("no database means no server_manager answer, got %v", claimed["server_manager"])
+	}
 }
