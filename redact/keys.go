@@ -13,6 +13,7 @@ var secretKeys = []string{
 	"access_key",
 	"application_key",
 	"app_key",
+	"api_key",
 	"api_secret",
 	"apk_secret_key",
 	"password",

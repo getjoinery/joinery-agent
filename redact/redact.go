@@ -59,12 +59,22 @@ var (
 	// The bootstrap's --clone-key=KEY flag.
 	cloneKeyFlag = regexp.MustCompile(`(--clone-key=)('[^']*'|"[^"]*"|\S+)`)
 
-	// Shell environment assignments: PGPASSWORD=..., AWS_SECRET_ACCESS_KEY=...,
-	// GITHUB_TOKEN=..., API_KEY=... — a name containing PASSWORD, PASSWD, TOKEN
-	// or SECRET, or ending in _KEY. Bare KEY anywhere would swallow SSH_KEY_PATH
-	// and its kind, which carry paths. The platform pattern's (?!\s) is implied
-	// here: every alternative of the value already begins with a non-space.
-	envAssignment = regexp.MustCompile(`\b([A-Z][A-Z0-9_]*(?:PASSWORD|PASSWD|TOKEN|SECRET)[A-Z0-9_]*|[A-Z][A-Z0-9_]*_KEY)=('[^']*'|"[^"]*"|\S+)`)
+	// Assignments: PGPASSWORD=..., AWS_SECRET_ACCESS_KEY=..., GITHUB_TOKEN=...
+	// (the shape a console command uses) and, in any case, password=...,
+	// dbpassword=..., csrf_token=..., api_key=... (the shape a DSN, a query
+	// string or a config dump uses inside a log line). A name qualifies by
+	// containing PASSWORD, PASSWD, TOKEN or SECRET anywhere, in any case, or by
+	// being one of secretKeys, in any case. The platform pattern's (?!\s) is
+	// implied here: every alternative of the value already begins with a
+	// non-space.
+	credentialAssignment = regexp.MustCompile(`(?i)\b([a-z][a-z0-9_]*(?:password|passwd|token|secret)[a-z0-9_]*|(?:` + keyAlternation + `))=('[^']*'|"[^"]*"|\S+)`)
+
+	// A name ending in _KEY qualifies only in the conventional uppercase
+	// spelling (API_KEY, DEPLOY_KEY). Lowercase names ending in _key are the
+	// shape of flags and column names (--key=path, primary_key=usr_user_id),
+	// which carry no secret. Bare KEY anywhere would swallow SSH_KEY_PATH and
+	// its kind, which carry paths.
+	upperKeyAssignment = regexp.MustCompile(`\b([A-Z][A-Z0-9_]*_KEY)=('[^']*'|"[^"]*"|\S+)`)
 
 	// Authorization: Bearer <token>.
 	bearerToken = regexp.MustCompile(`(?i)\b(bearer\s+)[A-Za-z0-9._~+/\-]+=*`)
@@ -107,7 +117,8 @@ func Text(s string) string {
 	s = quotedKeyValue.ReplaceAllString(s, "${1}"+Mask+"${3}")
 	s = secretKeyHeader.ReplaceAllString(s, "${1}"+Mask)
 	s = cloneKeyFlag.ReplaceAllString(s, "${1}"+Mask)
-	s = envAssignment.ReplaceAllString(s, "${1}="+Mask)
+	s = credentialAssignment.ReplaceAllString(s, "${1}="+Mask)
+	s = upperKeyAssignment.ReplaceAllString(s, "${1}="+Mask)
 	s = bearerToken.ReplaceAllString(s, "${1}"+Mask)
 	s = email.ReplaceAllString(s, "<email>@${1}")
 	s = ipv6Full.ReplaceAllString(s, "<ip>")
