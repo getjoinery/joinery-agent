@@ -267,3 +267,34 @@ func TestClaimCarriesTheCasesAndTheBodyUntilOneSucceeds(t *testing.T) {
 		t.Error("the cases ride beside the recipe list and the vocabulary, not instead of them")
 	}
 }
+
+// The owner's log-access switch is reported at poll beside the vocabulary, as
+// "on" or "off", from the same rule the log words use — so the plane never
+// dispatches a log job the node is going to refuse, and never guesses.
+func TestClaimReportsTheLogAccessSwitch(t *testing.T) {
+	var claimed map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		json.NewDecoder(req.Body).Decode(&claimed)
+		w.Write([]byte(`{"api_version":"1.0","data":{"job":null}}`))
+	}))
+	defer server.Close()
+	t.Setenv("AGENT_STATE_DIR", t.TempDir())
+
+	src := testSource(t, testIdentity(t, server.URL, 7))
+	if _, err := src.claim(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if claimed["log_access"] != "off" {
+		t.Fatalf("no database and no marker must report off, got %v", claimed["log_access"])
+	}
+
+	if err := primitives.ProjectLogAccess(true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := src.claim(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if claimed["log_access"] != "on" {
+		t.Fatalf("a projected on must report on, got %v", claimed["log_access"])
+	}
+}

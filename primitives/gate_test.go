@@ -69,6 +69,16 @@ var pinnedVocabulary = map[string]Class{
 	"agent_report":   ClassObserve,
 	"agent_converge": ClassOperate,
 
+	// The two log words of specs/agent_log_access.md. Observe: one bounded
+	// read each, no process, both refused first by the owner's switch
+	// (agent_log_access) and redacted on the node before anything returns.
+	// site_log's file and log_table_tail's table are ENUMS compiled in their
+	// files — no path, no table name, no column and no SQL arrives from the
+	// wire — and the column lists leave members' addresses, webhook payloads
+	// and submitted forms unselected rather than merely masked.
+	"site_log":       ClassObserve,
+	"log_table_tail": ClassObserve,
+
 	"ssl_probe_place": ClassOperate,
 	"ssl_probe_clear": ClassOperate,
 

@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"joinery-agent/primitives"
 )
 
 // The run switch, from the agent's side (spec §10.3, O-2 and O-3/O-7).
@@ -41,6 +43,13 @@ const (
 	pathQuiet = "/api/v1/agent/quiet"
 
 	settingAgentEnabled = "agent_enabled"
+
+	// The owner's switch over the log words (specs/agent_log_access.md §1),
+	// projected beside the run switch on the same cadence and for the
+	// mirror-image reason: the run marker lets the agent stop without a
+	// database; the log-access marker lets the error log be read without one.
+	// The rule that reads it lives in primitives/log_access.go.
+	settingLogAccess = primitives.SettingLogAccess
 
 	// How often the agent re-reads the switch. Matches the join/leave watchers:
 	// an admin who turns the agent off should see it stop, not wonder.
@@ -155,7 +164,21 @@ func (w *SwitchWatcher) readSwitch() bool {
 	if err := projectSwitch(on); err != nil {
 		log.Printf("WARNING: could not project the run switch to %s: %v", markerPath(), err)
 	}
+	// The log-access switch rides the same read. Its marker is only ever a
+	// shadow of the setting, like the run marker; a database that cannot be
+	// read leaves the last projection standing, which is the whole point.
+	if logValue, err := readAgentSetting(w.db, settingLogAccess); err == nil {
+		projectLogAccessFromSetting(logValue)
+	}
 	return on
+}
+
+// projectLogAccessFromSetting writes the log-access marker from a stored
+// setting value, read with the same spellings as every other switch.
+func projectLogAccessFromSetting(value string) {
+	if err := primitives.ProjectLogAccess(primitives.SettingOn(value)); err != nil {
+		log.Printf("WARNING: could not project the log-access switch to %s: %v", primitives.LogAccessMarkerPath(), err)
+	}
 }
 
 // sayGoingQuiet tells the plane this node was switched off, so its dashboard can

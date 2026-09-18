@@ -333,6 +333,16 @@ func (r *RemoteSource) claim(ctx context.Context) (*RemoteJob, error) {
 		// that has a site tree to verify scripts against. It is the only
 		// evidence the plane gets that the bundle actually landed somewhere.
 		claimBody["bundle_version"] = installedBundleVersion()
+		// Where the owner's log-access switch stands (specs/agent_log_access.md
+		// §1, "reported at poll"): "on" or "off", from the one rule the log
+		// words themselves use, so the plane can show the switch and disable
+		// its Logs action with the owner's reason instead of dispatching a job
+		// the node will refuse.
+		if on, _ := primitives.LogAccessOn(ctx, r.env); on {
+			claimBody["log_access"] = "on"
+		} else {
+			claimBody["log_access"] = "off"
+		}
 		// Whether this node can verify the scripts it would run as root.
 		//
 		// The plane can already work this out from a refusal, but only for a

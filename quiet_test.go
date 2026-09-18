@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"joinery-agent/primitives"
 )
 
 // The run switch and the going-quiet goodbye. Two properties are load-bearing:
@@ -210,5 +212,40 @@ func TestAnUnpairedAgentHasNobodyToSayGoodbyeTo(t *testing.T) {
 
 	if _, err := os.Stat(filepath.Join(dir, "quiet_undelivered")); !os.IsNotExist(err) {
 		t.Fatal("an unpaired agent should not invent a goodbye record")
+	}
+}
+
+// The log-access switch (specs/agent_log_access.md) is projected beside the run
+// switch, read with the same spellings, into a marker of the same shape.
+func TestLogAccessIsProjectedBesideTheRunSwitch(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("AGENT_STATE_DIR", dir)
+
+	projectLogAccessFromSetting("1")
+	data, err := os.ReadFile(filepath.Join(dir, "log_access"))
+	if err != nil {
+		t.Fatalf("marker unreadable: %v", err)
+	}
+	if string(data) != "1\n" {
+		t.Fatalf("marker should hold the projected value in the run marker's shape, got %q", data)
+	}
+	projectLogAccessFromSetting("")
+	data, _ = os.ReadFile(filepath.Join(dir, "log_access"))
+	if string(data) != "0\n" {
+		t.Fatalf("an empty setting projects off, got %q", data)
+	}
+	if filepath.Dir(primitives.LogAccessMarkerPath()) != filepath.Dir(markerPath()) {
+		t.Fatal("both markers must live in the one state directory")
+	}
+}
+
+// One setting read two ways is how a machine disagrees with the page that
+// configured it: the run switch's reader and the primitives package's reader
+// must accept exactly the same spellings.
+func TestSwitchSpellingsAreShared(t *testing.T) {
+	for _, v := range []string{"1", "true", "yes", "on", " ON ", "TRUE", "0", "false", "no", "off", "", "2", "enabled"} {
+		if switchOn(v) != primitives.SettingOn(v) {
+			t.Errorf("spelling %q: switchOn=%v SettingOn=%v", v, switchOn(v), primitives.SettingOn(v))
+		}
 	}
 }
