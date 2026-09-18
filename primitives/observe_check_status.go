@@ -264,29 +264,27 @@ func ServerManagerActive(ctx context.Context, env *ExecEnv) (bool, error) {
 }
 
 func serverManagerActive(ctx context.Context, db *sql.DB) (bool, error) {
-	// Same rule as Plugin::is_active(): plg_status decides, and a row that
-	// predates plg_status is active when it was ever activated. No row is a
-	// plugin never installed here, which is a definite "inactive".
-	var pluginStatus, activatedTime sql.NullString
+	// plg_active is the flag the site's own loaders read (PluginHelper,
+	// Plugin::is_active()). plg_status is a lifecycle note that says 'stale'
+	// (not in the upgrade source's manifest) or 'error' while the plugin is
+	// switched on and running, so it cannot answer. No row is a plugin never
+	// installed here, which is a definite "inactive".
+	var active sql.NullInt64
 	err := db.QueryRowContext(ctx,
-		"SELECT plg_status, plg_activated_time::text FROM plg_plugins WHERE plg_name = 'server_manager'").Scan(&pluginStatus, &activatedTime)
+		"SELECT plg_active FROM plg_plugins WHERE plg_name = 'server_manager'").Scan(&active)
 	if err == sql.ErrNoRows {
 		return false, nil
 	}
 	if err != nil {
 		return false, err
 	}
-	return pluginActive(pluginStatus, activatedTime), nil
+	return pluginActive(active), nil
 }
 
-// pluginActive is Plugin::is_active() over a registry row: plg_status decides
-// when it is set; a row that predates plg_status is active when it was ever
-// activated. Pure, so the rule is tested without a database.
-func pluginActive(status, activatedTime sql.NullString) bool {
-	if status.Valid && status.String != "" {
-		return status.String == "active"
-	}
-	return activatedTime.Valid
+// pluginActive is the flag read the way the site reads it: switched on is
+// plg_active = 1, and a row with the column unset is off.
+func pluginActive(active sql.NullInt64) bool {
+	return active.Valid && active.Int64 == 1
 }
 
 // formatSize renders bytes the way df -h does, so the fleet view reads the same

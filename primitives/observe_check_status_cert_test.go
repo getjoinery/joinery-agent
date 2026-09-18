@@ -351,26 +351,18 @@ func TestNoDatabaseIsNotABrokenDatabase(t *testing.T) {
 }
 
 // The plane offers "publish on this node" only to a management node, which is
-// the node's own account of whether Server Manager is active there.
+// the node's own account of whether Server Manager is active there: the
+// plg_active flag its loaders read, not plg_status, which says 'stale' on a
+// running plugin the upgrade source stopped advertising.
 func TestServerManagerActiveFollowsThePluginRegistryRow(t *testing.T) {
-	ns := func(v string) sql.NullString { return sql.NullString{String: v, Valid: true} }
-	none := sql.NullString{}
-	if !pluginActive(ns("active"), none) {
-		t.Fatal("plg_status active is active")
+	if !pluginActive(sql.NullInt64{Int64: 1, Valid: true}) {
+		t.Fatal("plg_active 1 is active")
 	}
-	for _, st := range []string{"inactive", "error", "stale", "uninstalled"} {
-		if pluginActive(ns(st), ns("2026-01-01 00:00:00")) {
-			t.Fatalf("plg_status %q is not active, whatever plg_activated_time says", st)
-		}
+	if pluginActive(sql.NullInt64{Int64: 0, Valid: true}) {
+		t.Fatal("plg_active 0 is not")
 	}
-	if !pluginActive(none, ns("2026-01-01 00:00:00")) {
-		t.Fatal("a row that predates plg_status is active when it was ever activated")
-	}
-	if pluginActive(none, none) {
-		t.Fatal("never activated, no status: not active")
-	}
-	if pluginActive(ns(""), none) {
-		t.Fatal("an empty status falls back to the activation time, which is absent")
+	if pluginActive(sql.NullInt64{}) {
+		t.Fatal("a row with plg_active unset is not active")
 	}
 }
 
@@ -378,21 +370,21 @@ func TestServerManagerActiveFollowsThePluginRegistryRow(t *testing.T) {
 // database: a definite active or inactive when the database answers, and no
 // answer at all — never "inactive" — when it does not.
 func TestServerManagerActiveAnswersFromTheDatabaseOrNotAtAll(t *testing.T) {
-	registry := func(status string) map[string]fakeRows {
+	registry := func(flag int64) map[string]fakeRows {
 		return map[string]fakeRows{
 			"FROM plg_plugins WHERE plg_name = 'server_manager'": {
-				columns: []string{"plg_status", "plg_activated_time"},
-				rows:    [][]driver.Value{{status, "2026-01-01 00:00:00"}},
+				columns: []string{"plg_active"},
+				rows:    [][]driver.Value{{flag}},
 			},
 		}
 	}
-	active, err := ServerManagerActive(context.Background(), &ExecEnv{DB: fakeDB(registry("active"), nil)})
+	active, err := ServerManagerActive(context.Background(), &ExecEnv{DB: fakeDB(registry(1), nil)})
 	if err != nil || !active {
-		t.Fatalf("an active registry row is a management node, got %v %v", active, err)
+		t.Fatalf("plg_active 1 is a management node, got %v %v", active, err)
 	}
-	active, err = ServerManagerActive(context.Background(), &ExecEnv{DB: fakeDB(registry("inactive"), nil)})
+	active, err = ServerManagerActive(context.Background(), &ExecEnv{DB: fakeDB(registry(0), nil)})
 	if err != nil || active {
-		t.Fatalf("an inactive registry row is a plain site, got %v %v", active, err)
+		t.Fatalf("plg_active 0 is a plain site, got %v %v", active, err)
 	}
 	if _, err = ServerManagerActive(context.Background(), &ExecEnv{DB: fakeDB(nil, errors.New("connection refused"))}); err == nil {
 		t.Fatal("a database that does not answer is no answer, not inactive")
