@@ -132,6 +132,14 @@ var pinnedVocabulary = map[string]Class{
 	// belong in the restore family below.
 	"verify_backup": ClassOperate,
 
+	// Bringing a backup's offloaded files home, one page of signed links at a
+	// time (specs/backup_offloaded_files.md § Restore). Operate, and the pin
+	// is the point: the script overwrites nothing and deletes nothing in any
+	// bucket, the shape of the drain flow that already runs unattended, so
+	// the plane's paged loop needs no approval per page. A change that made
+	// it overwrite or delete would belong in the restore family below.
+	"restore_objects": ClassOperate,
+
 	// The management node's own release build, dispatched to the plane's own
 	// agent once the plane has paired to itself
 	// (specs/agent_local_queue_retirement.md, G1). Operate, not destructive:

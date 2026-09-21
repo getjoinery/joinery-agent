@@ -38,6 +38,15 @@ import (
 // config/backup_site_key. No key crosses and no bucket credential crosses —
 // there is no parameter below through which either could arrive.
 //
+// OFFLOADED FILES (specs/backup_offloaded_files.md § Verification) ride on two
+// more optional link maps. epoch_envelope_urls: a signed link per epoch
+// envelope the run's index names, which the node opens with its own key — the
+// proof that the objects on the shelf are recoverable here, with no request
+// per object. object_urls: at level 3, the sample the plane picked from that
+// same index (the 5 largest and 15 random), which the node fetches, checks
+// against the index's hash, decrypts and compares to the rehearsed database.
+// Links, never a read credential, and never more than a sample can need.
+//
 // The node's history row is the authority for "verified": the script stamps
 // the run it verified, and the VERIFY_* lines it prints are the plane's copy.
 func init() {
@@ -77,6 +86,19 @@ func init() {
 			// would start from — but an operator may pick any run from the
 			// node's Backups tab.
 			{Name: "seq", Type: ParamInt, Min: 0, Max: 100000},
+
+			// The run's offloaded files: the epoch envelopes to open, keyed by
+			// epoch id (backup_run's map, same bounds), and the rehearsal's
+			// sample, keyed by the object's bare name in the index and capped
+			// at the sample size the plane picks.
+			{Name: "epoch_envelope_urls", Type: ParamMap,
+				MaxEntries: 64, MaxKeyLen: 32, MaxLen: 2048,
+				KeyPattern: epochIDPattern,
+				Pattern:    signedURLPattern},
+			{Name: "object_urls", Type: ParamMap,
+				MaxEntries: verifySampleMax, MaxKeyLen: 255, MaxLen: 2048,
+				KeyPattern: backupFileName,
+				Pattern:    signedURLPattern},
 		},
 		Script: &ScriptSpec{
 			Interpreter: "/usr/bin/php",
@@ -92,6 +114,10 @@ func init() {
 	})
 }
 
+// verifySampleMax is the most objects a rehearsal opens: BackupVerifier's
+// SAMPLE_LARGEST + SAMPLE_RANDOM. A map larger than that is not a sample.
+const verifySampleMax = 20
+
 // verifyBackupConfig renders the script's configuration from validated params.
 func verifyBackupConfig(params Params) (string, error) {
 	config := map[string]interface{}{
@@ -104,6 +130,14 @@ func verifyBackupConfig(params Params) (string, error) {
 	// Absent means "the newest run", as it does for stage_chain.
 	if params.Has("seq") {
 		config["seq"] = params.Int("seq")
+	}
+	// Absent means the run's offloaded files were not linked; the script
+	// answers for that by name rather than guessing.
+	if params.Has("epoch_envelope_urls") {
+		config["epoch_envelope_urls"] = params.Map("epoch_envelope_urls")
+	}
+	if params.Has("object_urls") {
+		config["object_urls"] = params.Map("object_urls")
 	}
 
 	body, err := json.Marshal(config)

@@ -63,6 +63,22 @@ func init() {
 			{Name: "full_interval_days", Type: ParamInt, Min: 1, Max: 365},
 			{Name: "keep_local_days", Type: ParamInt, Min: 0, Max: 365},
 			{Name: "delete_local_after_upload", Type: ParamBool},
+
+			// The object store — the site's offloaded files, copied to the
+			// management node's shelf by the run (specs/backup_offloaded_files.md
+			// § Rollout). `objects` is what makes the node store to that shelf
+			// and hold local bytes for it; absent, the run behaves as it always
+			// did. The node's write-only credential cannot list the shelf, so
+			// what the shelf holds arrives as a signed link to the newest index
+			// there, and the epoch envelopes a key rotation may need to re-seal
+			// arrive as signed links too. Links, never a read credential: a
+			// signature is bounded in time and in what it names.
+			{Name: "objects", Type: ParamBool},
+			{Name: "objects_index_url", Type: ParamString, MaxLen: 2048, Pattern: signedURLPattern},
+			{Name: "epoch_envelope_urls", Type: ParamMap,
+				MaxEntries: 64, MaxKeyLen: 32, MaxLen: 2048,
+				KeyPattern: epochIDPattern,
+				Pattern:    signedURLPattern},
 		},
 		Script: &ScriptSpec{
 			Interpreter: "/usr/bin/php",
@@ -78,6 +94,10 @@ func init() {
 		Timeout: 4*time.Hour + 20*time.Minute,
 	})
 }
+
+// epochIDPattern: an object-store epoch, epoch-YYYYMMDD_HHMMSS, the only key
+// the envelope-link map may carry.
+var epochIDPattern = regexp.MustCompile(`^epoch-[0-9]{8}_[0-9]{6}$`)
 
 // backupRunConfig renders the engine's config object from validated parameters.
 //
@@ -105,6 +125,15 @@ func backupRunConfig(params Params) (string, error) {
 	}
 	if params.Has("delete_local_after_upload") {
 		config["delete_local_after_upload"] = params.Bool("delete_local_after_upload")
+	}
+	if params.Has("objects") {
+		config["objects"] = params.Bool("objects")
+	}
+	if params.Has("objects_index_url") {
+		config["objects_index_url"] = params.String("objects_index_url")
+	}
+	if params.Has("epoch_envelope_urls") {
+		config["epoch_envelope_urls"] = params.Map("epoch_envelope_urls")
 	}
 
 	body, err := json.Marshal(config)

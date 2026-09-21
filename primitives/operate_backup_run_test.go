@@ -157,3 +157,102 @@ func TestBackupRunIsOperateAndInvokesTheShippedEngine(t *testing.T) {
 		t.Errorf("backup_run should invoke the shipped backup engine, got %q", p.Script.ScriptPath)
 	}
 }
+
+// The object store rides on backup_run as three optional parameters
+// (specs/backup_offloaded_files.md § Rollout). What matters is the shape of
+// what can arrive: a flag, one signed link, and a map of signed links keyed by
+// epoch — never a credential that could read the shelf.
+
+func TestObjectStoreFieldsAreComposedWhenPresent(t *testing.T) {
+	params := validBackupParams()
+	params["objects"] = true
+	params["objects_index_url"] = "https://shelf.example.com/joinery-backups/n/manager/chain-20260920_030000/objects-0003.json.gz?X-Amz-Signature=abc"
+	params["epoch_envelope_urls"] = map[string]interface{}{
+		"epoch-20260901_000000": "https://shelf.example.com/joinery-backups/n/manager/objects/epoch-20260901_000000/envelope.json?X-Amz-Signature=def",
+	}
+	validated, err := backupRunParams(t, params)
+	if err != nil {
+		t.Fatalf("a job carrying the object store should validate: %v", err)
+	}
+	body, err := backupRunConfig(validated)
+	if err != nil {
+		t.Fatalf("compose: %v", err)
+	}
+	var config map[string]interface{}
+	if err := json.Unmarshal([]byte(body), &config); err != nil {
+		t.Fatalf("the composed config should be JSON: %v", err)
+	}
+	if config["objects"] != true {
+		t.Error("objects should reach the engine as true")
+	}
+	if _, ok := config["objects_index_url"].(string); !ok {
+		t.Error("the index link should reach the engine")
+	}
+	envelopes, ok := config["epoch_envelope_urls"].(map[string]interface{})
+	if !ok || len(envelopes) != 1 {
+		t.Fatalf("the envelope links should reach the engine as a map, got %v", config["epoch_envelope_urls"])
+	}
+	if _, ok := envelopes["epoch-20260901_000000"]; !ok {
+		t.Error("the envelope map should be keyed by epoch id")
+	}
+}
+
+func TestObjectStoreFieldsAreAbsentUnlessSent(t *testing.T) {
+	// A management node that predates the object store sends none of them, and
+	// the engine must see none: absent means "behave as before", and a false
+	// that looks deliberate is not the same thing.
+	validated, err := backupRunParams(t, validBackupParams())
+	if err != nil {
+		t.Fatalf("validate: %v", err)
+	}
+	body, _ := backupRunConfig(validated)
+	for _, key := range []string{"objects", "objects_index_url", "epoch_envelope_urls"} {
+		if strings.Contains(body, `"`+key+`"`) {
+			t.Errorf("%q must not appear in a config for a job that did not send it", key)
+		}
+	}
+}
+
+func TestObjectStoreLinksAreSignedHTTPSOrRefused(t *testing.T) {
+	for _, bad := range []string{
+		"http://shelf.example.com/index.json.gz",
+		"ftp://shelf.example.com/index.json.gz",
+		"/joinery-backups/n/manager/objects-0000.json.gz",
+		"",
+	} {
+		params := validBackupParams()
+		params["objects_index_url"] = bad
+		if _, err := backupRunParams(t, params); err == nil {
+			t.Errorf("an index link %q should be refused", bad)
+		}
+	}
+	for _, badKey := range []string{"chain-20260901_000000", "epoch-2026", "../epoch-20260901_000000", "envelope.json"} {
+		params := validBackupParams()
+		params["epoch_envelope_urls"] = map[string]interface{}{
+			badKey: "https://shelf.example.com/objects/x/envelope.json?X-Amz-Signature=abc",
+		}
+		if _, err := backupRunParams(t, params); err == nil {
+			t.Errorf("an envelope map keyed %q should be refused", badKey)
+		}
+	}
+	params := validBackupParams()
+	params["epoch_envelope_urls"] = map[string]interface{}{
+		"epoch-20260901_000000": "http://shelf.example.com/objects/epoch-20260901_000000/envelope.json",
+	}
+	if _, err := backupRunParams(t, params); err == nil {
+		t.Error("an envelope link that is not https should be refused")
+	}
+}
+
+func TestNoReadCredentialCanReachTheNode(t *testing.T) {
+	// The write-only credential is the whole point of the manager shelf. The
+	// object store adds links, not a second credential: there is no parameter
+	// through which a read key could arrive.
+	for _, field := range []string{"read_credentials_b64", "list_credentials_b64", "objects_credentials_b64"} {
+		params := validBackupParams()
+		params[field] = "QUtJQVNFQ1JFVA=="
+		if _, err := backupRunParams(t, params); err == nil {
+			t.Errorf("a job carrying %q must be refused as out-of-vocabulary", field)
+		}
+	}
+}

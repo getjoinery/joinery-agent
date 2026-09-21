@@ -12,8 +12,11 @@ import (
 // MaxParamsBytes bounds the whole params object of a single job. The plane
 // applies the same ceiling when it BUILDS the job, so a job this node would
 // refuse for size fails loudly at build time instead of travelling here to die
-// (never-silently, the rule A4 was decided under).
-const MaxParamsBytes = 16 * 1024
+// (never-silently, the rule A4 was decided under). 4 KiB under agentMaxJobBody,
+// the whole answer this agent reads: the wrapper around the params is about
+// 150 bytes, and the rest is headroom. A page of restore_objects links is
+// filled to this by the plane (ManagementJob::MAX_PARAMS_BYTES, the same number).
+const MaxParamsBytes = 60 * 1024
 
 // ParamType is the complete set of shapes a parameter may have. There is no
 // "any" and no "raw" — every value that reaches a primitive has been through a

@@ -2,6 +2,7 @@ package primitives
 
 import (
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -184,5 +185,98 @@ func TestVerifyBackupRefusesWhatStageChainRefuses(t *testing.T) {
 		if _, err := Validate(p.Params, params); err == nil {
 			t.Errorf("verify_backup accepted chain id %q", bad)
 		}
+	}
+}
+
+// The offloaded-files links (specs/backup_offloaded_files.md § Verification):
+// two more bounded link maps, and still no way for a credential to arrive.
+
+func verifyBase() map[string]interface{} {
+	return map[string]interface{}{
+		"chain_id":      "chain-20260830_010203",
+		"profile":       "manager",
+		"level":         float64(3),
+		"manifest_url":  "https://x.invalid/m?X-Amz-Signature=a",
+		"artifact_urls": map[string]interface{}{"files-0000.tar.gz.enc": "https://x.invalid/o?X-Amz-Signature=b"},
+	}
+}
+
+func TestVerifyBackupCarriesObjectLinksWhenSent(t *testing.T) {
+	p := verifyPrimitive(t)
+	params := verifyBase()
+	params["epoch_envelope_urls"] = map[string]interface{}{
+		"epoch-20260901_000000": "https://x.invalid/objects/epoch-20260901_000000/envelope.json?X-Amz-Signature=c",
+	}
+	params["object_urls"] = map[string]interface{}{
+		"beach.jpg": "https://x.invalid/objects/epoch-20260901_000000/beach.jpg.enc?X-Amz-Signature=d",
+		"dune.png":  "https://x.invalid/objects/epoch-20260901_000000/dune.png.enc?X-Amz-Signature=e",
+	}
+	validated, err := Validate(p.Params, params)
+	if err != nil {
+		t.Fatalf("a verify carrying the object links should validate: %v", err)
+	}
+	body, err := p.Script.StdinFrom(validated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config map[string]interface{}
+	if err := json.Unmarshal([]byte(body), &config); err != nil {
+		t.Fatal(err)
+	}
+	envelopes, ok := config["epoch_envelope_urls"].(map[string]interface{})
+	if !ok || len(envelopes) != 1 {
+		t.Fatalf("the envelope links should reach the script as a map keyed by epoch, got %v", config["epoch_envelope_urls"])
+	}
+	objects, ok := config["object_urls"].(map[string]interface{})
+	if !ok || len(objects) != 2 {
+		t.Fatalf("the sample links should reach the script as a map keyed by name, got %v", config["object_urls"])
+	}
+}
+
+func TestVerifyBackupObjectLinksAreAbsentUnlessSent(t *testing.T) {
+	// A plane that sent none must leave the script seeing none: absent is
+	// how the script knows the offloaded files were not linked.
+	p := verifyPrimitive(t)
+	validated, err := Validate(p.Params, verifyBase())
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := p.Script.StdinFrom(validated)
+	for _, key := range []string{"epoch_envelope_urls", "object_urls"} {
+		if strings.Contains(body, `"`+key+`"`) {
+			t.Errorf("%q must not appear in a config for a job that did not send it", key)
+		}
+	}
+}
+
+func TestVerifyBackupObjectLinksAreBounded(t *testing.T) {
+	p := verifyPrimitive(t)
+	// A key that is a path, an epoch id that is not one, a link that is not https.
+	for _, badKey := range []string{"../beach.jpg", ".hidden", "objects/epoch/beach.jpg", ""} {
+		params := verifyBase()
+		params["object_urls"] = map[string]interface{}{badKey: "https://x.invalid/o?X-Amz-Signature=a"}
+		if _, err := Validate(p.Params, params); err == nil {
+			t.Errorf("an object map keyed %q should be refused", badKey)
+		}
+	}
+	params := verifyBase()
+	params["epoch_envelope_urls"] = map[string]interface{}{"chain-20260901_000000": "https://x.invalid/e?X-Amz-Signature=a"}
+	if _, err := Validate(p.Params, params); err == nil {
+		t.Error("an envelope map keyed by something other than an epoch id should be refused")
+	}
+	params = verifyBase()
+	params["object_urls"] = map[string]interface{}{"beach.jpg": "http://x.invalid/o"}
+	if _, err := Validate(p.Params, params); err == nil {
+		t.Error("a sample link that is not https should be refused")
+	}
+	// More than a sample is not a sample.
+	many := map[string]interface{}{}
+	for i := 0; i <= verifySampleMax; i++ {
+		many["o"+strconv.Itoa(i)+".bin"] = "https://x.invalid/o?X-Amz-Signature=a"
+	}
+	params = verifyBase()
+	params["object_urls"] = many
+	if _, err := Validate(p.Params, params); err == nil {
+		t.Errorf("an object map of %d links, over the sample of %d, should be refused", len(many), verifySampleMax)
 	}
 }
