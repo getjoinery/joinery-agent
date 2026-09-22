@@ -98,6 +98,17 @@ type Primitive struct {
 	// whole point is that its victim answers instead.
 	Ceremony func(ctx context.Context, env *ExecEnv, p Params) (ApprovalStatement, ApprovalGate, func(), error)
 
+	// RequiresLogAccess says this word reads something the owner's
+	// agent_log_access switch governs, and the DISPATCHER checks the switch
+	// before the word runs (log_access.go holds the rule).
+	//
+	// A flag rather than a call inside each word's body, because the rule then
+	// has one home and one test: gate_test asserts that every log-reading word
+	// declares it, which a body call cannot be asserted about. It is also the
+	// only way a SCRIPT word can be gated at all — a script word has no body
+	// to put the call in.
+	RequiresLogAccess bool
+
 	// Timeout is how long this primitive may run before the node kills it.
 	// Zero means DefaultTimeout.
 	//

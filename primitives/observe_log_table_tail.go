@@ -47,8 +47,9 @@ func init() {
 			{Name: "table", Type: ParamEnum, Required: true, Values: logTableNames},
 			{Name: "rows", Type: ParamInt, Min: 1, Max: logTableMaxRows},
 		},
-		Run:     runLogTableTail,
-		Timeout: 1 * time.Minute,
+		RequiresLogAccess: true,
+		Run:               runLogTableTail,
+		Timeout:           1 * time.Minute,
 	})
 }
 
@@ -125,9 +126,6 @@ func logTableQuery(word string) (string, logTable, bool) {
 }
 
 func runLogTableTail(ctx context.Context, env *ExecEnv, p Params) (map[string]interface{}, error) {
-	if err := requireLogAccess(ctx, env); err != nil {
-		return nil, err
-	}
 	word := p.String("table")
 	limit := p.Int("rows")
 	if !p.Has("rows") {

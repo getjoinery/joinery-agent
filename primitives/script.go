@@ -22,6 +22,8 @@ import (
 	"syscall"
 	"time"
 	"unicode/utf8"
+
+	"joinery-agent/redact"
 )
 
 // processGroupWaitDelay bounds how long Wait lingers on an output pipe held
@@ -85,6 +87,19 @@ type ScriptSpec struct {
 	// element it returns goes to the kernel as a list element. There is still
 	// no shell, and script.go is still the only file that may start a process.
 	ArgsFrom func(ctx context.Context, env *ExecEnv, params Params) ([]string, error)
+
+	// Redact runs the node's redactor over this script's output before it is
+	// returned, the way site_log runs it over a log tail.
+	//
+	// Off by default, and deliberately: the script words in this vocabulary
+	// print COMPILED facts — a unit state, a byte count, a version — and
+	// masking those would corrupt an answer to hide nothing. It is set only
+	// where a script prints text it did not compose, which today is one word:
+	// unit_journal, whose journal lines carry whatever the unit logged.
+	//
+	// The redactor masks values in place and never introduces a quote or a
+	// backslash, so a script that prints JSON still prints JSON afterwards.
+	Redact bool
 
 	// StdinFrom builds what the script reads on standard input, from validated
 	// params. Nil means the script gets no stdin.
@@ -223,6 +238,13 @@ func runScriptPrimitive(ctx context.Context, env *ExecEnv, p Primitive, params P
 	runErr := cmd.Run()
 
 	text, dropped := capOutput(out.Bytes(), MaxScriptOutputBytes)
+	// Redaction happens HERE, on the node, before the bytes are anywhere a
+	// caller can see them: not in the result the plane posts, not in the agent
+	// log, not in an error. The cap is applied first so the redactor's cost is
+	// bounded by the same figure everything else here is.
+	if p.Script.Redact {
+		text = redact.Text(text)
+	}
 	result := map[string]interface{}{
 		"output":       text,
 		"output_bytes": out.Len(),

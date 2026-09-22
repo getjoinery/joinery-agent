@@ -52,8 +52,9 @@ func init() {
 			{Name: "previous", Type: ParamBool},
 			{Name: "lines", Type: ParamInt, Min: 1, Max: siteLogMaxLines},
 		},
-		Run:     runSiteLog,
-		Timeout: 1 * time.Minute,
+		RequiresLogAccess: true,
+		Run:               runSiteLog,
+		Timeout:           1 * time.Minute,
 	})
 }
 
@@ -88,9 +89,6 @@ func siteLogPath(siteRoot, name string, previous bool) string {
 }
 
 func runSiteLog(ctx context.Context, env *ExecEnv, p Params) (map[string]interface{}, error) {
-	if err := requireLogAccess(ctx, env); err != nil {
-		return nil, err
-	}
 	name := p.String("file")
 	previous := p.Bool("previous")
 	lines := int(p.Int("lines"))

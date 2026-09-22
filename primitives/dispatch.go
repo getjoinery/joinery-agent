@@ -144,6 +144,20 @@ func Execute(ctx context.Context, env *ExecEnv, policy *Policy, req Request) (ma
 		return nil, err
 	}
 
+	// HAS THE OWNER LEFT LOG ACCESS ON? Answered here, beside the policy check
+	// and ahead of the parameters, because it is a question about this node's
+	// standing instruction and not about the job: a word the owner has switched
+	// off is refused whatever it was asked to read, and the refusal says so
+	// rather than naming whichever parameter happened to be wrong.
+	//
+	// The rule itself lives in log_access.go and is not repeated here. Fail
+	// closed: a switch that cannot be read at all reads OFF.
+	if p.RequiresLogAccess {
+		if err := requireLogAccess(ctx, env); err != nil {
+			return nil, err
+		}
+	}
+
 	// CAN this node be asked at all? A question about the node and the binary,
 	// not about the job, so it is answered here beside the policy check and
 	// ahead of the parameters. A machine that cannot reach its own operator

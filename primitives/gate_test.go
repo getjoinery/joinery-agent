@@ -79,6 +79,20 @@ var pinnedVocabulary = map[string]Class{
 	"site_log":       ClassObserve,
 	"log_table_tail": ClassObserve,
 
+	// Why a unit is in the state it is in, from a compiled list of twelve
+	// units (specs/disk_headroom_and_unit_diagnosis.md § 8). Observe, gated by
+	// the same owner switch as the two above and redacted by the same redactor
+	// — the one script word in this vocabulary that prints text it did not
+	// compose. sshd is deliberately NOT in its list: that journal is a record
+	// of who connected from where, which host_report already refuses to carry.
+	"unit_journal": ClassObserve,
+
+	// Where the disk went (§ 11 of the same spec). Observe, NO PARAMETERS, and
+	// sizes only: a directory name and a byte count, never a file name, a
+	// count, a time or an owner. It carries no owner switch because it reads
+	// no log, no message and no content.
+	"disk_usage": ClassObserve,
+
 	"ssl_probe_place": ClassOperate,
 	"ssl_probe_clear": ClassOperate,
 
@@ -167,6 +181,46 @@ var pinnedVocabulary = map[string]Class{
 	// (specs/docker_host_agent.md). The Ceremony field is what carries that;
 	// Execute still runs no destructive job without a gate answering.
 	"decommission_site": ClassDestructive,
+}
+
+// The owner's log-access switch is a DECLARATION now, not a line inside each
+// word's body (Primitive.RequiresLogAccess, checked by Execute). Pinned here
+// so the set of words that need the owner's leave is one visible list: a new
+// log-reading word that forgets the flag reads without asking, and a word that
+// declares it by accident asks for permission it does not need.
+var pinnedLogAccessWords = map[string]bool{
+	"site_log":       true,
+	"log_table_tail": true,
+	"unit_journal":   true,
+}
+
+func TestLogAccessIsDeclaredNotAssumed(t *testing.T) {
+	for _, name := range Names() {
+		p, _ := Lookup(name)
+		if p.RequiresLogAccess != pinnedLogAccessWords[name] {
+			t.Errorf("primitive %q declares RequiresLogAccess=%v but is pinned as %v — "+
+				"the owner's switch is what decides which words read a log",
+				name, p.RequiresLogAccess, pinnedLogAccessWords[name])
+		}
+	}
+}
+
+// Redaction is set on exactly the script words that print text they did not
+// compose. Masking a compiled fact — a byte count, a unit state — would
+// corrupt an answer to hide nothing, and NOT masking free text would carry a
+// credential off the machine that produced it.
+func TestScriptRedactionIsDeliberate(t *testing.T) {
+	redacting := map[string]bool{"unit_journal": true}
+	for _, name := range Names() {
+		p, _ := Lookup(name)
+		if p.Script == nil {
+			continue
+		}
+		if p.Script.Redact != redacting[name] {
+			t.Errorf("script primitive %q sets Redact=%v, pinned as %v",
+				name, p.Script.Redact, redacting[name])
+		}
+	}
 }
 
 func TestVocabularyIsPinned(t *testing.T) {

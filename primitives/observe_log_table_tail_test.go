@@ -86,7 +86,10 @@ func logTableEnv(t *testing.T, setting string, answers map[string]fakeRows) *Exe
 
 func TestLogTableTailRefusesWhenTheOwnerSaysNo(t *testing.T) {
 	env := logTableEnv(t, "", nil)
-	_, err := runLogTableTail(context.Background(), env, mustValidate(t, "log_table_tail", map[string]interface{}{"table": "logins"}))
+	// Through Execute: the switch is the dispatcher's check
+	// (Primitive.RequiresLogAccess), not this word's first line.
+	_, err := Execute(context.Background(), env, ShippedPolicy(),
+		Request{Primitive: "log_table_tail", Params: map[string]interface{}{"table": "logins"}})
 	if err == nil || !Refused(err) || err.Error() != LogAccessRefusal {
 		t.Fatalf("expected the owner's refusal, got %v", err)
 	}
@@ -95,7 +98,8 @@ func TestLogTableTailRefusesWhenTheOwnerSaysNo(t *testing.T) {
 	if err := ProjectLogAccess(true); err != nil {
 		t.Fatal(err)
 	}
-	_, err = runLogTableTail(context.Background(), env, mustValidate(t, "log_table_tail", map[string]interface{}{"table": "logins"}))
+	_, err = Execute(context.Background(), env, ShippedPolicy(),
+		Request{Primitive: "log_table_tail", Params: map[string]interface{}{"table": "logins"}})
 	if err == nil || !Refused(err) {
 		t.Fatalf("setting off must win over a marker, got %v", err)
 	}

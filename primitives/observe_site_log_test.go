@@ -82,27 +82,31 @@ func TestSiteLogResolvesUnderTheLogDirectoryOnly(t *testing.T) {
 func TestSiteLogRefusesWhenTheOwnerSaysNo(t *testing.T) {
 	env := siteLogEnv(t, "0")
 	writeLog(t, env, "error.log", "a secret line\n")
-	_, err := runSiteLog(context.Background(), env, mustValidate(t, "site_log", map[string]interface{}{"file": "error"}))
+	// Through Execute, not the body: the switch is the dispatcher's check now
+	// (Primitive.RequiresLogAccess), so a test that called the body would pass
+	// on a build that had lost the flag.
+	_, err := Execute(context.Background(), env, ShippedPolicy(),
+		Request{Primitive: "site_log", Params: map[string]interface{}{"file": "error"}})
 	if err == nil || !Refused(err) || err.Error() != LogAccessRefusal {
 		t.Fatalf("expected the owner's refusal, got %v", err)
 	}
 }
 
 func TestSiteLogRefusesInEveryOffState(t *testing.T) {
-	p := mustValidate(t, "site_log", map[string]interface{}{"file": "error"})
+	req := Request{Primitive: "site_log", Params: map[string]interface{}{"file": "error"}}
 	// Database down, marker off.
 	env := siteLogEnv(t, "")
 	env.DB = fakeDB(nil, errDown)
 	if err := ProjectLogAccess(false); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := runSiteLog(context.Background(), env, p); err == nil || !Refused(err) {
+	if _, err := Execute(context.Background(), env, ShippedPolicy(), req); err == nil || !Refused(err) {
 		t.Fatalf("db down + marker off: expected refusal, got %v", err)
 	}
 	// Database down, marker missing.
 	env = siteLogEnv(t, "")
 	env.DB = fakeDB(nil, errDown)
-	if _, err := runSiteLog(context.Background(), env, p); err == nil || !Refused(err) {
+	if _, err := Execute(context.Background(), env, ShippedPolicy(), req); err == nil || !Refused(err) {
 		t.Fatalf("db down + no marker: expected refusal, got %v", err)
 	}
 	// Database down, marker on: the file word works.
@@ -110,7 +114,7 @@ func TestSiteLogRefusesInEveryOffState(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeLog(t, env, "error.log", "line one\nline two\n")
-	res, err := runSiteLog(context.Background(), env, p)
+	res, err := Execute(context.Background(), env, ShippedPolicy(), req)
 	if err != nil {
 		t.Fatalf("db down + marker on: %v", err)
 	}
