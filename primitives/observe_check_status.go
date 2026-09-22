@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/x509"
 	"database/sql"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"os"
@@ -35,7 +36,7 @@ func init() {
 	Register(Primitive{
 		Name:        "check_status",
 		Class:       ClassObserve,
-		Description: "Disk, memory, load, uptime, PostgreSQL liveness, Joinery version, database list, whether Server Manager is active.",
+		Description: "Disk, memory, load, uptime, PostgreSQL liveness, Joinery version, database list, whether Server Manager is active, the site's recorded plugin checks.",
 		Params:      nil, // takes none, so any param at all is refused
 		Run:         runCheckStatus,
 	})
@@ -235,6 +236,18 @@ func collectDatabase(ctx context.Context, env *ExecEnv, result map[string]interf
 		result["cron_last_run"] = cronLastRun
 	}
 
+	// The site's plugin checks declared fleet_report, as its hourly Plugin
+	// health report recorded them. The site runs them (they are PHP, and this
+	// runs none); the agent carries the record, under the key the management
+	// API's stats endpoint uses for the same record.
+	var pluginReport string
+	if err := db.QueryRowContext(ctx,
+		"SELECT stg_value FROM stg_settings WHERE stg_name = 'plugin_fleet_report'").Scan(&pluginReport); err == nil {
+		if report, ok := parsePluginFleetReport(pluginReport); ok {
+			result["plugin_checks"] = report
+		}
+	}
+
 	// Whether this site is a management node, as a boolean either way; an
 	// absent key is an agent that predates the fact, and the plane reads that
 	// as "not a management node". The same answer rides every poll as
@@ -242,6 +255,28 @@ func collectDatabase(ctx context.Context, env *ExecEnv, result map[string]interf
 	// actually learns it — nothing runs check_status on a schedule.
 	active, err := serverManagerActive(ctx, db)
 	result["server_manager_active"] = err == nil && active
+}
+
+// pluginFleetReportMax bounds the recorded report this carries. The site
+// writes at most fifty checks with 500-character reasons, well inside it; a
+// record past it is not one the site wrote and is dropped whole.
+const pluginFleetReportMax = 64 * 1024
+
+// parsePluginFleetReport reads the site's recorded plugin checks: an object
+// with a checks list. Anything else (empty, oversized, not JSON, the wrong
+// shape) reports nothing, and the plane reads an absent key as "not measured".
+func parsePluginFleetReport(raw string) (map[string]interface{}, bool) {
+	if raw == "" || len(raw) > pluginFleetReportMax {
+		return nil, false
+	}
+	var report map[string]interface{}
+	if err := json.Unmarshal([]byte(raw), &report); err != nil {
+		return nil, false
+	}
+	if _, ok := report["checks"].([]interface{}); !ok {
+		return nil, false
+	}
+	return report, true
 }
 
 // ServerManagerActive answers whether the Server Manager plugin is active on
