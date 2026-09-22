@@ -58,6 +58,32 @@ func TestClaimReportsThisAgentsVocabulary(t *testing.T) {
 	}
 }
 
+// The two words of specs/disk_headroom_and_unit_diagnosis.md § 9 and § 10
+// reach the plane at poll: reset_failed_unit in the vocabulary (the plane
+// offers Clear only to a node that says it has the word), disk_headroom in
+// the recipe list (the plane shows its verdict beside the others).
+func TestClaimReportsResetFailedUnitAndDiskHeadroom(t *testing.T) {
+	var claimed map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		json.NewDecoder(req.Body).Decode(&claimed)
+		w.Write([]byte(`{"api_version":"1.0","data":{"job":null}}`))
+	}))
+	defer server.Close()
+
+	src := testSource(t, testIdentity(t, server.URL, 7))
+	if _, err := src.claim(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	words, _ := claimed["primitives"].(string)
+	if !strings.Contains(","+words+",", ",reset_failed_unit,") {
+		t.Errorf("the claim's vocabulary should carry reset_failed_unit, got %q", words)
+	}
+	reported, _ := claimed["recipes"].(string)
+	if !strings.Contains(","+reported, ",disk_headroom:") {
+		t.Errorf("the claim's recipe list should carry disk_headroom, got %q", reported)
+	}
+}
+
 // The recipe list rides beside the vocabulary, with its mode: the plane must
 // never guess which recipes a node runs, and a person on the node page must
 // be able to see that a node is report-only.

@@ -27,6 +27,25 @@ var pinnedRecipes = map[string][2]string{
 	// install_agent.sh through the host runner. Site-scoped: the bundle a
 	// siteless machine runs from carries no install_agent.sh.
 	"agent_supervision": {"agent_report", "agent_converge"},
+	// specs/disk_headroom_and_unit_diagnosis.md § 10: the site filesystem has
+	// 10% and 5 GiB available, or a case opens. CHECK-ONLY (no repair word):
+	// there is no safe automatic answer to a full disk.
+	"disk_headroom": {"host_report", ""},
+}
+
+// pinnedCheckOnly is the set of recipes that repair nothing (Recipe.NoRepair),
+// written out so the set stays one visible list: the next check-only recipe
+// is a line here, argued for, not a flag somebody set.
+var pinnedCheckOnly = map[string]bool{
+	"disk_headroom": true,
+}
+
+func TestCheckOnlyRecipesArePinned(t *testing.T) {
+	for _, r := range All() {
+		if r.NoRepair != pinnedCheckOnly[r.Name] {
+			t.Errorf("recipe %q has NoRepair=%v but is pinned as %v", r.Name, r.NoRepair, pinnedCheckOnly[r.Name])
+		}
+	}
 }
 
 // pinnedMode is the repair switch as this release ships it. Arming (or
@@ -93,9 +112,15 @@ func TestEveryRecipeComposesAParameterlessObserveAndOperateWord(t *testing.T) {
 		if !ok || check.Class != primitives.ClassObserve || len(check.Params) != 0 {
 			t.Errorf("recipe %q: check word %q must be a parameterless observe word", r.Name, r.CheckWord)
 		}
-		repair, ok := primitives.Lookup(r.RepairWord)
-		if !ok || repair.Class != primitives.ClassOperate || len(repair.Params) != 0 {
-			t.Errorf("recipe %q: repair word %q must be a parameterless operate word", r.Name, r.RepairWord)
+		if r.NoRepair {
+			if r.RepairWord != "" || r.Repair != nil {
+				t.Errorf("recipe %q is check-only but names a repair", r.Name)
+			}
+		} else {
+			repair, ok := primitives.Lookup(r.RepairWord)
+			if !ok || repair.Class != primitives.ClassOperate || len(repair.Params) != 0 {
+				t.Errorf("recipe %q: repair word %q must be a parameterless operate word", r.Name, r.RepairWord)
+			}
 		}
 		if r.MinInterval < TickInterval {
 			t.Errorf("recipe %q checks every %v, more often than the %v tick", r.Name, r.MinInterval, TickInterval)
@@ -122,6 +147,18 @@ func TestRegisterRefusesWhatTheContractForbids(t *testing.T) {
 		"a repair word that takes parameters": func(r *Recipe) { r.RepairWord = "download_backup" },
 		"no check":                            func(r *Recipe) { r.Check = nil },
 		"no repair":                           func(r *Recipe) { r.Repair = nil },
+		// NoRepair is the ONLY way to register without a repair, and it
+		// means exactly that: no word, no function.
+		"no repair word and no flag":        func(r *Recipe) { r.RepairWord = ""; r.Repair = nil },
+		"NoRepair beside a repair word":     func(r *Recipe) { r.NoRepair = true; r.Repair = nil },
+		"NoRepair beside a repair function": func(r *Recipe) { r.NoRepair = true; r.RepairWord = "" },
+		"NoRepair beside both":              func(r *Recipe) { r.NoRepair = true },
+		"a check-only recipe checking with an operate word": func(r *Recipe) {
+			r.NoRepair = true
+			r.RepairWord = ""
+			r.Repair = nil
+			r.CheckWord = "host_converge"
+		},
 	}
 	for label, mutate := range cases {
 		r := good()
@@ -136,6 +173,23 @@ func TestRegisterRefusesWhatTheContractForbids(t *testing.T) {
 			Register(r)
 		}()
 	}
+}
+
+func TestNoRepairRegistersWithoutARepair(t *testing.T) {
+	r := Recipe{
+		Name: "check_only_probe", MinInterval: TickInterval,
+		CheckWord: "host_report", NoRepair: true,
+		Check: func(context.Context, *Env) Verdict { return Verdict{Pass, ""} },
+	}
+	defer delete(registry, r.Name)
+	func() {
+		defer func() {
+			if p := recover(); p != nil {
+				t.Errorf("a check-only recipe with no repair word and no repair function must register: %v", p)
+			}
+		}()
+		Register(r)
+	}()
 }
 
 func TestTheReportNamesEveryRecipeWithItsMode(t *testing.T) {

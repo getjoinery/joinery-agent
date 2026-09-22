@@ -11,6 +11,9 @@
 // primitives registry — an observe word as its check and one operate word as
 // its repair — and runs them in-process through primitives.Execute under the
 // same policy and the same manifest verification a plane-dispatched job gets.
+// A check-only recipe (Recipe.NoRepair) composes the observe word alone: it
+// runs nothing that changes the machine, and its first failing check opens a
+// case for a person, because what it watches has no safe automatic answer.
 // Nothing in this package starts a process; only primitives/script.go may.
 //
 // HOSTILE-CALLER REVIEW (rule 5 of specs/agent_recipes_and_vocabulary.md).

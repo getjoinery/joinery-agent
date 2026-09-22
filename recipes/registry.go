@@ -75,8 +75,18 @@ type Recipe struct {
 	// CheckWord and RepairWord name the two primitives this recipe composes.
 	// Register requires both to exist, CheckWord to be an observe word and
 	// RepairWord to be an operate word, and neither to take a parameter.
+	// A NoRepair recipe names no RepairWord at all.
 	CheckWord  string
 	RepairWord string
+
+	// NoRepair marks a check-only recipe: a condition with no safe automatic
+	// answer (a full disk — deleting things unattended is worse than the
+	// disease), where the loop's job is to tell a person, not to act. Register
+	// permits it only with an empty RepairWord and a nil Repair, and the loop
+	// opens a case on the FIRST failing tick instead of spending a retry
+	// budget it has no use for. registry_test.go pins which recipes are
+	// check-only, so the set stays one visible list.
+	NoRepair bool
 
 	// Scope says where the recipe's subject lives. ScopeHost means the
 	// machine itself (its units, its jails): an agent inside a container
@@ -122,8 +132,18 @@ func Register(r Recipe) {
 	if r.MinInterval < TickInterval {
 		panic(fmt.Sprintf("recipes: recipe %q wants a check every %v, shorter than the %v tick", r.Name, r.MinInterval, TickInterval))
 	}
-	if r.Check == nil || r.Repair == nil {
-		panic(fmt.Sprintf("recipes: recipe %q must set both Check and Repair", r.Name))
+	if r.Check == nil {
+		panic(fmt.Sprintf("recipes: recipe %q must set Check", r.Name))
+	}
+	if r.NoRepair {
+		// Check-only, and only that: a repair word or function beside the
+		// flag would be a repair the loop never runs, which is a reviewer
+		// reading a sentence that does not happen.
+		if r.RepairWord != "" || r.Repair != nil {
+			panic(fmt.Sprintf("recipes: recipe %q is NoRepair but names a repair; a check-only recipe has none", r.Name))
+		}
+	} else if r.Repair == nil {
+		panic(fmt.Sprintf("recipes: recipe %q must set both Check and Repair (or be NoRepair)", r.Name))
 	}
 	check, ok := primitives.Lookup(r.CheckWord)
 	if !ok {
@@ -132,19 +152,24 @@ func Register(r Recipe) {
 	if check.Class != primitives.ClassObserve {
 		panic(fmt.Sprintf("recipes: recipe %q checks with %q, which is %s, not observe — a check reads, never changes", r.Name, r.CheckWord, check.Class))
 	}
-	repair, ok := primitives.Lookup(r.RepairWord)
-	if !ok {
-		panic(fmt.Sprintf("recipes: recipe %q repairs with %q, which this agent has no word for", r.Name, r.RepairWord))
-	}
-	if repair.Class != primitives.ClassOperate {
-		panic(fmt.Sprintf("recipes: recipe %q repairs with %q, which is %s, not operate — a recipe never runs a destructive word unasked", r.Name, r.RepairWord, repair.Class))
-	}
 	// A recipe has no parameters, so the words it composes cannot take any
 	// either: there would be nothing to fill them from except this source,
 	// and a value compiled here is a value the word should have compiled
 	// itself.
-	if len(check.Params) != 0 || len(repair.Params) != 0 {
+	if len(check.Params) != 0 {
 		panic(fmt.Sprintf("recipes: recipe %q composes a word that takes parameters; recipes compose only parameterless words", r.Name))
+	}
+	if !r.NoRepair {
+		repair, ok := primitives.Lookup(r.RepairWord)
+		if !ok {
+			panic(fmt.Sprintf("recipes: recipe %q repairs with %q, which this agent has no word for", r.Name, r.RepairWord))
+		}
+		if repair.Class != primitives.ClassOperate {
+			panic(fmt.Sprintf("recipes: recipe %q repairs with %q, which is %s, not operate — a recipe never runs a destructive word unasked", r.Name, r.RepairWord, repair.Class))
+		}
+		if len(repair.Params) != 0 {
+			panic(fmt.Sprintf("recipes: recipe %q composes a word that takes parameters; recipes compose only parameterless words", r.Name))
+		}
 	}
 	registry[r.Name] = r
 }

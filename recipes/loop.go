@@ -348,6 +348,21 @@ func (l *Loop) tickOne(ctx context.Context, r Recipe) {
 		return
 	}
 
+	if r.NoRepair {
+		// A check-only recipe has nothing to try, so there is no pair of
+		// ticks to wait for and no budget to spend: the first failing check
+		// is the case, and a person is the only actor. It closes the way
+		// every case does, when the check passes.
+		reason := "the check fails (" + verdict.Reason + "); this recipe has no repair, so a person is the next actor"
+		st.escalation = led.openEscalation(reason)
+		l.logf("recipe %s: ESCALATION #%d: %s", r.Name, st.escalation, reason)
+		if latest := led.Latest(); latest != nil {
+			l.postCase(r, caseOf(r, *latest), l.composeBody(ctx, r, led, latest.Opened))
+			l.logf("recipe %s: case #%d opened (%s); it rides the next poll and closes when the check passes", r.Name, st.escalation, CaseSourceRecipe+r.Name)
+		}
+		return
+	}
+
 	if st.consecutive < consecutiveFailsToRepair {
 		l.logf("recipe %s: check fails (%s); first failing tick, waiting for a second before repairing", r.Name, verdict.Reason)
 		return

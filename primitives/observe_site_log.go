@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -25,19 +26,34 @@ import (
 //
 // What it cannot do:
 //
-//   - Name a file. `file` is an ENUM of five names compiled here, each
-//     resolved to SiteRoot/logs/<name>.log; `previous` selects that file's
-//     most recent rotation (.log.1) and nothing else. There is no path
-//     parameter, no glob, no way to reach a compressed rotation, a config
-//     file, or anything outside the site's log directory.
+//   - Name a file. `file` is an ENUM of six names compiled here. Five resolve
+//     to SiteRoot/logs/<name>.log; postgresql resolves to the newest cluster
+//     log in /var/log/postgresql, a directory and a glob both compiled here.
+//     `previous` selects a file's most recent rotation (.log.1) and nothing
+//     else. There is no path parameter, no wire-supplied glob, no way to reach
+//     a compressed rotation, a config file, or anything outside those two
+//     places.
+//
+//     The database log is the widest thing on this list and is named as such:
+//     PostgreSQL logs errors, and an error line can carry the statement that
+//     failed and the values bound to it. That is the same grade of exposure as
+//     the site's own error log, which has been on this list since it began —
+//     both are behind the owner's switch, both are redacted on this machine,
+//     and both are capped. It earns its place because a disk that fills, a
+//     connection that dies and a write that is refused are all the database
+//     saying so in its own words, and nothing else on this node records them.
+//
 //   - Read without the owner's leave. The switch is checked FIRST, before a
 //     stat: off means the pinned refusal and nothing read. The rule is
 //     log_access.go's and is not repeated here.
+//
 //   - Flood the plane. At most 200 lines and 32 KiB before redaction, cut to a
 //     line boundary; the framework's 64 KiB cap sits above it as a backstop.
+//
 //   - Learn who a member is. The redactor runs on the tail before it is
 //     returned; addresses never leave the node. (Free-text redaction masks
 //     shapes, not names — stated in the spec and on the owner's switch.)
+//
 //   - Change anything. One stat and one bounded read; no process is started.
 //
 // OBSERVE, and the classification does real work: a node whose policy accepts
@@ -46,7 +62,7 @@ func init() {
 	Register(Primitive{
 		Name:        "site_log",
 		Class:       ClassObserve,
-		Description: "The last lines of one of the site's own log files (error, cron, AI worker, install executor, host converger), redacted on the node; refused unless the site's owner allows log access.",
+		Description: "The last lines of one of the site's own log files (error, cron, AI worker, install executor, host converger) or of the PostgreSQL cluster log, redacted on the node; refused unless the site's owner allows log access.",
 		Params: []ParamSpec{
 			{Name: "file", Type: ParamEnum, Required: true, Values: siteLogFiles},
 			{Name: "previous", Type: ParamBool},
@@ -58,16 +74,26 @@ func init() {
 	})
 }
 
-// siteLogFiles is the closed list. Each is SiteRoot/logs/<name>.log. The
-// access log is deliberately absent: visitor addresses and URLs by the
-// megabyte, wanted by no diagnosis on the list.
+// siteLogFiles is the closed list. All but one are SiteRoot/logs/<name>.log;
+// postgresql is the exception and is resolved by siteLogPath. The access log is
+// deliberately absent: visitor addresses and URLs by the megabyte, wanted by no
+// diagnosis on the list.
 var siteLogFiles = []string{
 	"error",
 	"cron_scheduled_tasks",
 	"joinery_ai_worker",
 	"install_executor",
 	"host_converger",
+	"postgresql",
 }
+
+// postgresLogDir is where a Debian or Ubuntu PostgreSQL writes, compiled in.
+// The only directory this word reaches outside the site tree.
+const postgresLogDir = "/var/log/postgresql"
+
+// postgresLogPattern matches the cluster logs in that directory, and nothing
+// else in it. One glob, compiled: postgresql-16-main.log, postgresql-17-main.log.
+const postgresLogPattern = "postgresql-*-main.log"
 
 const (
 	siteLogMaxLines     = 200
@@ -80,12 +106,41 @@ const (
 
 // siteLogPath resolves an enum value to the one file it may mean. The enum has
 // already been validated; the name is a compiled constant, never wire text.
+//
+// postgresql is the one entry that does not live in the site's log directory,
+// because the database does not write there: Debian and Ubuntu put the cluster
+// log under /var/log/postgresql, one file per cluster. The directory and the
+// glob are both compiled, the match is taken from that directory alone, and
+// the newest cluster wins — so a machine running two clusters answers about
+// the one in use rather than refusing. Nothing from the wire reaches either.
 func siteLogPath(siteRoot, name string, previous bool) string {
+	if name == "postgresql" {
+		return postgresLogPath(previous)
+	}
 	file := name + ".log"
 	if previous {
 		file += ".1"
 	}
 	return filepath.Join(siteRoot, "logs", file)
+}
+
+// postgresLogPath picks the newest cluster log in the compiled directory, or
+// returns the directory-joined pattern itself when there is none — a path that
+// cannot open, which the caller reports as present: false, exactly as it
+// reports a site log that is not there.
+func postgresLogPath(previous bool) string {
+	matches, err := filepath.Glob(filepath.Join(postgresLogDir, postgresLogPattern))
+	if err != nil || len(matches) == 0 {
+		return filepath.Join(postgresLogDir, postgresLogPattern)
+	}
+	// Sorted lexically, the highest major version is last:
+	// postgresql-16-main.log before postgresql-17-main.log.
+	sort.Strings(matches)
+	path := matches[len(matches)-1]
+	if previous {
+		path += ".1"
+	}
+	return path
 }
 
 func runSiteLog(ctx context.Context, env *ExecEnv, p Params) (map[string]interface{}, error) {

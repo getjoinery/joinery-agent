@@ -93,6 +93,12 @@ var pinnedVocabulary = map[string]Class{
 	// no log, no message and no content.
 	"disk_usage": ClassObserve,
 
+	// unit_journal's counterpart (§ 9): clears systemd's failed record for one
+	// unit from the SAME compiled list, via a shipped script that can never
+	// run reset-failed without a unit. Operate: it changes what the machine
+	// reports about itself, though it starts, stops and restarts nothing.
+	"reset_failed_unit": ClassOperate,
+
 	"ssl_probe_place": ClassOperate,
 	"ssl_probe_clear": ClassOperate,
 

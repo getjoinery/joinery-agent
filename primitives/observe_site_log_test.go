@@ -59,20 +59,27 @@ func TestSiteLogTakesOnlyTheClosedList(t *testing.T) {
 	}
 }
 
+// Every entry resolves into one of exactly two directories: the site's own log
+// directory, or — for the database log alone — the compiled PostgreSQL one.
+// Anywhere else is a path this word must not be able to reach.
 func TestSiteLogResolvesUnderTheLogDirectoryOnly(t *testing.T) {
 	for _, name := range siteLogFiles {
 		for _, previous := range []bool{false, true} {
 			got := siteLogPath("/srv/site", name, previous)
-			if !strings.HasPrefix(got, "/srv/site/logs/") {
-				t.Errorf("%s previous=%v resolved to %s, outside the log directory", name, previous, got)
+			wantDir := "/srv/site/logs/"
+			if name == "postgresql" {
+				wantDir = postgresLogDir + "/"
+			}
+			if !strings.HasPrefix(got, wantDir) {
+				t.Errorf("%s previous=%v resolved to %s, outside %s", name, previous, got, wantDir)
 			}
 			if strings.HasSuffix(got, ".gz") {
 				t.Errorf("%s resolved to a compressed rotation %s", name, got)
 			}
-			if previous && !strings.HasSuffix(got, ".log.1") {
+			if previous && !strings.HasSuffix(got, ".1") {
 				t.Errorf("previous must be the .1 rotation, got %s", got)
 			}
-			if !previous && !strings.HasSuffix(got, ".log") {
+			if !previous && !strings.HasSuffix(got, ".log") && name != "postgresql" {
 				t.Errorf("current must be the .log file, got %s", got)
 			}
 		}
@@ -252,4 +259,54 @@ func itoa(i int) string {
 		i /= 10
 	}
 	return string(digits)
+}
+
+// The database log is the one entry that is not under the site root, and the
+// one that reaches outside it at all. These pin where it may reach.
+
+func TestPostgresLogResolvesInsideItsOwnDirectory(t *testing.T) {
+	got := siteLogPath(t.TempDir(), "postgresql", false)
+	if !strings.HasPrefix(got, postgresLogDir+"/") {
+		t.Fatalf("the database log must resolve inside %s, got %s", postgresLogDir, got)
+	}
+	if strings.Contains(got, "..") {
+		t.Fatalf("no traversal may appear in a resolved path: %s", got)
+	}
+	// With no cluster on this machine the pattern itself comes back: a path
+	// that cannot open, which the word reports as present: false rather than
+	// as an error.
+	if _, err := os.Stat(got); err == nil {
+		t.Logf("a real cluster log is present here: %s", got)
+	}
+
+	prev := siteLogPath(t.TempDir(), "postgresql", true)
+	if prev != got && !strings.HasSuffix(prev, ".1") {
+		t.Fatalf("previous must select the .1 rotation, got %s", prev)
+	}
+}
+
+func TestPostgresLogIgnoresTheSiteRoot(t *testing.T) {
+	// Two different site roots must not change where the database log is read
+	// from: the directory is a property of the machine, not of the site.
+	a := siteLogPath("/var/www/html/one", "postgresql", false)
+	b := siteLogPath("/var/www/html/two", "postgresql", false)
+	if a != b {
+		t.Fatalf("the site root must not steer this path: %s vs %s", a, b)
+	}
+}
+
+func TestPostgresLogIsOnTheListAndGated(t *testing.T) {
+	p, _ := Lookup("site_log")
+	if _, err := Validate(p.Params, map[string]interface{}{"file": "postgresql"}); err != nil {
+		t.Fatalf("postgresql is on the closed list and must validate: %v", err)
+	}
+	if !p.RequiresLogAccess {
+		t.Error("the database log is a log: it reads only with the owner's leave")
+	}
+	// Still closed. The new entry does not open the enum to anything else.
+	for _, bad := range []string{"postgres", "postgresql-16-main", "/var/log/postgresql/postgresql-16-main.log", "access"} {
+		if _, err := Validate(p.Params, map[string]interface{}{"file": bad}); err == nil {
+			t.Errorf("file %q must be refused", bad)
+		}
+	}
 }
