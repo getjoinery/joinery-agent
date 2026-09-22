@@ -29,6 +29,7 @@ func init() {
 	Register(Primitive{
 		Name:        "decommission_site",
 		Class:       ClassDestructive,
+		Machine:     true,
 		Description: "Permanently remove one container site from this host, with the site's own consent.",
 		Params: []ParamSpec{
 			// Which site. Lowercase name, no separators that could read as a

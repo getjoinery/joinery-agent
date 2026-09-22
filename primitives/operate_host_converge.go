@@ -28,6 +28,7 @@ func init() {
 	Register(Primitive{
 		Name:        "host_converge",
 		Class:       ClassOperate,
+		Machine:     true,
 		Description: "Run host_housekeeping.sh (fail2ban and the host's daily housekeeping) through the host runner, and return the transcript.",
 		Params:      nil,
 		Script: &ScriptSpec{

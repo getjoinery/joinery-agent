@@ -33,6 +33,7 @@ func init() {
 	Register(Primitive{
 		Name:        "restart_agent",
 		Class:       ClassOperate,
+		Machine:     true,
 		Description: "Restart this node's agent, if a supervisor can be proven to bring it back.",
 		Params:      nil,
 		Run:         runRestartAgent,

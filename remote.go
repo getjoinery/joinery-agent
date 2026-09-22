@@ -311,8 +311,9 @@ func (r *RemoteSource) claim(ctx context.Context) (*RemoteJob, error) {
 		// for itself, and the plane must never GUESS a node's vocabulary. The
 		// first apply_update rollout dispatched the new primitive to nine
 		// agents that predated it and all nine refused — a plane reading a
-		// version number and inferring a capability from it.
-		claimBody["primitives"] = strings.Join(primitives.Names(), ",")
+		// version number and inferring a capability from it. A machine with
+		// no site reports only the words it can run (RunnableNames).
+		claimBody["primitives"] = strings.Join(primitives.RunnableNames(r.env), ",")
 		// And the recipes it runs on its own clock, each with its mode, for
 		// the same reason: the plane must never guess which recipes a node
 		// has or whether they act, and the node page shows a person that a

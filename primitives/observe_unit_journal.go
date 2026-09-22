@@ -56,6 +56,7 @@ func init() {
 	Register(Primitive{
 		Name:        "unit_journal",
 		Class:       ClassObserve,
+		Machine:     true,
 		Description: "One unit's state, result, exit status and last journal lines, from a compiled list of units, redacted on the node; refused unless the site's owner allows log access.",
 		Params: []ParamSpec{
 			{Name: "unit", Type: ParamEnum, Required: true, Values: unitJournalUnits},

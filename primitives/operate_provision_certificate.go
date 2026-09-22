@@ -44,6 +44,7 @@ func init() {
 	Register(Primitive{
 		Name:        "provision_certificate",
 		Class:       ClassOperate,
+		Machine:     true,
 		Description: "Issue or re-issue this node's origin TLS certificate for one domain.",
 		Params: []ParamSpec{
 			{Name: "domain", Type: ParamString, Required: true, MaxLen: 253, Pattern: certificateDomainPattern},

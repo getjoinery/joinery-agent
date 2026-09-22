@@ -33,6 +33,7 @@ func init() {
 	Register(Primitive{
 		Name:        "agent_report",
 		Class:       ClassObserve,
+		Machine:     true,
 		Description: "What would restart this agent if it stopped: systemd supervising this process with a restarting unit, and/or the cron keepalive with its switch on.",
 		Params:      nil,
 		Run:         runAgentReport,

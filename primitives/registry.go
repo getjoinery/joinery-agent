@@ -62,6 +62,16 @@ type Primitive struct {
 	Class       Class
 	Description string
 
+	// Machine says this word has meaning on a machine with no site of its own
+	// (the Docker host): it asks or changes the machine, not a Joinery site.
+	// Everything else reads a site's tree, config or database, and a machine
+	// with no site leaves it out of the vocabulary it reports (RunnableNames),
+	// so the plane never dispatches it there. Opt-in, so a new word is a site
+	// word until someone decides otherwise. docker-prod, 2026-09-15 and
+	// 2026-09-22: reporting the whole compiled list got it apply_update,
+	// recovery_key_report and agent_converge, each only to refuse.
+	Machine bool
+
 	// Params declares every parameter this primitive accepts. A job carrying
 	// anything not declared here is refused; there is no pass-through.
 	Params []ParamSpec
@@ -198,6 +208,23 @@ func Lookup(name string) (Primitive, bool) {
 func Names() []string {
 	out := make([]string, 0, len(registry))
 	for name := range registry {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// RunnableNames is the vocabulary this node reports to the plane: every
+// compiled-in word on a machine with a site, and only the Machine words on a
+// machine with none. The plane routes by this list and nothing else, so it
+// has to be what this machine can do, not what the binary contains.
+func RunnableNames(env *ExecEnv) []string {
+	siteless := env == nil || env.SiteRoot == ""
+	out := make([]string, 0, len(registry))
+	for name, p := range registry {
+		if siteless && !p.Machine {
+			continue
+		}
 		out = append(out, name)
 	}
 	sort.Strings(out)

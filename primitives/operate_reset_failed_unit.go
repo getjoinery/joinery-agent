@@ -47,6 +47,7 @@ func init() {
 	Register(Primitive{
 		Name:        "reset_failed_unit",
 		Class:       ClassOperate,
+		Machine:     true,
 		Description: "Clear systemd's failed record for one unit from a compiled list (systemctl reset-failed), reporting its state before and after; starts, stops and restarts nothing.",
 		Params: []ParamSpec{
 			{Name: "unit", Type: ParamEnum, Required: true, Values: unitJournalUnits},

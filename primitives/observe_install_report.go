@@ -49,6 +49,7 @@ func init() {
 	Register(Primitive{
 		Name:        "install_report",
 		Class:       ClassObserve,
+		Machine:     true,
 		Description: "Whether the first-boot install finished, how its DNS and certificate steps ended, and the tail of the install log.",
 		Params:      nil,
 		Run:         runInstallReport,

@@ -54,6 +54,7 @@ func init() {
 	Register(Primitive{
 		Name:        "disk_usage",
 		Class:       ClassObserve,
+		Machine:     true,
 		Description: "Where the disk went: the filesystem's figures, the site tree's biggest directories to depth two, and the usual machine directories — sizes only, no file names.",
 
 		// Empty on purpose. See the review above.

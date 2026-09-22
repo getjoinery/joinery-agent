@@ -67,6 +67,7 @@ func init() {
 	Register(Primitive{
 		Name:        "host_report",
 		Class:       ClassObserve,
+		Machine:     true,
 		Description: "Failed units, expected units, fail2ban jails, SSH auth-failure count, sshd posture, disk, memory, swap, reboot-required, unattended-upgrades: the machine, as one bounded JSON object.",
 
 		// Empty on purpose. See the review above: every parameter not declared
