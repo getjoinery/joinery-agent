@@ -153,7 +153,7 @@ var pinnedVocabulary = map[string]Class{
 	"verify_backup": ClassOperate,
 
 	// Bringing a backup's offloaded files home, one page of signed links at a
-	// time (specs/backup_offloaded_files.md § Restore). Operate, and the pin
+	// time (specs/implemented/backup_offloaded_files.md § Restore). Operate, and the pin
 	// is the point: the script overwrites nothing and deletes nothing in any
 	// bucket, the shape of the drain flow that already runs unattended, so
 	// the plane's paged loop needs no approval per page. A change that made

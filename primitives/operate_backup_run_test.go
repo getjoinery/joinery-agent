@@ -159,7 +159,7 @@ func TestBackupRunIsOperateAndInvokesTheShippedEngine(t *testing.T) {
 }
 
 // The object store rides on backup_run as three optional parameters
-// (specs/backup_offloaded_files.md § Rollout). What matters is the shape of
+// (specs/implemented/backup_offloaded_files.md § Rollout). What matters is the shape of
 // what can arrive: a flag, one signed link, and a map of signed links keyed by
 // epoch — never a credential that could read the shelf.
 

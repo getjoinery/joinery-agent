@@ -38,7 +38,7 @@ import (
 // config/backup_site_key. No key crosses and no bucket credential crosses —
 // there is no parameter below through which either could arrive.
 //
-// OFFLOADED FILES (specs/backup_offloaded_files.md § Verification) ride on two
+// OFFLOADED FILES (specs/implemented/backup_offloaded_files.md § Verification) ride on two
 // more optional link maps. epoch_envelope_urls: a signed link per epoch
 // envelope the run's index names, which the node opens with its own key — the
 // proof that the objects on the shelf are recoverable here, with no request

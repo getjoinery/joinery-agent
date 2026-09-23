@@ -188,7 +188,7 @@ func TestVerifyBackupRefusesWhatStageChainRefuses(t *testing.T) {
 	}
 }
 
-// The offloaded-files links (specs/backup_offloaded_files.md § Verification):
+// The offloaded-files links (specs/implemented/backup_offloaded_files.md § Verification):
 // two more bounded link maps, and still no way for a credential to arrive.
 
 func verifyBase() map[string]interface{} {

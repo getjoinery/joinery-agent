@@ -65,7 +65,7 @@ func init() {
 			{Name: "delete_local_after_upload", Type: ParamBool},
 
 			// The object store — the site's offloaded files, copied to the
-			// management node's shelf by the run (specs/backup_offloaded_files.md
+			// management node's shelf by the run (specs/implemented/backup_offloaded_files.md
 			// § Rollout). `objects` is what makes the node store to that shelf
 			// and hold local bytes for it; absent, the run behaves as it always
 			// did. The node's write-only credential cannot list the shelf, so

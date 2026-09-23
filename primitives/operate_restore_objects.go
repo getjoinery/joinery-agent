@@ -15,7 +15,7 @@ import (
 // the site expects them — the ones the file bucket cannot serve (missing) or
 // every one of them (all) — after the database is loaded, because the row is
 // what says where each file belongs and how big it is
-// (specs/backup_offloaded_files.md § Restore).
+// (specs/implemented/backup_offloaded_files.md § Restore).
 //
 // PAGED, AND THE PLANE DRIVES THE LOOP. A presigned link is a few hundred
 // bytes and a job is bounded, so a store of ten thousand files is many small
