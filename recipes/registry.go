@@ -59,6 +59,16 @@ func (e *Env) Run(ctx context.Context, word string) (map[string]interface{}, err
 	return primitives.Execute(ctx, e.Exec, e.Policy, primitives.Request{Primitive: word})
 }
 
+// RunDerived executes one word with values this node derived for itself
+// (Recipe.NodeDerived): the same Execute, so the values are validated against
+// the word's own declared shape exactly as a plane job's would be.
+func (e *Env) RunDerived(ctx context.Context, word string, values map[string]interface{}) (map[string]interface{}, error) {
+	if e == nil {
+		return nil, fmt.Errorf("recipe has no execution environment")
+	}
+	return primitives.Execute(ctx, e.Exec, e.Policy, primitives.Request{Primitive: word, Params: values})
+}
+
 // Recipe is one fixed sentence. There is no Params field, no Args field and
 // no field of any type a parameter could hide in: a recipe is a name, the two
 // words it composes, and the two functions that read their answers. Adding a
@@ -97,6 +107,18 @@ type Recipe struct {
 	// carry): a machine with no site never ticks it, for the same reason.
 	// ScopeAny (the zero value) ticks everywhere.
 	Scope Scope
+
+	// NodeDerived says the repair word takes a parameter, and that the value
+	// is one this node derived for itself: a unit from its own expected-units
+	// list, a container from its own container list, a domain from its own
+	// vhost — read out of the check word's own answer, never from the wire or
+	// a file of instructions (rule 10 of specs/agent_recipes_and_vocabulary.md,
+	// amending agent_tier1_recipes.md WP4). The word validates the value
+	// against its own compiled set whatever the recipe passes, so a recipe
+	// cannot widen a word; the flag only lets a recipe name one that takes a
+	// value. Register refuses a parameterised repair word without it, and
+	// registry_test.go pins which recipes set it.
+	NodeDerived bool
 
 	// Check runs the check word and reads its answer into a verdict. Cheap,
 	// side-effect free, run every tick the recipe is due.
@@ -152,10 +174,9 @@ func Register(r Recipe) {
 	if check.Class != primitives.ClassObserve {
 		panic(fmt.Sprintf("recipes: recipe %q checks with %q, which is %s, not observe — a check reads, never changes", r.Name, r.CheckWord, check.Class))
 	}
-	// A recipe has no parameters, so the words it composes cannot take any
-	// either: there would be nothing to fill them from except this source,
-	// and a value compiled here is a value the word should have compiled
-	// itself.
+	// A recipe has no parameters, so its CHECK word cannot take any: there
+	// would be nothing to fill one from except this source. A repair word may
+	// take one only under NodeDerived, below.
 	if len(check.Params) != 0 {
 		panic(fmt.Sprintf("recipes: recipe %q composes a word that takes parameters; recipes compose only parameterless words", r.Name))
 	}
@@ -167,8 +188,11 @@ func Register(r Recipe) {
 		if repair.Class != primitives.ClassOperate {
 			panic(fmt.Sprintf("recipes: recipe %q repairs with %q, which is %s, not operate — a recipe never runs a destructive word unasked", r.Name, r.RepairWord, repair.Class))
 		}
-		if len(repair.Params) != 0 {
-			panic(fmt.Sprintf("recipes: recipe %q composes a word that takes parameters; recipes compose only parameterless words", r.Name))
+		if len(repair.Params) != 0 && !r.NodeDerived {
+			panic(fmt.Sprintf("recipes: recipe %q composes a word that takes parameters; a recipe supplies only values the node derived itself, and says so with NodeDerived", r.Name))
+		}
+		if len(repair.Params) == 0 && r.NodeDerived {
+			panic(fmt.Sprintf("recipes: recipe %q is NodeDerived but its repair word takes no parameter", r.Name))
 		}
 	}
 	registry[r.Name] = r

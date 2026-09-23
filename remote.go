@@ -12,6 +12,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -110,15 +111,23 @@ type RemoteSource struct {
 	// warned suppresses repeat logging of a steady-state complaint.
 	warned map[string]bool
 
-	// extrasDropped latches when the plane refuses a field this agent added.
+	// refusedFields are the claim fields a plane refused by name as
+	// undeclared; they are left off every later claim to that plane.
 	//
-	// The plane validates a claim STRICTLY — an undeclared key is refused, not
-	// ignored — which is the right rule and makes a newer agent's extra fields
-	// fatal against an older plane. In this fleet the plane is always upgraded
-	// first, because the agent artifact ships inside the core release; but "in
-	// practice first" is not an ordering guarantee, and a node whose site
-	// upgraded ahead of its management node would otherwise stop claiming
-	// altogether. Dropping the extras costs the plane a capability report;
+	// A plane from before 2026-09-23 validates a claim STRICTLY — an
+	// undeclared key refuses the whole claim — so a field this agent added
+	// after its management node's release is fatal to the poll. A node can be
+	// newer than the self-hosted plane it answers
+	// (specs/agent_recipes_and_vocabulary.md, Different agent versions), so
+	// the agent drops the one field the refusal names and keeps the rest of
+	// its report: above all its vocabulary, without which the plane can route
+	// it nothing. A plane from that date on sets an unknown field aside
+	// itself, and this set stays empty.
+	refusedFields map[string]bool
+
+	// extrasDropped latches when a refusal names no field this agent can
+	// identify (or too many): the older fallback, which drops every capability
+	// field and claims bare. Dropping the report costs the plane a fact;
 	// dropping the claim costs it the node.
 	extrasDropped bool
 
@@ -368,6 +377,12 @@ func (r *RemoteSource) claim(ctx context.Context) (*RemoteJob, error) {
 		if v := r.scriptTrust(); v != "" {
 			claimBody["script_trust"] = v
 		}
+		for field := range r.refusedFields {
+			delete(claimBody, field)
+		}
+		if r.refusedFields["cases"] {
+			casesDelivered = func() {}
+		}
 	}
 	body, _ := json.Marshal(claimBody)
 
@@ -421,11 +436,35 @@ func (r *RemoteSource) dropExtrasIfRefused(err error) bool {
 	if r.extrasDropped || !strings.Contains(err.Error(), "undeclared field") {
 		return false
 	}
+	// The plane names the field it refused. Dropping that one field keeps
+	// everything else this agent reports; the required two are never dropped,
+	// and a name that is not one of ours, or one too many, falls back to
+	// claiming bare.
+	if m := undeclaredFieldName.FindStringSubmatch(err.Error()); m != nil {
+		field := m[1]
+		if field != "node_id" && field != "agent_version" && !r.refusedFields[field] && len(r.refusedFields) < maxRefusedFields {
+			if r.refusedFields == nil {
+				r.refusedFields = map[string]bool{}
+			}
+			r.refusedFields[field] = true
+			log.Printf("this management node does not accept the claim field %q (it predates it) — "+
+				"claiming without it; upgrade the plane to restore that report", field)
+			return true
+		}
+	}
 	r.extrasDropped = true
 	log.Printf("this management node does not accept the capability fields this agent sends " +
 		"(it predates them) — claiming without them; upgrade the plane to restore vocabulary reporting")
 	return true
 }
+
+// undeclaredFieldName reads the field an older plane's refusal names
+// ("The request carries an undeclared field: server_manager").
+var undeclaredFieldName = regexp.MustCompile(`undeclared field: ([a-z][a-z0-9_]{0,39})\b`)
+
+// maxRefusedFields bounds the per-field fallback: a plane refusing more than
+// this is not an older plane missing a field or two.
+const maxRefusedFields = 8
 
 // runJob executes one primitive and reports the outcome, taking the job lock
 // for the duration. The poll loop does not use it: it holds the lock from

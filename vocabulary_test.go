@@ -134,10 +134,57 @@ func TestClaimReportsTheBundleVersion(t *testing.T) {
 	}
 }
 
-// A newer agent against an older plane. The plane validates a claim strictly —
-// an undeclared field is refused, not ignored — which is the right rule and
-// makes a new field fatal in the wrong direction. Losing the capability report
-// costs the plane a fact; losing the claim costs it the node.
+// A newer agent against an older plane. A plane from before 2026-09-23
+// validates a claim strictly — an undeclared field refuses the whole claim —
+// and names the field. The agent drops THAT field and keeps the rest of its
+// report, above all its vocabulary: a plane that cannot see a node's words
+// can route it nothing (specs/agent_recipes_and_vocabulary.md, Different
+// agent versions).
+func TestAnOlderPlaneRefusingOneFieldLosesOnlyThatField(t *testing.T) {
+	var bodies []map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		var body map[string]interface{}
+		json.NewDecoder(req.Body).Decode(&body)
+		bodies = append(bodies, body)
+		if _, sent := body["log_access"]; sent {
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte(`{"api_version":"1.0","error":"The request carries an undeclared field: log_access"}`))
+			return
+		}
+		if _, sent := body["bundle_version"]; sent {
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte(`{"api_version":"1.0","error":"The request carries an undeclared field: bundle_version"}`))
+			return
+		}
+		w.Write([]byte(`{"api_version":"1.0","data":{"job":null}}`))
+	}))
+	defer server.Close()
+
+	src := testSource(t, testIdentity(t, server.URL, 7))
+	for i := 0; i < 3; i++ {
+		if _, err := src.claim(context.Background()); err != nil {
+			t.Fatalf("claim %d: a named undeclared field is absorbed, not an error: %v", i+1, err)
+		}
+	}
+	last := bodies[len(bodies)-1]
+	for _, dropped := range []string{"log_access", "bundle_version"} {
+		if _, sent := last[dropped]; sent {
+			t.Errorf("%s was refused and must stay off later claims", dropped)
+		}
+	}
+	for _, kept := range []string{"primitives", "recipes", "agent_version"} {
+		if _, sent := last[kept]; !sent {
+			t.Errorf("%s was never refused and must still be reported", kept)
+		}
+	}
+	if src.extrasDropped {
+		t.Error("a refusal that names a field drops that field, not every extra")
+	}
+}
+
+// A refusal whose field this agent cannot read falls back to claiming bare:
+// losing the capability report costs the plane a fact; losing the claim
+// costs it the node.
 func TestAnOlderPlaneStillGetsClaimsFromANewerAgent(t *testing.T) {
 	var bodies []map[string]interface{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
@@ -147,7 +194,7 @@ func TestAnOlderPlaneStillGetsClaimsFromANewerAgent(t *testing.T) {
 
 		if _, sent := body["primitives"]; sent {
 			w.WriteHeader(http.StatusBadRequest)
-			w.Write([]byte(`{"api_version":"1.0","error":"The request carries an undeclared field: primitives"}`))
+			w.Write([]byte(`{"api_version":"1.0","error":"The request carries an undeclared field: ??"}`))
 			return
 		}
 		w.Write([]byte(`{"api_version":"1.0","data":{"job":null}}`))
@@ -156,31 +203,23 @@ func TestAnOlderPlaneStillGetsClaimsFromANewerAgent(t *testing.T) {
 
 	src := testSource(t, testIdentity(t, server.URL, 7))
 
-	// First poll: refused for the new field, and reported as nothing to do
-	// rather than as an error — the agent has already decided what to change.
 	job, err := src.claim(context.Background())
 	if err != nil || job != nil {
 		t.Fatalf("the first claim should absorb the refusal; got job=%v err=%v", job, err)
 	}
 	if !src.extrasDropped {
-		t.Fatal("an undeclared-field refusal must latch, or every poll repeats it forever")
+		t.Fatal("an undeclared-field refusal naming nothing readable must latch, or every poll repeats it forever")
 	}
-
-	// Second poll: the older shape, and it works.
 	if _, err := src.claim(context.Background()); err != nil {
 		t.Fatalf("the second claim should succeed against the older plane: %v", err)
 	}
 	if len(bodies) != 2 {
 		t.Fatalf("expected two claims, got %d", len(bodies))
 	}
-	if _, sent := bodies[1]["primitives"]; sent {
-		t.Error("the second claim still carried the field the plane refused")
-	}
-	if _, sent := bodies[1]["recipes"]; sent {
-		t.Error("the recipe list is one of the extras, and goes with them")
-	}
-	if _, sent := bodies[1]["cases"]; sent {
-		t.Error("the cases are one of the extras, and go with them")
+	for _, extra := range []string{"primitives", "recipes", "cases"} {
+		if _, sent := bodies[1][extra]; sent {
+			t.Errorf("%s is one of the extras, and goes with them", extra)
+		}
 	}
 	if bodies[1]["agent_version"] == nil {
 		t.Error("dropping the extras must not drop the version the plane has always accepted")

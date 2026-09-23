@@ -76,6 +76,10 @@ var (
 	// its kind, which carry paths.
 	upperKeyAssignment = regexp.MustCompile(`\b([A-Z][A-Z0-9_]*_KEY)=('[^']*'|"[^"]*"|\S+)`)
 
+	// scheme://user:password@host — the password half of a URL's userinfo
+	// (a DSN, a proxy URL). The user stays; group 1 keeps "scheme://user:".
+	urlUserinfo = regexp.MustCompile(`([A-Za-z][A-Za-z0-9+.\-]*://[^\s:/@]+:)[^\s@/]+@`)
+
 	// Authorization: Bearer <token>.
 	bearerToken = regexp.MustCompile(`(?i)\b(bearer\s+)[A-Za-z0-9._~+/\-]+=*`)
 
@@ -111,9 +115,15 @@ var (
 // IP literals and opaque tokens masked. Safe on any string; a string carrying
 // none of them comes back unchanged.
 func Text(s string) string {
+	return textWith(s, true)
+}
+
+// textWith is Text, with the IP literal masks optional: Config leaves them.
+func textWith(s string, ips bool) string {
 	if s == "" {
 		return s
 	}
+	s = urlUserinfo.ReplaceAllString(s, "${1}"+Mask+"@")
 	s = quotedKeyValue.ReplaceAllString(s, "${1}"+Mask+"${3}")
 	s = secretKeyHeader.ReplaceAllString(s, "${1}"+Mask)
 	s = cloneKeyFlag.ReplaceAllString(s, "${1}"+Mask)
@@ -121,10 +131,12 @@ func Text(s string) string {
 	s = upperKeyAssignment.ReplaceAllString(s, "${1}="+Mask)
 	s = bearerToken.ReplaceAllString(s, "${1}"+Mask)
 	s = email.ReplaceAllString(s, "<email>@${1}")
-	s = ipv6Full.ReplaceAllString(s, "<ip>")
-	s = ipv6Compressed.ReplaceAllString(s, "<ip>")
-	s = ipv6Leading.ReplaceAllString(s, "${1}<ip>")
-	s = ipv4.ReplaceAllString(s, "<ip>")
+	if ips {
+		s = ipv6Full.ReplaceAllString(s, "<ip>")
+		s = ipv6Compressed.ReplaceAllString(s, "<ip>")
+		s = ipv6Leading.ReplaceAllString(s, "${1}<ip>")
+		s = ipv4.ReplaceAllString(s, "<ip>")
+	}
 	s = hexToken.ReplaceAllStringFunc(s, maskHexRun)
 	s = base64Token.ReplaceAllStringFunc(s, maskBase64Run)
 	return s

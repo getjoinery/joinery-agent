@@ -16,12 +16,17 @@ var pinnedMachineWords = []string{
 	"check_status",
 	"decommission_site",
 	"disk_usage",
+	"file_head",
 	"host_converge",
 	"host_report",
 	"install_report",
 	"provision_certificate",
+	"reclaim_managed_file",
 	"reset_failed_unit",
 	"restart_agent",
+	"restart_container",
+	"restart_unit",
+	"run_installer",
 	"unit_journal",
 }
 

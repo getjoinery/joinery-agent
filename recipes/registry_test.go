@@ -31,6 +31,30 @@ var pinnedRecipes = map[string][2]string{
 	// 10% and 5 GiB available, or a case opens. CHECK-ONLY (no repair word):
 	// there is no safe automatic answer to a full disk.
 	"disk_headroom": {"host_report", ""},
+	// specs/agent_recipes_and_vocabulary.md, Settled 2026-09-23 (Sentinel
+	// rungs 1–2): the services answer, not merely run; a site container runs
+	// and its site answers; each served name has 14 days of certificate. Each
+	// repair takes a value the node derived itself (pinnedNodeDerived).
+	"service_health":     {"host_report", "restart_unit"},
+	"container_health":   {"host_report", "restart_container"},
+	"certificate_expiry": {"host_report", "provision_certificate"},
+}
+
+// pinnedNodeDerived is the set of recipes whose repair word takes a value the
+// node derived for itself (rule 10). One visible list, argued for, like the
+// check-only set.
+var pinnedNodeDerived = map[string]bool{
+	"service_health":     true,
+	"container_health":   true,
+	"certificate_expiry": true,
+}
+
+func TestNodeDerivedRecipesArePinned(t *testing.T) {
+	for _, r := range All() {
+		if r.NodeDerived != pinnedNodeDerived[r.Name] {
+			t.Errorf("recipe %q has NodeDerived=%v but is pinned as %v", r.Name, r.NodeDerived, pinnedNodeDerived[r.Name])
+		}
+	}
 }
 
 // pinnedCheckOnly is the set of recipes that repair nothing (Recipe.NoRepair),
@@ -118,8 +142,8 @@ func TestEveryRecipeComposesAParameterlessObserveAndOperateWord(t *testing.T) {
 			}
 		} else {
 			repair, ok := primitives.Lookup(r.RepairWord)
-			if !ok || repair.Class != primitives.ClassOperate || len(repair.Params) != 0 {
-				t.Errorf("recipe %q: repair word %q must be a parameterless operate word", r.Name, r.RepairWord)
+			if !ok || repair.Class != primitives.ClassOperate || (len(repair.Params) != 0) != r.NodeDerived {
+				t.Errorf("recipe %q: repair word %q must be an operate word, parameterless unless the recipe is NodeDerived", r.Name, r.RepairWord)
 			}
 		}
 		if r.MinInterval < TickInterval {
@@ -145,6 +169,7 @@ func TestRegisterRefusesWhatTheContractForbids(t *testing.T) {
 		"a repair word that is destructive":   func(r *Recipe) { r.RepairWord = "restore_database" },
 		"a word this agent does not have":     func(r *Recipe) { r.RepairWord = "run_anything" },
 		"a repair word that takes parameters": func(r *Recipe) { r.RepairWord = "download_backup" },
+		"NodeDerived on a parameterless word": func(r *Recipe) { r.NodeDerived = true },
 		"no check":                            func(r *Recipe) { r.Check = nil },
 		"no repair":                           func(r *Recipe) { r.Repair = nil },
 		// NoRepair is the ONLY way to register without a repair, and it

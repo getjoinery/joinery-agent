@@ -93,11 +93,38 @@ var pinnedVocabulary = map[string]Class{
 	// no log, no message and no content.
 	"disk_usage": ClassObserve,
 
+	// Host configuration files from a compiled list, behind the owner's
+	// switch, redacted by the config shape (specs/agent_recipes_and_vocabulary.md,
+	// Host files).
+	"file_head": ClassObserve,
+
+	// One table of the site's own database, described by the database: no
+	// SQL from the plane, no row read.
+	"schema_probe": ClassObserve,
+
+	// One of the site's own pages rendered as a throwaway viewer; facts
+	// about the render, never the render.
+	"page_probe": ClassObserve,
+
 	// unit_journal's counterpart (§ 9): clears systemd's failed record for one
 	// unit from the SAME compiled list, via a shipped script that can never
 	// run reset-failed without a unit. Operate: it changes what the machine
 	// reports about itself, though it starts, stops and restarts nothing.
 	"reset_failed_unit": ClassOperate,
+
+	// The two repairs of service_health (specs/agent_recipes_and_vocabulary.md,
+	// Settled 2026-09-23): a unit from host_report's expected list, never the
+	// agent; a container whose name is its SITENAME.
+	"restart_unit":      ClassOperate,
+	"restart_container": ClassOperate,
+
+	// One installer by name through the host runner: a core installer, or an
+	// active plugin's host_installer.
+	"run_installer": ClassOperate,
+
+	// One host file from the resettable list, moved aside to a dated copy and
+	// rewritten by the installer that owns it.
+	"reclaim_managed_file": ClassOperate,
 
 	"ssl_probe_place": ClassOperate,
 	"ssl_probe_clear": ClassOperate,
@@ -198,6 +225,7 @@ var pinnedLogAccessWords = map[string]bool{
 	"site_log":       true,
 	"log_table_tail": true,
 	"unit_journal":   true,
+	"file_head":      true,
 }
 
 func TestLogAccessIsDeclaredNotAssumed(t *testing.T) {

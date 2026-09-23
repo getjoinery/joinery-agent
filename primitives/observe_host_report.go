@@ -6,7 +6,8 @@ import "time"
 // failed units, the expected units and their state, fail2ban's jails and how
 // many addresses each has banned, how many SSH logins failed in the last day,
 // sshd's password and root-login posture, disk, memory, swap, whether a reboot
-// is pending, and when unattended-upgrades last ran.
+// is pending, when unattended-upgrades last ran, and the operating system with
+// the release upgrade Ubuntu's own daily check last offered.
 //
 // It is the first observe word of specs/agent_tier1_recipes.md, and it is
 // deliberately NOT part of check_status (settled question Q2 there). They
@@ -68,7 +69,7 @@ func init() {
 		Name:        "host_report",
 		Class:       ClassObserve,
 		Machine:     true,
-		Description: "Failed units, expected units, fail2ban jails, SSH auth-failure count, sshd posture, disk, memory, swap, reboot-required, unattended-upgrades: the machine, as one bounded JSON object.",
+		Description: "Failed units, expected units, fail2ban jails, SSH auth-failure count, sshd posture, disk, memory, swap, reboot-required, unattended-upgrades, operating system and offered release upgrade: the machine, as one bounded JSON object.",
 
 		// Empty on purpose. See the review above: every parameter not declared
 		// here is one the plane can never abuse.
