@@ -1,6 +1,10 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -86,5 +90,43 @@ func TestClaimedNameIsTheSiteNameWhenThereIsASite(t *testing.T) {
 	}
 	if got := claimedNameFor("/"); got != host {
 		t.Fatalf("a site root of / names nothing and falls back to the hostname, got %q", got)
+	}
+}
+
+// A join names the site's web root, so the plane makes a node that hosts a
+// site; a siteless machine names none. Without it the plane made a node with
+// no backup and no recovery-key report.
+func TestTheJoinNamesTheWebRoot(t *testing.T) {
+	var got map[string]interface{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = nil
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		w.Header().Set("Content-Type", "application/json")
+		planeReply(w, map[string]interface{}{"status": "pending", "fingerprint": "x"})
+	}))
+	defer srv.Close()
+
+	pub, priv, err := GenerateIdentityKeys()
+	if err != nil {
+		t.Fatal(err)
+	}
+	staged := &stagedIdentity{PlaneURL: srv.URL, PublicKey: pub, PrivateKey: priv}
+	ask := func(cfg *Config, sendJoin bool) map[string]interface{} {
+		w := &JoinWatcher{cfg: cfg, agentVersion: "test"}
+		if _, err := w.callJoin(context.Background(), srv.URL, staged, "site1", sendJoin); err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+
+	site := &Config{SiteRoot: "/var/www/html/site1", WebRoot: "/var/www/html/site1/public_html"}
+	if body := ask(site, true); body["web_root"] != "/var/www/html/site1/public_html" {
+		t.Fatalf("a site's join carries web_root = %v", body["web_root"])
+	}
+	if body := ask(site, false); body["web_root"] != nil {
+		t.Fatalf("the status poll carries only the key, got web_root = %v", body["web_root"])
+	}
+	if body := ask(&Config{Siteless: true}, true); body["web_root"] != nil {
+		t.Fatalf("a siteless machine's join carries web_root = %v", body["web_root"])
 	}
 }

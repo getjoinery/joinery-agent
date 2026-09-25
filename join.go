@@ -389,6 +389,9 @@ func (w *JoinWatcher) callJoin(ctx context.Context, planeURL string, staged *sta
 			// a second placement for the same machine.
 			"addresses": machineAddresses(),
 		}
+		if root := joinWebRoot(w.cfg); root != "" {
+			payload["web_root"] = root
+		}
 	} else {
 		path = pathJoinStatus
 		payload = map[string]interface{}{
@@ -422,6 +425,16 @@ func (w *JoinWatcher) callJoin(ctx context.Context, planeURL string, staged *sta
 		return nil, fmt.Errorf("the management node sent an unreadable join response: %w", err)
 	}
 	return &status, nil
+}
+
+// joinWebRoot is the public_html directory a join names, so the plane makes a
+// node that hosts a site: a node with no web root gets no backup and no
+// recovery-key report. A siteless machine names none.
+func joinWebRoot(cfg *Config) string {
+	if cfg == nil || cfg.Siteless {
+		return ""
+	}
+	return cfg.WebRoot
 }
 
 // ── Settings-table plumbing ──

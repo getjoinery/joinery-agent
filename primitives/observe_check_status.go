@@ -37,7 +37,7 @@ func init() {
 		Name:        "check_status",
 		Class:       ClassObserve,
 		Machine:     true,
-		Description: "Disk, memory, load, uptime, PostgreSQL liveness, Joinery version, database list, whether Server Manager is active, the site's recorded plugin checks.",
+		Description: "The site's web root, disk, memory, load, uptime, PostgreSQL liveness, Joinery version, database list, whether Server Manager is active, the site's recorded plugin checks.",
 		Params:      nil, // takes none, so any param at all is refused
 		Run:         runCheckStatus,
 	})
@@ -45,6 +45,12 @@ func init() {
 
 func runCheckStatus(ctx context.Context, env *ExecEnv, _ Params) (map[string]interface{}, error) {
 	result := map[string]interface{}{}
+
+	// Where this node's site lives, so the plane can fill a node record that
+	// was made without one. A machine with no site reports none.
+	if env.WebRoot != "" {
+		result["web_root"] = env.WebRoot
+	}
 
 	target := env.WebRoot
 	if target == "" {
