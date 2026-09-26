@@ -35,6 +35,18 @@ const (
 	// result carries collected output.
 	agentMaxJobBody = 64 * 1024
 
+	// agentMaxClaimBody is the cap on the one answer that hands this node a
+	// job: the claim. It is larger than agentMaxJobBody for the two words that
+	// carry a whole long backup chain's signed links (stage_chain,
+	// verify_backup — primitives.ChainParamsBytes, 4 KiB under this). Every other word is still
+	// held to primitives.MaxParamsBytes when its params are validated, so the
+	// size of an ordinary job is bounded where it always was; this only lets a
+	// chain job arrive to be validated at all. Every other plane answer keeps
+	// agentMaxJobBody. The claim reports it (claim_bytes), and the plane sends
+	// no claim larger than the node reports — an agent that reports none reads
+	// agentMaxJobBody.
+	agentMaxClaimBody = 1024 * 1024
+
 	// agentMaxResultBody is the plane's inbound cap, compiled in here too. The
 	// agent checks its own result against it BEFORE posting: a result that
 	// arrives too large is refused at the far end and lost, and a lost result
@@ -377,6 +389,11 @@ func (r *RemoteSource) claim(ctx context.Context) (*RemoteJob, error) {
 		if v := r.scriptTrust(); v != "" {
 			claimBody["script_trust"] = v
 		}
+		// The largest claim this agent reads. The plane holds every job it
+		// hands out to it, so a chain job too large for an older agent is
+		// refused at dispatch, naming the update, rather than sent to be
+		// refused unread.
+		claimBody["claim_bytes"] = agentMaxClaimBody
 		for field := range r.refusedFields {
 			delete(claimBody, field)
 		}
@@ -386,7 +403,7 @@ func (r *RemoteSource) claim(ctx context.Context) (*RemoteJob, error) {
 	}
 	body, _ := json.Marshal(claimBody)
 
-	raw, err := r.signedPost(ctx, pathClaim, body)
+	raw, err := signedPlanePostCapped(ctx, r.client, r.identity, pathClaim, body, agentMaxClaimBody)
 	if err != nil {
 		if r.dropExtrasIfRefused(err) {
 			return nil, nil

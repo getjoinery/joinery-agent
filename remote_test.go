@@ -151,12 +151,43 @@ func TestOversizedPlaneResponseIsRefusedAsOversizedNotAsGarbage(t *testing.T) {
 	defer server.Close()
 
 	src := testSource(t, testIdentity(t, server.URL, 7))
-	_, err := src.signedPost(context.Background(), pathClaim, []byte("{}"))
+	_, err := src.signedPost(context.Background(), pathResult, []byte("{}"))
 	if err == nil {
 		t.Fatal("an oversized plane response must be refused")
 	}
 	if !strings.Contains(err.Error(), "limit") {
 		t.Errorf("the refusal must name the size limit, not a parse failure; got %q", err)
+	}
+}
+
+// The claim is the one ordinary answer read under its own, larger cap: a
+// chain job's signed links do not fit under agentMaxJobBody. It is still a cap.
+func TestClaimIsReadUnderItsOwnBoundedCap(t *testing.T) {
+	if agentMaxClaimBody != primitives.ChainParamsBytes+4*1024 {
+		t.Errorf("the claim cap (%d) must be ChainParamsBytes + 4 KiB (%d): the params of the largest job plus its wrapper",
+			agentMaxClaimBody, primitives.ChainParamsBytes+4*1024)
+	}
+	if agentMaxClaimBody <= agentMaxJobBody {
+		t.Errorf("the claim cap (%d) must exceed the default cap (%d), or a chain job never arrives", agentMaxClaimBody, agentMaxJobBody)
+	}
+
+	pad := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Write([]byte(`{"api_version":"1.0","data":{"job":null,"pad":"` + strings.Repeat("x", pad) + `"}}`))
+	}))
+	defer server.Close()
+	src := testSource(t, testIdentity(t, server.URL, 7))
+
+	// Past the default cap, under the claim cap: a chain job's size. Accepted.
+	pad = agentMaxJobBody * 4
+	if _, err := src.claim(context.Background()); err != nil && strings.Contains(err.Error(), "limit") {
+		t.Errorf("a claim answer of %d bytes must be read; got %q", pad, err)
+	}
+	// Past the claim cap: refused, naming the limit.
+	pad = agentMaxClaimBody
+	_, err := src.claim(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "limit") {
+		t.Errorf("a claim answer over %d bytes must be refused naming the limit; got %v", agentMaxClaimBody, err)
 	}
 }
 

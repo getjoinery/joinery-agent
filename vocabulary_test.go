@@ -134,6 +134,25 @@ func TestClaimReportsTheBundleVersion(t *testing.T) {
 	}
 }
 
+// The largest claim this agent reads, so the plane sends none larger: a chain
+// job too big for an older agent is refused at dispatch, never sent to it.
+func TestClaimReportsTheLargestClaimItReads(t *testing.T) {
+	var claimed map[string]interface{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		json.NewDecoder(req.Body).Decode(&claimed)
+		w.Write([]byte(`{"api_version":"1.0","data":{"job":null}}`))
+	}))
+	defer server.Close()
+
+	src := testSource(t, testIdentity(t, server.URL, 7))
+	if _, err := src.claim(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := claimed["claim_bytes"].(float64); int(got) != agentMaxClaimBody {
+		t.Errorf("a claim must report claim_bytes = %d, the cap it is read under; got %v", agentMaxClaimBody, claimed["claim_bytes"])
+	}
+}
+
 // A newer agent against an older plane. A plane from before 2026-09-23
 // validates a claim strictly — an undeclared field refuses the whole claim —
 // and names the field. The agent drops THAT field and keeps the rest of its

@@ -18,6 +18,16 @@ import (
 // filled to this by the plane (ManagementJob::MAX_PARAMS_BYTES, the same number).
 const MaxParamsBytes = 60 * 1024
 
+// ChainParamsBytes is the ceiling for the words that carry a whole long backup
+// chain's signed links (stage_chain, verify_backup), which declare it as their
+// ParamsBytes. The plane signs a link for every object in the chain and the
+// node picks what its manifest names, so the job grows with runs × artifacts
+// per run: at chainLinksMax links of about 480 bytes each as encoded, some
+// 490 KB, plus a verify's sample links. 4 KiB under agentMaxClaimBody, the
+// claim answer this agent reads (ManagementJob::CHAIN_PARAMS_BYTES, the same
+// number).
+const ChainParamsBytes = 1024*1024 - 4*1024
+
 // ParamType is the complete set of shapes a parameter may have. There is no
 // "any" and no "raw" — every value that reaches a primitive has been through a
 // declared type. Notably absent: anything that could carry a command.
@@ -169,6 +179,12 @@ func validateSpecs(specs []ParamSpec) error {
 // the shape of every "it looked like it worked" failure this architecture
 // exists to remove.
 func Validate(specs []ParamSpec, raw map[string]interface{}) (Params, error) {
+	return ValidateUpTo(specs, raw, MaxParamsBytes)
+}
+
+// ValidateUpTo is Validate under a size ceiling the caller names: a
+// primitive's own ParamsBytes, which the dispatcher passes (Primitive.paramsLimit).
+func ValidateUpTo(specs []ParamSpec, raw map[string]interface{}, maxBytes int) (Params, error) {
 	if raw == nil {
 		raw = map[string]interface{}{}
 	}
@@ -176,8 +192,8 @@ func Validate(specs []ParamSpec, raw map[string]interface{}) (Params, error) {
 	// Size first: bound the object before walking it.
 	if encoded, err := json.Marshal(raw); err != nil {
 		return Params{}, refusedf("params are not encodable: %v", err)
-	} else if len(encoded) > MaxParamsBytes {
-		return Params{}, refusedf("params are %d bytes, over the %d-byte limit", len(encoded), MaxParamsBytes)
+	} else if len(encoded) > maxBytes {
+		return Params{}, refusedf("params are %d bytes, over the %d-byte limit", len(encoded), maxBytes)
 	}
 
 	declared := map[string]ParamSpec{}

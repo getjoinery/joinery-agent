@@ -132,6 +132,20 @@ type Primitive struct {
 	// this a hung transfer was bounded only by whatever the script bounded
 	// itself with, and an embedded primitive by nothing at all.
 	Timeout time.Duration
+
+	// ParamsBytes is the ceiling on this word's params object. Zero means
+	// MaxParamsBytes; the only other value Register accepts is
+	// ChainParamsBytes, for the words that carry a whole backup chain's links.
+	// Compiled in like Timeout: the plane cannot widen what a word accepts.
+	ParamsBytes int
+}
+
+// paramsLimit is the params ceiling the dispatcher validates this word under.
+func (p Primitive) paramsLimit() int {
+	if p.ParamsBytes == 0 {
+		return MaxParamsBytes
+	}
+	return p.ParamsBytes
 }
 
 // DefaultTimeout applies to any primitive that does not declare one. Sized for
@@ -174,6 +188,11 @@ func Register(p Primitive) {
 	}
 	if err := validateSpecs(p.Params); err != nil {
 		panic(fmt.Sprintf("primitives: primitive %q has a bad parameter spec: %v", p.Name, err))
+	}
+	// Two sizes, not a dial: an ordinary job, or a whole chain's links.
+	if p.ParamsBytes != 0 && p.ParamsBytes != ChainParamsBytes {
+		panic(fmt.Sprintf("primitives: primitive %q declares params ceiling %d; only 0 (MaxParamsBytes) or ChainParamsBytes",
+			p.Name, p.ParamsBytes))
 	}
 	// A destructive primitive that cannot describe itself is one no operator
 	// could meaningfully approve, and approving it anyway would make the

@@ -49,6 +49,9 @@ import (
 //
 // The node's history row is the authority for "verified": the script stamps
 // the run it verified, and the VERIFY_* lines it prints are the plane's copy.
+//
+// It takes stage_chain's room for a whole long chain, widened with it in
+// 1.45.0; see there for the exception that widening is.
 func init() {
 	Register(Primitive{
 		Name:        "verify_backup",
@@ -77,7 +80,7 @@ func init() {
 			// Signed links for the chain's objects, keyed by bare artifact
 			// name, bounded on every axis — see stage_chain, whose map this is.
 			{Name: "artifact_urls", Type: ParamMap, Required: true,
-				MaxEntries: 64, MaxKeyLen: 255, MaxLen: 2048,
+				MaxEntries: chainLinksMax, MaxKeyLen: 255, MaxLen: 2048,
 				KeyPattern: backupFileName,
 				Pattern:    signedURLPattern},
 
@@ -111,6 +114,8 @@ func init() {
 		// hours is well above the largest managed node's measured time and
 		// still bounds a verify that has hung.
 		Timeout: 3 * time.Hour,
+
+		ParamsBytes: ChainParamsBytes,
 	})
 }
 

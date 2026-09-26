@@ -182,7 +182,7 @@ func Execute(ctx context.Context, env *ExecEnv, policy *Policy, req Request) (ma
 		}
 	}
 
-	params, err := Validate(p.Params, req.Params)
+	params, err := ValidateUpTo(p.Params, req.Params, p.paramsLimit())
 	if err != nil {
 		return nil, err
 	}

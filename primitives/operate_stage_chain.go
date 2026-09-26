@@ -42,6 +42,14 @@ import (
 //
 // NO BUCKET CREDENTIAL CROSSES either: pre-signed links, one object each,
 // expiring. See download_backup, which states the whole of that argument.
+//
+// ROOM FOR A WHOLE LONG CHAIN: up to chainLinksMax links under
+// ChainParamsBytes, widened in 1.45.0 from 64 links under MaxParamsBytes. That
+// widening is the one exception to "a word's contract never changes"
+// (vocabulary rule 11), made by the owner on 2026-09-26 rather than ship a
+// duplicate word. What rule 11 protects is kept by other means: the claim
+// carries claim_bytes, so the plane refuses a job an older agent could not
+// read or accept when it dispatches, naming the update, instead of sending it.
 func init() {
 	Register(Primitive{
 		Name:        "stage_chain",
@@ -78,12 +86,12 @@ func init() {
 			// no say in what is used. A key with a separator in it is the
 			// caller naming a path again, and the script refuses it.
 			// Bounded in four directions: how many links, how long a name may
-			// be, how long a link may be, and (by MaxParamsBytes, applied to
-			// the whole object) how large the job may get. A chain here runs a
-			// week before a fresh full, so ten or so artifacts is the real
-			// shape; the cap is well above that and well under the job ceiling.
+			// be, how long a link may be, and (by ChainParamsBytes, applied to
+			// the whole object) how large the job may get. The count is every
+			// object in the chain — runs × artifacts per run — so it is sized
+			// for the longest chain, not the usual one (chainLinksMax).
 			{Name: "artifact_urls", Type: ParamMap, Required: true,
-				MaxEntries: 64, MaxKeyLen: 255, MaxLen: 2048,
+				MaxEntries: chainLinksMax, MaxKeyLen: 255, MaxLen: 2048,
 				KeyPattern: backupFileName,
 				Pattern:    signedURLPattern},
 
@@ -103,8 +111,16 @@ func init() {
 		// possibly gigabytes. The SSH path allowed S3Signer's transfer budget
 		// plus an hour for exactly this step; that number, plus slack.
 		Timeout: 2*time.Hour + 20*time.Minute,
+
+		ParamsBytes: ChainParamsBytes,
 	})
 }
+
+// chainLinksMax bounds a chain's link map: one link per object in the chain
+// directory. The longest chain is 181 runs (BackupRunner::MAX_INCREMENTALS,
+// 180, plus its full) of up to five artifacts each (code, data, database, meta,
+// objects) — 905 links. ManagementJob::CHAIN_LINKS_MAX, the same number.
+const chainLinksMax = 1024
 
 // stageChainConfig renders the script's configuration from validated params.
 func stageChainConfig(params Params) (string, error) {
