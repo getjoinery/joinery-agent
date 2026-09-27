@@ -127,6 +127,12 @@ var pinnedVocabulary = map[string]Class{
 	// maintenance page until off, and loses nothing.
 	"site_quiet": ClassOperate,
 
+	// A dormant copy's restore (specs/site_copy.md WP2): restore_chain.sh with
+	// the source's secret key, only under `quiet copy`, of runs the source
+	// vouched for. Operate: a dormant copy holds nothing of its own, so there
+	// is no one here to approve, and the owner approved at the source.
+	"copy_restore": ClassOperate,
+
 	// One host file from the resettable list, moved aside to a dated copy and
 	// rewritten by the installer that owns it.
 	"reclaim_managed_file": ClassOperate,

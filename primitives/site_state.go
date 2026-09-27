@@ -43,6 +43,11 @@ const (
 // can point it at a fixture; nothing in production sets it.
 var SiteStateDir = "/etc/joinery/sites"
 
+// siteStateDir is this site's state directory. Callers check SiteRoot first.
+func siteStateDir(env *ExecEnv) string {
+	return filepath.Join(SiteStateDir, filepath.Base(env.SiteRoot))
+}
+
 // SiteState is what the state directory says about one site.
 type SiteState struct {
 	// Reason is "copy" or "switchover"; empty for a live site.
@@ -61,7 +66,7 @@ func ReadSiteState(env *ExecEnv) (SiteState, error) {
 	if env == nil || env.SiteRoot == "" {
 		return st, nil
 	}
-	dir := filepath.Join(SiteStateDir, filepath.Base(env.SiteRoot))
+	dir := siteStateDir(env)
 	raw, err := os.ReadFile(filepath.Join(dir, "state"))
 	if errors.Is(err, fs.ErrNotExist) {
 		return st, nil

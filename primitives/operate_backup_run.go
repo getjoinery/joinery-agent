@@ -38,10 +38,10 @@ func init() {
 	Register(Primitive{
 		Name:        "backup_run",
 		Class:       ClassOperate,
+		Description: "Run this node's backup to the management node's storage target.",
 		// A frozen source's final backup is the switch-over's last copy. Never
 		// on a dormant copy: it would back up into its source's chain.
 		Quiet: QuietSwitchover,
-		Description: "Run this node's backup to the management node's storage target.",
 		Params: []ParamSpec{
 			// What to back up, and how. Enums rather than strings: the engine
 			// branches on these, and an unexpected value should be refused at

@@ -144,21 +144,12 @@ func resolveBackupFile(ctx context.Context, env *ExecEnv, params Params, suffixe
 // restore that would refuse the instant it was approved is worse than no screen:
 // it spends the one moment of the operator's attention this design gets.
 func requireStagedChain(env *ExecEnv, work string) error {
+	if err := requireChainFiles(work,
+		"the stage_chain primitive downloads what the chain manifest names and recovers the data key "+
+			"from this machine's own key"); err != nil {
+		return err
+	}
 	manifest := filepath.Join(work, chainManifestFile)
-	if info, err := os.Stat(manifest); err != nil || !info.Mode().IsRegular() {
-		return refusedf("this node has no downloaded chain at %s: %s is missing. "+
-			"Stage the chain first (the stage_chain primitive downloads what the chain manifest "+
-			"names and recovers the data key from this machine's own key)",
-			work, chainManifestFile)
-	}
-
-	key := filepath.Join(work, chainKeyFile)
-	if info, err := os.Stat(key); err != nil || !info.Mode().IsRegular() {
-		return refusedf("the chain at %s has no recovered data key (%s). "+
-			"It is recovered on this node, from this node's own backup_site_key, by stage_chain. "+
-			"No key may be sent to it: a key on the wire is a key in every stored job",
-			work, chainKeyFile)
-	}
 
 	// The manifest against the ledger, under whichever shelf this machine
 	// recorded uploading it to. The manifest carries every artifact's expected
@@ -195,6 +186,28 @@ func requireStagedChain(env *ExecEnv, work string) error {
 		}
 	}
 	return noRecord
+}
+
+// requireChainFiles refuses unless a chain workspace holds the two things
+// staging leaves behind: the manifest and the recovered data key. Shared by
+// restore_chain and copy_restore, which stage differently (stagedBy says how)
+// and then trust the manifest for different reasons: this machine's upload
+// ledger, or its source's vouch (operate_copy_restore.go).
+func requireChainFiles(work, stagedBy string) error {
+	manifest := filepath.Join(work, chainManifestFile)
+	if info, err := os.Stat(manifest); err != nil || !info.Mode().IsRegular() {
+		return refusedf("this node has no downloaded chain at %s: %s is missing. "+
+			"Stage the chain first (%s)", work, chainManifestFile, stagedBy)
+	}
+
+	key := filepath.Join(work, chainKeyFile)
+	if info, err := os.Stat(key); err != nil || !info.Mode().IsRegular() {
+		return refusedf("the chain at %s has no recovered data key (%s). "+
+			"It is recovered on this node when the chain is staged (%s). "+
+			"No key may be sent to it: a key on the wire is a key in every stored job",
+			work, chainKeyFile, stagedBy)
+	}
+	return nil
 }
 
 // nodeProjectName is what THIS machine calls its own project: the last segment
