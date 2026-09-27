@@ -21,7 +21,7 @@ import (
 // must stay ABOVE 1.1.0 forever - install_agent.sh's downgrade guard sorts
 // with sort -V and refuses to replace a "newer" binary, so anything below
 // 1.1.0 strands those agents permanently.
-var version = "1.45.0"
+var version = "1.46.0"
 
 // How often the idle loop looks at the shipped agent_dist manifest. Update
 // checks never run while a job is executing.
@@ -219,7 +219,24 @@ func execEnvFor(cfg *Config, db *DB) *primitives.ExecEnv {
 		// site of its own — gets one; everywhere else the field is nil and
 		// the primitive refuses. See victim.go.
 		VictimCeremony: victimCeremonyFor(cfg),
+
+		// This machine's node id, read from its identity when asked, so the
+		// node-id word's change is seen at once (site_quiet off over a copy).
+		NodeID: currentNodeID,
 	}
+}
+
+// currentNodeID is the node id in this machine's identity file right now; 0
+// with no error on a machine that has not joined.
+func currentNodeID() (int64, error) {
+	id, err := LoadIdentity(IdentityPath())
+	if err != nil {
+		return 0, err
+	}
+	if id == nil {
+		return 0, nil
+	}
+	return id.NodeID, nil
 }
 
 // remoteStart is the one remote source this process runs. Two watchers can

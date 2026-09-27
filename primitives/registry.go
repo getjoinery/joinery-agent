@@ -119,6 +119,11 @@ type Primitive struct {
 	// to put the call in.
 	RequiresLogAccess bool
 
+	// Quiet says under which quiet reasons this word still runs on a quiet
+	// site (site_state.go). Zero refuses it under both; observe words run
+	// under both and must not declare it.
+	Quiet QuietUse
+
 	// Timeout is how long this primitive may run before the node kills it.
 	// Zero means DefaultTimeout.
 	//
@@ -206,6 +211,12 @@ func Register(p Primitive) {
 	}
 	if p.Class != ClassDestructive && (p.Describe != nil || p.Ceremony != nil) {
 		panic(fmt.Sprintf("primitives: primitive %q is not destructive but declares Describe or Ceremony", p.Name))
+	}
+	if p.Class == ClassObserve && p.Quiet != 0 {
+		panic(fmt.Sprintf("primitives: observe primitive %q declares Quiet; every observe word runs on a quiet site", p.Name))
+	}
+	if p.Quiet&^QuietAny != 0 {
+		panic(fmt.Sprintf("primitives: primitive %q declares an unknown Quiet value %d", p.Name, p.Quiet))
 	}
 	if p.Timeout < 0 || p.Timeout > MaxTimeout {
 		panic(fmt.Sprintf("primitives: primitive %q declares a timeout of %v, outside (0, %v]", p.Name, p.Timeout, MaxTimeout))

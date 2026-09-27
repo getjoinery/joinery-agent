@@ -153,7 +153,7 @@ var restoreScope = approvalScope{
 // approval on ITS admin and answers with ITS recovery key. The setting names
 // and context are decommission's own — staging a decommission into the restore
 // rows would render consent copy for the wrong act, and informed consent is
-// the point of the ceremony. Mirrored by DecommissionApproval on the PHP side.
+// the point of the ceremony. Mirrored by ApprovalChallenge::SCOPES on the PHP side.
 var decommissionScope = approvalScope{
 	requestSetting: "decommission_approval_request",
 	answerSetting:  "decommission_approval_answer",

@@ -32,7 +32,7 @@ func TestDecommissionScopeIsItsOwnDomain(t *testing.T) {
 	if decommissionScope.plaintextTag == restoreScope.plaintextTag {
 		t.Fatal("decommission and restore share a plaintext tag — the compared bytes no longer separate them")
 	}
-	// The PHP side (DecommissionApproval) compiles the same three strings; the
+	// The PHP side (ApprovalChallenge::SCOPES) compiles the same three strings; the
 	// values are pinned here so a rename on either side fails a test.
 	if decommissionScope.requestSetting != "decommission_approval_request" ||
 		decommissionScope.answerSetting != "decommission_approval_answer" ||

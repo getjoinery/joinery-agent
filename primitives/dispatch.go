@@ -98,6 +98,12 @@ type ExecEnv struct {
 	// and a primitive that needs it refuses when it is nil — a machine with a
 	// site of its own has no business destroying a co-resident one.
 	VictimCeremony func(ctx context.Context, site string) (ApprovalStatement, ApprovalGate, func(), error)
+
+	// NodeID reads this machine's node id from its identity at the moment of
+	// asking: a fact about the machine, like DBName, that grants nothing. A
+	// function rather than a value because the node-id word changes it while
+	// the agent runs, and site_quiet off over a copy must see the change.
+	NodeID func() (int64, error)
 }
 
 // ScriptTree is the one answer to "which tree does this machine run scripts
@@ -141,6 +147,14 @@ func Execute(ctx context.Context, env *ExecEnv, policy *Policy, req Request) (ma
 	}
 
 	if err := policy.Accepts(p.Class); err != nil {
+		return nil, err
+	}
+
+	// IS THIS SITE QUIET? A question about the machine's state, not the job,
+	// so it is answered beside the policy: a dormant copy or a frozen source
+	// runs read-only words and the words that declare its reason, and refuses
+	// the rest before their parameters are read (site_state.go).
+	if err := quietAllows(env, p); err != nil {
 		return nil, err
 	}
 

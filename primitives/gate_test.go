@@ -122,6 +122,11 @@ var pinnedVocabulary = map[string]Class{
 	// active plugin's host_installer.
 	"run_installer": ClassOperate,
 
+	// The quiet state's one word (specs/site_copy.md WP5): freeze this site for
+	// a switch-over, or let it run again. Operate: it takes the site down to a
+	// maintenance page until off, and loses nothing.
+	"site_quiet": ClassOperate,
+
 	// One host file from the resettable list, moved aside to a dated copy and
 	// rewritten by the installer that owns it.
 	"reclaim_managed_file": ClassOperate,
@@ -528,6 +533,12 @@ func TestPrimitiveExecutionEnvIsExplicit(t *testing.T) {
 		// VICTIM's recovery key. Set only on a siteless machine; the widening
 		// is deliberate and documented in specs/docker_host_agent.md.
 		"VictimCeremony": true,
+
+		// This machine's own node id, read from its identity when asked: a
+		// fact like DBName that grants nothing. site_quiet off reads it to
+		// refuse clearing a dormant copy that has not taken its source's node
+		// (specs/site_copy.md WP5).
+		"NodeID": true,
 	}
 
 	fset := token.NewFileSet()
