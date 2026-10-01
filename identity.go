@@ -67,6 +67,30 @@ func IdentityPath() string {
 	return filepath.Join(agentConfigDir, identityFileName)
 }
 
+// PendingIdentityPath is where take_node_id stages this machine's identity
+// under its source's node id, beside the live one, until the management node
+// confirms the swap (promoteStagedIdentity).
+func PendingIdentityPath() string {
+	return IdentityPath() + ".pending"
+}
+
+// promoteStagedIdentity replaces the live identity with the staged one, after
+// checking it is the id the word staged and still this machine's key. Any
+// mismatch deletes the staged file and keeps the live identity.
+func promoteStagedIdentity(live *NodeIdentity, nodeID int64) error {
+	pending := PendingIdentityPath()
+	staged, err := LoadIdentity(pending)
+	if err != nil || staged == nil {
+		_ = os.Remove(pending)
+		return fmt.Errorf("the staged identity cannot be read (%v)", err)
+	}
+	if staged.NodeID != nodeID || staged.PublicKey != live.PublicKey || staged.PrivateKey != live.PrivateKey {
+		_ = os.Remove(pending)
+		return fmt.Errorf("the staged identity is not this machine's key under node %d", nodeID)
+	}
+	return os.Rename(pending, IdentityPath())
+}
+
 // LoadIdentity reads the node identity, or returns nil when this agent has
 // never paired (which is the normal state of a control-plane-only agent).
 func LoadIdentity(path string) (*NodeIdentity, error) {

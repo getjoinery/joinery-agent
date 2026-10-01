@@ -510,16 +510,30 @@ func (r *RemoteSource) runJobLocked(ctx context.Context, job *RemoteJob) {
 		Params:    job.Params,
 	})
 
+	var answer json.RawMessage
+	var postErr error
 	switch {
 	case primitives.Refused(err):
 		log.Printf("REFUSED job #%d (%s): %v", job.JobID, job.Primitive, err)
-		r.postResult(ctx, job.JobID, "refused", nil, "", err.Error())
+		answer, postErr = r.postResult(ctx, job.JobID, "refused", nil, "", err.Error())
 	case err != nil:
 		log.Printf("job #%d (%s) FAILED: %v", job.JobID, job.Primitive, err)
-		r.postResult(ctx, job.JobID, "failed", result, "", err.Error())
+		answer, postErr = r.postResult(ctx, job.JobID, "failed", result, "", err.Error())
 	default:
 		log.Printf("job #%d (%s) completed", job.JobID, job.Primitive)
-		r.postResult(ctx, job.JobID, "completed", result, "", "")
+		answer, postErr = r.postResult(ctx, job.JobID, "completed", result, "", "")
+	}
+
+	// take_node_id staged this machine's identity under its source's node id.
+	// It becomes the live one only when the management node's answer to the
+	// result says it swapped the node rows; then this process exits and its
+	// supervisor starts it as the node (the word refused unless one would).
+	// Anything else deletes the staged file: this machine stays what it was.
+	if takeID := primitives.ConsumeIdentityTake(); takeID != 0 {
+		if r.finishIdentityTake(takeID, answer, postErr) {
+			clearJobMarker()
+			os.Exit(0)
+		}
 	}
 
 	// A primitive may ask this process to end — restart_agent is the one that
@@ -547,7 +561,7 @@ func (r *RemoteSource) runJobLocked(ctx context.Context, job *RemoteJob) {
 // postResult reports a terminal outcome. A failure to post is logged and
 // dropped: the plane's claim timeout returns the job to pending, which is the
 // same recovery path a crashed agent takes.
-func (r *RemoteSource) postResult(ctx context.Context, jobID int64, status string, data map[string]interface{}, logText, reason string) {
+func (r *RemoteSource) postResult(ctx context.Context, jobID int64, status string, data map[string]interface{}, logText, reason string) (json.RawMessage, error) {
 	kept, total := capLog(logText)
 
 	payload := map[string]interface{}{
@@ -570,7 +584,7 @@ func (r *RemoteSource) postResult(ctx context.Context, jobID int64, status strin
 	body, err := json.Marshal(payload)
 	if err != nil {
 		log.Printf("ERROR: could not encode result for job #%d: %v", jobID, err)
-		return
+		return nil, err
 	}
 
 	// Shed, in order of what the plane can most afford to lose: the log first,
@@ -591,9 +605,42 @@ func (r *RemoteSource) postResult(ctx context.Context, jobID int64, status strin
 		body, _ = json.Marshal(payload)
 	}
 
-	if _, err := r.signedPost(ctx, pathResult, body); err != nil {
+	answer, err := r.signedPost(ctx, pathResult, body)
+	if err != nil {
 		log.Printf("ERROR: could not post result for job #%d (the plane will time the claim out and re-queue it): %v", jobID, err)
 	}
+	return answer, err
+}
+
+// finishIdentityTake acts on a staged node id once the result is posted: it
+// promotes the staged identity when the plane's answer confirms the swap
+// (node_id_taken equal to the staged id), and deletes it otherwise. True when
+// the live identity changed and this process must restart to answer as it.
+func (r *RemoteSource) finishIdentityTake(nodeID int64, answer json.RawMessage, postErr error) bool {
+	if postErr != nil || !planeConfirmedTake(answer, nodeID) {
+		_ = os.Remove(PendingIdentityPath())
+		log.Printf("node id %d was staged, but the management node did not confirm the swap; this machine stays node #%d",
+			nodeID, r.identity.NodeID)
+		return false
+	}
+	if err := promoteStagedIdentity(r.identity, nodeID); err != nil {
+		log.Printf("ERROR: the management node swapped the node records, but this machine could not take node id %d: %v",
+			nodeID, err)
+		return false
+	}
+	log.Printf("this machine is now node #%d; restarting to answer as it", nodeID)
+	return true
+}
+
+// planeConfirmedTake reads the plane's answer to a take_node_id result.
+func planeConfirmedTake(answer json.RawMessage, nodeID int64) bool {
+	var data struct {
+		NodeIDTaken int64 `json:"node_id_taken"`
+	}
+	if len(answer) == 0 || json.Unmarshal(answer, &data) != nil {
+		return false
+	}
+	return data.NodeIDTaken == nodeID
 }
 
 func capLog(text string) (kept string, total int) {

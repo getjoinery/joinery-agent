@@ -143,6 +143,12 @@ var pinnedVocabulary = map[string]Class{
 	"copy_import": ClassOperate,
 	"copy_stage":  ClassOperate,
 
+	// The node-id word (specs/site_copy.md D4, step 10): a dormant copy stages
+	// its source's node id under its own key, and the job loop makes it the
+	// live identity only when the management node confirms the row swap.
+	// Operate, only under `quiet copy`, and only the id the install recorded.
+	"take_node_id": ClassOperate,
+
 	// One host file from the resettable list, moved aside to a dated copy and
 	// rewritten by the installer that owns it.
 	"reclaim_managed_file": ClassOperate,
@@ -562,6 +568,12 @@ func TestPrimitiveExecutionEnvIsExplicit(t *testing.T) {
 		// refuse clearing a dormant copy that has not taken its source's node
 		// (specs/site_copy.md WP5).
 		"NodeID": true,
+
+		// take_node_id's one write: this machine's identity again under its
+		// source's node id, same key, to the pending path beside the live one.
+		// It cannot name another key or another path, and the live identity
+		// changes only in the job loop after the management node confirms.
+		"StageNodeID": true,
 
 		// The agent key, lent to the copy words (specs/site_copy.md WP4): its
 		// public half, a signature under a domain that is never the request

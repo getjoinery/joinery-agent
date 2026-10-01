@@ -62,6 +62,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -186,12 +187,37 @@ func copyImportRun(ctx context.Context, env *ExecEnv, params Params) (map[string
 	}
 
 	sort.Strings(chains)
-	return map[string]interface{}{
+	out := map[string]interface{}{
 		"chains":     chains,
 		"host_files": len(payload.Files),
 		"notes":      notes,
 		"issued":     issued.UTC().Format(time.RFC3339Nano),
-	}, nil
+	}
+	if look := copyLookPath(env); look != "" {
+		out["look_path"] = look
+	}
+	return out, nil
+}
+
+// copyLookSecretFile is where the quiet state keeps the copy's look secret
+// (_site_state.sh, SS_LOOK_FILE).
+const copyLookSecretFile = "look_secret"
+
+// copyLookPath is the path that sets this copy's look cookie, for the owner
+// to open from the management node's page (specs/site_copy.md step 6), or empty when
+// the quiet state has not written a secret, or one not of its shape. It grants
+// what the owner's look grants, the copy's pages behind its 503, and nothing a
+// visitor of the live site would not see; signing in still takes an account.
+func copyLookPath(env *ExecEnv) string {
+	raw, err := readTrustedStateFile(env, copyLookSecretFile)
+	if err != nil {
+		return ""
+	}
+	secret := strings.TrimSpace(strings.SplitN(string(raw), "\n", 2)[0])
+	if !copyLookSecretShape.MatchString(secret) {
+		return ""
+	}
+	return "/.joinery-look/" + secret
 }
 
 // lastImportIssued is the issue time of the newest bundle this copy took.
@@ -251,3 +277,6 @@ func readCopyPayload(gz []byte) (copyPayload, error) {
 	}
 	return p, nil
 }
+
+// copyLookSecretShape is the secret's shape as _site_state.sh mints it.
+var copyLookSecretShape = regexp.MustCompile(`^[0-9a-f]{32}$`)

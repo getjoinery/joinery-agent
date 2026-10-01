@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/base64"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -21,7 +22,7 @@ import (
 // must stay ABOVE 1.1.0 forever - install_agent.sh's downgrade guard sorts
 // with sort -V and refuses to replace a "newer" binary, so anything below
 // 1.1.0 strands those agents permanently.
-var version = "1.49.1"
+var version = "1.50.0"
 
 // How often the idle loop looks at the shipped agent_dist manifest. Update
 // checks never run while a job is executing.
@@ -224,6 +225,10 @@ func execEnvFor(cfg *Config, db *DB) *primitives.ExecEnv {
 		// node-id word's change is seen at once (site_quiet off over a copy).
 		NodeID: currentNodeID,
 
+		// The node-id word stages its new identity here, beside the live one;
+		// the job loop promotes it once the management node confirms the swap.
+		StageNodeID: stageNodeID,
+
 		// The agent key, lent to the copy words as signing under their own
 		// domain and opening what was sealed to it (specs/site_copy.md WP4).
 		Key: currentNodeKey,
@@ -245,6 +250,23 @@ func currentNodeID() (int64, error) {
 		return 0, nil
 	}
 	return id.NodeID, nil
+}
+
+// stageNodeID writes this machine's identity under another node id and slug,
+// keeping its key, to the pending path (take_node_id). The live identity is
+// untouched until promoteStagedIdentity.
+func stageNodeID(nodeID int64, slug string) error {
+	id, err := LoadIdentity(IdentityPath())
+	if err != nil {
+		return err
+	}
+	if id == nil {
+		return fmt.Errorf("this machine has not joined a management node")
+	}
+	next := *id
+	next.NodeID = nodeID
+	next.NodeSlug = slug
+	return next.Save(PendingIdentityPath())
 }
 
 // remoteStart is the one remote source this process runs. Two watchers can

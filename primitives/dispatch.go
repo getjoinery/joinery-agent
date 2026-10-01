@@ -106,6 +106,14 @@ type ExecEnv struct {
 	// the agent runs, and site_quiet off over a copy must see the change.
 	NodeID func() (int64, error)
 
+	// StageNodeID writes this machine's identity again under another node id
+	// and slug, with the same key, beside the live one: the node-id word's
+	// half of a switch-over (take_node_id). It never touches the live
+	// identity; the job loop promotes the staged one only after the management
+	// node confirms it swapped the node rows. Nil on a machine that has not
+	// joined.
+	StageNodeID func(nodeID int64, slug string) error
+
 	// Key is this machine's agent key, as the three things a site copy needs
 	// from it (specs/site_copy.md WP4): its public half, a signature under a
 	// domain the agent's request signature never uses, and opening what was
