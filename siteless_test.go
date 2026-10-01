@@ -146,16 +146,20 @@ func TestASiteHavingMachineIsUnchanged(t *testing.T) {
 // --- CLI -------------------------------------------------------------------
 
 func TestTheCLIHandlesOnlyItsOwnSubcommands(t *testing.T) {
-	// Anything else must fall through to starting the service. A binary that
-	// swallowed an unknown argument would be a supervisor launching an agent
-	// that silently exits.
+	// No argument starts the service: that is how every supervisor starts it.
+	if handled, _ := runCLI([]string{"joinery-agent"}); handled {
+		t.Error("no argument should start the service")
+	}
+	// Anything else it does not know is refused, loudly. Taking it as "run"
+	// started a second agent under the node's identity (site copy B34).
 	for _, args := range [][]string{
-		{"joinery-agent"},
+		{"joinery-agent", "version"},
 		{"joinery-agent", "--policy=/etc/whatever"},
 		{"joinery-agent", "serve"},
 	} {
-		if handled, _ := runCLI(args); handled {
-			t.Errorf("%v should start the service, not be handled as a subcommand", args[1:])
+		if handled, code := runCLI(args); !handled || code != 2 {
+			t.Errorf("%v should be refused with exit 2, not start a second agent (handled %v, exit %d)",
+				args[1:], handled, code)
 		}
 	}
 

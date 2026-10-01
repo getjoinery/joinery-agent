@@ -44,7 +44,12 @@ const howLongToWaitForApproval = 5 * time.Minute
 const approvalPollInterval = 5 * time.Second
 
 // runCLI handles a subcommand and reports whether it did. When it returns
-// false, main() carries on and starts the agent as a service.
+// false, main() carries on and starts the agent as a service, which happens
+// only with no argument at all: every supervisor (systemd, the cron
+// keepalive) starts it that way. Anything else it does not know is refused
+// with the usage, never taken as "run": `joinery-agent version` once started
+// a second agent under the node's identity beside the supervised one, and two
+// agents with one identity each claim whichever job they poll first.
 func runCLI(args []string) (handled bool, exit int) {
 	if len(args) < 2 {
 		return false, 0
@@ -68,7 +73,9 @@ func runCLI(args []string) (handled bool, exit int) {
 		cliUsage(os.Stdout)
 		return true, 0
 	}
-	return false, 0
+	fmt.Fprintf(os.Stderr, "joinery-agent: unknown command %q; the service starts with no argument\n\n", args[1])
+	cliUsage(os.Stderr)
+	return true, 2
 }
 
 func cliUsage(w *os.File) {
