@@ -2,8 +2,8 @@ package redact
 
 // secretKeys is the list of credential key names whose VALUE is masked when it
 // appears in a quoted key/value shape. It mirrors, entry for entry and in the
-// same order, SmSecretRedactor::$secret_keys in the platform tree
-// (plugins/server_manager/includes/SmSecretRedactor.php). A platform-side
+// same order, LogRedactor::$secret_keys in the platform tree
+// (includes/LogRedactor.php). A platform-side
 // parity test reads this file and fails when the two lists differ, so:
 //
 //   - ONE quoted key per line, nothing else on the line;
