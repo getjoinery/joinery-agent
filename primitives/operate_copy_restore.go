@@ -44,22 +44,16 @@ package primitives
 //     project is this machine's own (restoreChainProject).
 
 import (
-	"bufio"
 	"context"
-	"errors"
-	"io/fs"
-	"os"
 	"path/filepath"
 	"regexp"
-	"strings"
 	"time"
 )
 
 // copyVouchedFile is, in this site's state directory, the runs a dormant copy
-// may apply: one line per run, `<manifest sha256> <chain id>`. It is written
-// by the step that opens the source's signed export and checks it (WP4), and
-// removed with the rest of the state when the copy is promoted. Root's
-// directory, so nothing the site runs can add a line.
+// may apply: one line per run, `<manifest sha256> <chain id>`. copy_import
+// writes it from the source's signed export, and it is removed with the rest
+// of the state when the copy is promoted (copy_state.go).
 const copyVouchedFile = "vouched"
 
 func init() {
@@ -130,44 +124,21 @@ func copyRestoreArgs(ctx context.Context, env *ExecEnv, params Params) ([]string
 }
 
 // requireVouched refuses unless the staged manifest is one the source vouched
-// for under this chain id.
-//
-// A record anything but root could have written vouches for nothing, and is
-// refused as the upload ledger is (writable by group or other).
+// for under this chain id. A record anything but root could have written
+// vouches for nothing (copy_state.go).
 func requireVouched(env *ExecEnv, chainID, manifest string) error {
-	path := filepath.Join(siteStateDir(env), copyVouchedFile)
-	info, err := os.Stat(path)
-	if errors.Is(err, fs.ErrNotExist) {
-		return refusedf("this copy has no runs vouched for by its source (%s is absent), so it will not "+
-			"apply chain %s: the vouch is written when the source's signed export is opened", path, chainID)
-	}
+	vouched, err := vouchedManifests(env, chainID)
 	if err != nil {
-		return refusedf("cannot read this copy's vouched runs (%s): %v", path, err)
+		return refusedf("chain %s is not applied: %v", chainID, err)
 	}
-	if info.Mode().Perm()&0o022 != 0 {
-		return refusedf("this copy's vouched runs (%s) are writable by other accounts (mode %04o), "+
-			"so they vouch for nothing; chain %s is not applied", path, info.Mode().Perm(), chainID)
-	}
-
 	sum, err := hashFile(manifest)
 	if err != nil {
 		return refusedf("could not read the staged manifest of chain %s to check it: %v", chainID, err)
 	}
-
-	f, err := os.Open(path)
-	if err != nil {
-		return refusedf("cannot read this copy's vouched runs (%s): %v", path, err)
-	}
-	defer f.Close()
-	sc := bufio.NewScanner(f)
-	for sc.Scan() {
-		fields := strings.Fields(sc.Text())
-		if len(fields) == 2 && fields[0] == sum && fields[1] == chainID {
+	for _, v := range vouched {
+		if v == sum {
 			return nil
 		}
-	}
-	if err := sc.Err(); err != nil {
-		return refusedf("cannot read this copy's vouched runs (%s): %v", path, err)
 	}
 	return refusedf("the staged manifest of chain %s (%s…) is not one the source vouched for; "+
 		"this copy applies only runs its source listed for it", chainID, short(sum))

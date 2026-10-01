@@ -19,8 +19,10 @@ import (
 const MaxParamsBytes = 60 * 1024
 
 // ChainParamsBytes is the ceiling for the words that carry a whole long backup
-// chain's signed links (stage_chain, verify_backup), which declare it as their
-// ParamsBytes. The plane signs a link for every object in the chain and the
+// chain's signed links (stage_chain, verify_backup, copy_stage), which declare
+// it as their ParamsBytes; and for copy_import, whose bundle (up to
+// copyExportMaxBundle) outgrows MaxParamsBytes on a machine with a few
+// certificates. The plane signs a link for every object in the chain and the
 // node picks what its manifest names, so the job grows with runs × artifacts
 // per run: at chainLinksMax links of about 480 bytes each as encoded, some
 // 490 KB, plus a verify's sample links. 4 KiB under agentMaxClaimBody, the

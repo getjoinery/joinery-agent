@@ -164,6 +164,31 @@ var decommissionScope = approvalScope{
 	page:           "the site's own Backups page",
 }
 
+// exportScope is a site copy's (specs/site_copy.md WP4): this machine's own
+// operator, on this machine's own site, approving that its backup keys,
+// certificate and DKIM keys be sealed to a copy on another machine. Its own
+// rows and context, so the screen names the act and the machine it goes to,
+// and an answer for a restore can never release an export. Asked at every
+// export (Q9). Mirrored by ApprovalChallenge::SCOPES on the PHP side.
+var exportScope = approvalScope{
+	requestSetting: "copy_export_approval_request",
+	answerSetting:  "copy_export_approval_answer",
+	infoPrefix:     "joinery-copy-export-approval:",
+	plaintextTag:   "joinery-copy-export-approval",
+	act:            "copy export",
+	party:          "this machine",
+	page:           "this machine's own Backups page",
+}
+
+// NewExportApproval builds the gate for this machine's own copy exports. A nil
+// DB refuses at Require, as NewSettingsApproval's does.
+func NewExportApproval(db *DB) *SettingsApproval {
+	if db == nil {
+		return &SettingsApproval{scope: exportScope}
+	}
+	return &SettingsApproval{store: dbSettings{db: db}, scope: exportScope}
+}
+
 // SettingsApproval asks an operator to approve a destructive job through a
 // site's settings table, sealed to that site's proven recovery key. Which site
 // and which operation is the scope: its own (restore) or a victim's

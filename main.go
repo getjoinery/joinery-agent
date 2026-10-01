@@ -21,7 +21,7 @@ import (
 // must stay ABOVE 1.1.0 forever - install_agent.sh's downgrade guard sorts
 // with sort -V and refuses to replace a "newer" binary, so anything below
 // 1.1.0 strands those agents permanently.
-var version = "1.48.0"
+var version = "1.49.0"
 
 // How often the idle loop looks at the shipped agent_dist manifest. Update
 // checks never run while a job is executing.
@@ -223,6 +223,14 @@ func execEnvFor(cfg *Config, db *DB) *primitives.ExecEnv {
 		// This machine's node id, read from its identity when asked, so the
 		// node-id word's change is seen at once (site_quiet off over a copy).
 		NodeID: currentNodeID,
+
+		// The agent key, lent to the copy words as signing under their own
+		// domain and opening what was sealed to it (specs/site_copy.md WP4).
+		Key: currentNodeKey,
+
+		// How this machine asks its own operator to approve sealing its
+		// secrets to a copy (copy_export): the export scope, on its own site.
+		ExportApproval: NewExportApproval(db),
 	}
 }
 

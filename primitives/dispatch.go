@@ -2,6 +2,7 @@ package primitives
 
 import (
 	"context"
+	"crypto/ed25519"
 	"database/sql"
 	"fmt"
 )
@@ -104,6 +105,36 @@ type ExecEnv struct {
 	// function rather than a value because the node-id word changes it while
 	// the agent runs, and site_quiet off over a copy must see the change.
 	NodeID func() (int64, error)
+
+	// Key is this machine's agent key, as the three things a site copy needs
+	// from it (specs/site_copy.md WP4): its public half, a signature under a
+	// domain the agent's request signature never uses, and opening what was
+	// sealed to it. Nil, or an error, on a machine that has not joined. A
+	// function for the reason NodeID is one: it is read at the moment of use.
+	//
+	// The private key stays in the agent's identity. A primitive can ask it
+	// to sign a message that names its own domain, or to open a seal; it can
+	// never hold the key, and so never send it anywhere.
+	Key func() (NodeKey, error)
+
+	// ExportApproval asks this machine's own operator to approve handing its
+	// secrets to a copy (copy_export): the export scope of the one approval
+	// mechanism, on this machine's own site, answered with its own recovery
+	// key. Nil means it cannot ask, and copy_export refuses.
+	ExportApproval ApprovalGate
+}
+
+// NodeKey is what a primitive may ask of this machine's agent key.
+type NodeKey interface {
+	// PublicKey is the Ed25519 public half: what the management node holds,
+	// and what the owner approved this machine's join by.
+	PublicKey() ed25519.PublicKey
+	// SignDomain signs message, which must begin with domain and a newline.
+	// The agent's own request domain is refused, so no primitive can ever
+	// produce a signature the management node would take as this machine's.
+	SignDomain(domain string, message []byte) ([]byte, error)
+	// OpenSealed opens what was sealed to this key (copy_seal.go).
+	OpenSealed(blob []byte) ([]byte, error)
 }
 
 // ScriptTree is the one answer to "which tree does this machine run scripts

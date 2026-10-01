@@ -40,9 +40,13 @@ func longestChainLinks(runs int) map[string]interface{} {
 func chainParams(p Primitive, links map[string]interface{}) map[string]interface{} {
 	params := map[string]interface{}{
 		"chain_id":      "chain-20260924_040025",
-		"profile":       "manager",
 		"manifest_url":  realisticLink("manifest.json"),
 		"artifact_urls": links,
+	}
+	// copy_stage takes no profile: a copy's chain is checked against the
+	// source's vouch, not a ledger shelf.
+	if p.Name != "copy_stage" {
+		params["profile"] = "manager"
 	}
 	if strings.HasPrefix(p.Name, "verify_backup") {
 		params["level"] = float64(2)
@@ -50,7 +54,7 @@ func chainParams(p Primitive, links map[string]interface{}) map[string]interface
 	return params
 }
 
-var chainWords = []string{"stage_chain", "verify_backup"}
+var chainWords = []string{"stage_chain", "verify_backup", "copy_stage"}
 
 func TestTheLongestChainFitsTheChainWords(t *testing.T) {
 	links := longestChainLinks(181)
@@ -94,7 +98,14 @@ func TestOneLinkPastTheBoundIsRefused(t *testing.T) {
 func TestOnlyTheChainWordsCarryTheLargerCeiling(t *testing.T) {
 	for _, p := range registry {
 		switch p.Name {
-		case "stage_chain", "verify_backup":
+		case "stage_chain", "verify_backup", "copy_stage":
+			continue
+		case "copy_import":
+			// A copy's export, not links: its bundle is bounded by
+			// copyExportMaxBundle, which must fit under the larger ceiling.
+			if copyExportMaxBundle+1024 > ChainParamsBytes {
+				t.Errorf("copy_import's bundle (%d) does not fit ChainParamsBytes", copyExportMaxBundle)
+			}
 			continue
 		}
 		if p.paramsLimit() != MaxParamsBytes {

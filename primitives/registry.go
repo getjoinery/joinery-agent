@@ -34,8 +34,10 @@ const (
 	// ClassOperate changes running state in recoverable ways: restarts,
 	// reboots, disk reclaim, cert provisioning, upgrade apply, backup runs.
 	ClassOperate Class = "operate"
-	// ClassDestructive destroys or replaces data: restores, decommission.
-	// Never dispatched unattended anywhere, own fleet included (A2).
+	// ClassDestructive destroys or replaces data (restores, decommission), or
+	// hands every secret a site has to another machine (copy_export). Never
+	// run unattended anywhere, own fleet included (A2): each one waits for
+	// the approving operator's recovery key.
 	ClassDestructive Class = "destructive"
 )
 
@@ -140,7 +142,8 @@ type Primitive struct {
 
 	// ParamsBytes is the ceiling on this word's params object. Zero means
 	// MaxParamsBytes; the only other value Register accepts is
-	// ChainParamsBytes, for the words that carry a whole backup chain's links.
+	// ChainParamsBytes, for the words that carry a whole backup chain's links
+	// or a copy's export (params.go).
 	// Compiled in like Timeout: the plane cannot widen what a word accepts.
 	ParamsBytes int
 }

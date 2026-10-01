@@ -11,6 +11,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"joinery-agent/primitives"
 )
 
 // Node posture: the agent takes work from its control plane over an outbound
@@ -144,11 +146,54 @@ func (id *NodeIdentity) Sign(method, path, timestamp, nonce, bodySha256 string) 
 	return base64.StdEncoding.EncodeToString(ed25519.Sign(id.private, []byte(message)))
 }
 
+// nodeKey lends this identity to the primitives as a primitives.NodeKey: the
+// public half, a signature under another domain, and opening a seal. The
+// private key never leaves this file's types.
+type nodeKey struct{ id *NodeIdentity }
+
+func (k nodeKey) PublicKey() ed25519.PublicKey {
+	return k.id.private.Public().(ed25519.PublicKey)
+}
+
+// SignDomain signs a message that begins with its own domain and a newline,
+// and refuses the request domain. A request signature's message begins
+// "joinery-agent-v1\n", so a message that must begin with another domain's
+// name and a newline can never be one.
+func (k nodeKey) SignDomain(domain string, message []byte) ([]byte, error) {
+	if domain == "" || domain == requestSigningDomain || strings.ContainsAny(domain, "\n\r") {
+		return nil, fmt.Errorf("this agent does not sign under the domain %q", domain)
+	}
+	if !strings.HasPrefix(string(message), domain+"\n") {
+		return nil, fmt.Errorf("a message signed under %q must begin with it", domain)
+	}
+	return ed25519.Sign(k.id.private, message), nil
+}
+
+func (k nodeKey) OpenSealed(blob []byte) ([]byte, error) {
+	return primitives.OpenSealedToAgentKey(k.id.private, blob)
+}
+
+// currentNodeKey is this machine's agent key from its identity file right
+// now, or an error on a machine that has not joined.
+func currentNodeKey() (primitives.NodeKey, error) {
+	id, err := LoadIdentity(IdentityPath())
+	if err != nil {
+		return nil, err
+	}
+	if id == nil {
+		return nil, fmt.Errorf("this machine has not joined a management node, so it has no agent key")
+	}
+	return nodeKey{id: id}, nil
+}
+
+// requestSigningDomain leads every request signature (SigningMessage).
+const requestSigningDomain = "joinery-agent-v1"
+
 // SigningMessage builds the canonical bytes both sides sign and verify. Any
 // change here is a wire break, which is why the version string leads it.
 func SigningMessage(method, path string, nodeID int64, timestamp, nonce, bodySha256 string) string {
 	return strings.Join([]string{
-		"joinery-agent-v1",
+		requestSigningDomain,
 		strings.ToUpper(method),
 		path,
 		fmt.Sprintf("%d", nodeID),

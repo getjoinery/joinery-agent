@@ -136,6 +136,13 @@ var pinnedVocabulary = map[string]Class{
 	// is no one here to approve, and the owner approved at the source.
 	"copy_restore": ClassOperate,
 
+	// A dormant copy's import and staging (specs/site_copy.md WP4): open the
+	// source's signed export and write its chain keys, vouch and certificates;
+	// download the chain, taking only the manifest the source vouched for.
+	// Operate, only under `quiet copy`: the owner approved at the source.
+	"copy_import": ClassOperate,
+	"copy_stage":  ClassOperate,
+
 	// One host file from the resettable list, moved aside to a dated copy and
 	// rewritten by the installer that owns it.
 	"reclaim_managed_file": ClassOperate,
@@ -228,6 +235,13 @@ var pinnedVocabulary = map[string]Class{
 	// (specs/docker_host_agent.md). The Ceremony field is what carries that;
 	// Execute still runs no destructive job without a gate answering.
 	"decommission_site": ClassDestructive,
+
+	// The source's export (specs/site_copy.md WP4): seal the chain key,
+	// certificate and DKIM keys to the copy's agent key. Destructive for what
+	// the class means here, never unattended: it hands every secret the site
+	// has to another machine, so this machine's own operator approves each one,
+	// through a Ceremony that answers with the export scope's gate.
+	"copy_export": ClassDestructive,
 }
 
 // The owner's log-access switch is a DECLARATION now, not a line inside each
@@ -548,6 +562,16 @@ func TestPrimitiveExecutionEnvIsExplicit(t *testing.T) {
 		// refuse clearing a dormant copy that has not taken its source's node
 		// (specs/site_copy.md WP5).
 		"NodeID": true,
+
+		// The agent key, lent to the copy words (specs/site_copy.md WP4): its
+		// public half, a signature under a domain that is never the request
+		// signature's, and opening a seal. The key itself stays in the
+		// identity; nothing here can hold it or send it.
+		"Key": true,
+
+		// copy_export's gate: the export scope of the one approval mechanism,
+		// this machine's own operator on this machine's own site.
+		"ExportApproval": true,
 	}
 
 	fset := token.NewFileSet()
