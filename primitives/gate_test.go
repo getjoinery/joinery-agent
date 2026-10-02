@@ -143,6 +143,13 @@ var pinnedVocabulary = map[string]Class{
 	"copy_import": ClassOperate,
 	"copy_stage":  ClassOperate,
 
+	// The switch-over's final copy (specs/site_copy.md B44): the frozen
+	// source signs its newest manifest for its copy, and the copy makes that
+	// its vouch. Operate: a vouch is a hash, and carries no secret; the
+	// secrets arrived earlier in an export the owner approved.
+	"copy_vouch":      ClassOperate,
+	"copy_take_vouch": ClassOperate,
+
 	// The node-id word (specs/site_copy.md D4, step 10): a dormant copy stages
 	// its source's node id under its own key, and the job loop makes it the
 	// live identity only when the management node confirms the row swap.
