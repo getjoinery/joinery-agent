@@ -33,6 +33,9 @@ type ExecEnv struct {
 	SiteRoot string
 	// WebRoot is the public_html directory.
 	WebRoot string
+	// SiteDomain is the site's own domain from its config (webDir), as
+	// check_status reports it. Empty on a machine with no site.
+	SiteDomain string
 	// DB resolves the node's own database, for collectors that read local
 	// state. Nil when the node has no Joinery database at all.
 	//

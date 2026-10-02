@@ -22,7 +22,7 @@ import (
 // must stay ABOVE 1.1.0 forever - install_agent.sh's downgrade guard sorts
 // with sort -V and refuses to replace a "newer" binary, so anything below
 // 1.1.0 strands those agents permanently.
-var version = "1.50.0"
+var version = "1.51.0"
 
 // How often the idle loop looks at the shipped agent_dist manifest. Update
 // checks never run while a job is executing.
@@ -178,7 +178,10 @@ func execEnvFor(cfg *Config, db *DB) *primitives.ExecEnv {
 	return &primitives.ExecEnv{
 		SiteRoot: cfg.SiteRoot,
 		WebRoot:  cfg.WebRoot,
-		DB:       dbForPrimitives,
+		// The site's own domain, which check_status reports so the plane
+		// can fill a node record that has no site address.
+		SiteDomain: cfg.SiteDomain,
+		DB:         dbForPrimitives,
 		// Which database is this machine's own, from this machine's own config.
 		// The plane stores no column for it and so can only guess; see
 		// ExecEnv.DBName.

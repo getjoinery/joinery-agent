@@ -569,6 +569,10 @@ func TestPrimitiveExecutionEnvIsExplicit(t *testing.T) {
 		// (specs/site_copy.md WP5).
 		"NodeID": true,
 
+		// The site's own domain, read from its own config at start. A fact
+		// about this machine's identity, like SiteRoot; it grants nothing.
+		"SiteDomain": true,
+
 		// take_node_id's one write: this machine's identity again under its
 		// source's node id, same key, to the pending path beside the live one.
 		// It cannot name another key or another path, and the live identity

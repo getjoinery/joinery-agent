@@ -37,7 +37,7 @@ func init() {
 		Name:        "check_status",
 		Class:       ClassObserve,
 		Machine:     true,
-		Description: "The site's web root, disk, memory, load, uptime, PostgreSQL liveness, Joinery version, database list, whether Server Manager is active, the site's recorded plugin checks.",
+		Description: "The site's web root and domain, disk, memory, load, uptime, PostgreSQL liveness, Joinery version, database list, whether Server Manager is active, the site's recorded plugin checks.",
 		Params:      nil, // takes none, so any param at all is refused
 		Run:         runCheckStatus,
 	})
@@ -50,6 +50,12 @@ func runCheckStatus(ctx context.Context, env *ExecEnv, _ Params) (map[string]int
 	// was made without one. A machine with no site reports none.
 	if env.WebRoot != "" {
 		result["web_root"] = env.WebRoot
+	}
+	// And its domain, so the plane can fill a node record made without a
+	// site address (a node that joined on its own). Under the key the
+	// management API's stats endpoint uses.
+	if env.SiteDomain != "" {
+		result["site_domain"] = env.SiteDomain
 	}
 
 	target := env.WebRoot

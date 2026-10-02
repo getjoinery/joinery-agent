@@ -34,6 +34,11 @@ type Config struct {
 	// WebRoot is the public_html directory. The disk collector reports the
 	// filesystem holding it, which is the one a site operator cares about.
 	WebRoot string
+	// SiteDomain is the site's own domain, from webDir in its config (no
+	// scheme, no trailing slash). check_status reports it so the plane can
+	// fill a node record that has no site address. Empty when the config
+	// names none.
+	SiteDomain string
 
 	// PlaneTLSInsecure is for a management node behind a self-signed
 	// certificate (dev networks). Enrollment itself carries no configuration
@@ -158,6 +163,7 @@ func LoadConfig() (*Config, error) {
 		if v, ok := phpSettings["dbpassword"]; ok {
 			cfg.DBPassword = v
 		}
+		cfg.SiteDomain = siteDomainFromWebDir(phpSettings["webDir"])
 	}
 
 	// Step 2: Environment variables override everything
@@ -278,6 +284,20 @@ func parseGlobalvars(path string) (map[string]string, error) {
 	}
 
 	return settings, nil
+}
+
+// siteDomainFromWebDir reads webDir as the site reads it: the host, with any
+// scheme and trailing slash dropped. Whether it is a usable domain is the
+// plane's to judge; this only hands over what the config says.
+func siteDomainFromWebDir(webDir string) string {
+	d := strings.TrimSpace(webDir)
+	for _, scheme := range []string{"https://", "http://"} {
+		if strings.HasPrefix(strings.ToLower(d), scheme) {
+			d = d[len(scheme):]
+			break
+		}
+	}
+	return strings.TrimRight(d, "/")
 }
 
 func getEnv(key, defaultVal string) string {
