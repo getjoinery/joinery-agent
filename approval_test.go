@@ -490,3 +490,58 @@ func TestAStagingWriteThatStoresNothingIsCaughtByReadingItBack(t *testing.T) {
 		t.Errorf("the refusal does not name the read-back: %v", err)
 	}
 }
+
+// steppingClock moves on by step at every reading, so a wait reaches its
+// withdrawal checks without waiting for them.
+func steppingClock(step time.Duration) func() time.Time {
+	t := time.Now().UTC()
+	return func() time.Time {
+		t = t.Add(step)
+		return t
+	}
+}
+
+func TestAJobWithdrawnByTheManagementNodeTakesItsRequestDown(t *testing.T) {
+	// site_copy.md B42: the copy was discarded while its export waited on the
+	// source's owner. The wait ends as a refusal, and the request leaves the page.
+	store, _ := provenKeyStore(t)
+	asked := 0
+	gate := &SettingsApproval{store: store, scope: exportScope, now: steppingClock(withdrawCheckInterval),
+		withdrawn: func(ctx context.Context, jobID int64) (bool, error) {
+			asked++
+			if jobID != 4242 {
+				t.Errorf("asked about job %d, want 4242", jobID)
+			}
+			return asked >= 2, nil
+		}}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	err := gate.Require(ctx, 4242, testStatement())
+	if !primitives.Refused(err) || !strings.Contains(err.Error(), "withdrew") {
+		t.Fatalf("a withdrawn job must end its wait as a refusal naming the withdrawal, got %v", err)
+	}
+	if asked != 2 {
+		t.Errorf("the wait should end at the first withdrawn answer, asked %d times", asked)
+	}
+	if v, _ := store.Read(exportScope.requestSetting); v != "" {
+		t.Errorf("the approval request must leave the page once withdrawn, still %q", v)
+	}
+}
+
+func TestAManagementNodeThatCannotAnswerNeverEndsTheWait(t *testing.T) {
+	// An older plane, an unknown job, no network: only an explicit withdrawal
+	// counts, so the wait runs to its own end as it always did.
+	store, _ := provenKeyStore(t)
+	gate := &SettingsApproval{store: store, now: steppingClock(10 * time.Minute),
+		withdrawn: func(ctx context.Context, jobID int64) (bool, error) {
+			return true, errors.New("no such endpoint")
+		}}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	err := gate.Require(ctx, 4242, testStatement())
+	if !primitives.Refused(err) || !strings.Contains(err.Error(), "Dispatch it again") {
+		t.Fatalf("with no usable answer the wait must run to its window, got %v", err)
+	}
+}

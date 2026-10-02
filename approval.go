@@ -54,6 +54,15 @@ import (
 // node's own statement of what it would do, so an answer recovered for one job
 // can never satisfy another.
 //
+// THE MANAGEMENT NODE CAN END A WAIT, NEVER APPROVE ONE. While it waits, the
+// agent asks the management node every half minute whether the job is still
+// wanted (remote.go, jobWithdrawn). A yes changes nothing; a "withdrawn" ends
+// the wait as a refusal and takes the request off this site's page, so a job
+// cancelled there (a site copy discarded mid-export) leaves no approval screen
+// for work nobody wants. Any other answer, or none, keeps waiting. Ending a
+// destructive job is the direction a compromised plane could always take by
+// never dispatching it; nothing it says here can make one run.
+//
 // THE HANDOFF IS THE SETTINGS TABLE, the same surface the join and leave
 // watchers already use: the one storage the web tier and this root agent can
 // both reach on every install. Note what travels through it and what does not —
@@ -87,6 +96,11 @@ const (
 	// thousand. Named apart from cli.go's join-approval poll: they wait on
 	// different things, on different machines, for different people.
 	restoreApprovalPollInterval = 2 * time.Second
+
+	// withdrawCheckInterval is how often a waiting job asks the management node
+	// whether it is still wanted. A withdrawn request leaves the page within
+	// half a minute, at a hundred and twenty small requests over an hour's wait.
+	withdrawCheckInterval = 30 * time.Second
 )
 
 // approvalStore is the slice of the settings table this gate needs. *DB
@@ -199,6 +213,10 @@ type SettingsApproval struct {
 	// now is the clock, overridable so the expiry can be tested without waiting
 	// a quarter of an hour. Nil means time.Now().UTC().
 	now func() time.Time
+	// withdrawn asks whether the job was withdrawn where it came from; the
+	// tests substitute one. Nil means the job source's (planeJobWithdrawn),
+	// which is nil itself on a machine with no management node.
+	withdrawn func(ctx context.Context, jobID int64) (bool, error)
 }
 
 // NewSettingsApproval builds the gate for this machine's own restores. A nil
@@ -216,6 +234,13 @@ func NewSettingsApproval(db *DB) *SettingsApproval {
 // victim path hands it the victim's connection.
 func newScopedApproval(store approvalStore, scope approvalScope) *SettingsApproval {
 	return &SettingsApproval{store: store, scope: scope}
+}
+
+func (a *SettingsApproval) withdrawnCheck() func(ctx context.Context, jobID int64) (bool, error) {
+	if a.withdrawn != nil {
+		return a.withdrawn
+	}
+	return planeJobWithdrawn()
 }
 
 func (a *SettingsApproval) clock() time.Time {
@@ -381,6 +406,8 @@ func (a *SettingsApproval) await(ctx context.Context, jobID int64, expected stri
 	deadline := issued.Add(primitives.ApprovalWindow)
 	ticker := time.NewTicker(restoreApprovalPollInterval)
 	defer ticker.Stop()
+	withdrawn := a.withdrawnCheck()
+	lastAsked := issued
 
 	for {
 		raw, err := a.store.Read(scope.answerSetting)
@@ -416,6 +443,16 @@ func (a *SettingsApproval) await(ctx context.Context, jobID int64, expected stri
 			// wedge every future approval.
 			if err == nil {
 				_ = a.store.Write(scope.answerSetting, "")
+			}
+		}
+
+		if withdrawn != nil && !a.clock().Before(lastAsked.Add(withdrawCheckInterval)) {
+			lastAsked = a.clock()
+			if gone, err := withdrawn(ctx, jobID); err == nil && gone {
+				log.Printf("  job #%d was withdrawn by the management node; its approval request is taken down", jobID)
+				return &primitives.RefusalError{
+					Reason: "the management node withdrew this " + scope.act + " while it waited for approval, " +
+						"so the request was taken off " + scope.page + " and nothing was run"}
 			}
 		}
 

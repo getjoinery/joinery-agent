@@ -78,9 +78,10 @@ const (
 // the opposite direction (plane calls into a node's web tier) and is pinned
 // status-only by §3.5.4.
 const (
-	pathClaim    = "/api/v1/agent/claim"
-	pathResult   = "/api/v1/agent/result"
-	pathArtifact = "/api/v1/agent/artifact"
+	pathClaim     = "/api/v1/agent/claim"
+	pathResult    = "/api/v1/agent/result"
+	pathArtifact  = "/api/v1/agent/artifact"
+	pathJobStatus = "/api/v1/agent/job_status"
 )
 
 // What the artifact endpoint may be asked for. A flat, compiled-in set: the
@@ -168,7 +169,7 @@ func NewRemoteSource(id *NodeIdentity, policy *primitives.Policy, env *primitive
 		interval = clampPollInterval(id.PollSeconds)
 	}
 
-	return &RemoteSource{
+	r := &RemoteSource{
 		identity:     id,
 		policy:       policy,
 		env:          env,
@@ -178,6 +179,56 @@ func NewRemoteSource(id *NodeIdentity, policy *primitives.Policy, env *primitive
 		warned:       map[string]bool{},
 		agentVersion: agentVersion,
 	}
+	setPlaneJobWithdrawn(r.jobWithdrawn)
+	return r
+}
+
+// jobWithdrawnTimeout bounds one job_status question, so a plane that does not
+// answer costs a waiting approval one poll, not its wait.
+const jobWithdrawnTimeout = 10 * time.Second
+
+// jobWithdrawn asks the management node whether a job this node holds was
+// withdrawn there (cancelled or removed). Only an explicit yes for this job
+// counts; an older plane, an unknown job or no answer is an error, and the
+// caller keeps waiting.
+func (r *RemoteSource) jobWithdrawn(ctx context.Context, jobID int64) (bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, jobWithdrawnTimeout)
+	defer cancel()
+	body, err := json.Marshal(map[string]interface{}{"node_id": r.identity.NodeID, "job_id": jobID})
+	if err != nil {
+		return false, err
+	}
+	raw, err := r.signedPost(ctx, pathJobStatus, body)
+	if err != nil {
+		return false, err
+	}
+	var answer struct {
+		JobID     int64 `json:"job_id"`
+		Withdrawn bool  `json:"withdrawn"`
+	}
+	if err := json.Unmarshal(raw, &answer); err != nil {
+		return false, err
+	}
+	return answer.JobID == jobID && answer.Withdrawn, nil
+}
+
+// The job source's withdrawal question, for the approval gates to ask while
+// they wait. Set once a remote source exists; nil on a machine with none.
+var (
+	planeJobWithdrawnMu sync.RWMutex
+	planeJobWithdrawnFn func(ctx context.Context, jobID int64) (bool, error)
+)
+
+func setPlaneJobWithdrawn(fn func(ctx context.Context, jobID int64) (bool, error)) {
+	planeJobWithdrawnMu.Lock()
+	defer planeJobWithdrawnMu.Unlock()
+	planeJobWithdrawnFn = fn
+}
+
+func planeJobWithdrawn() func(ctx context.Context, jobID int64) (bool, error) {
+	planeJobWithdrawnMu.RLock()
+	defer planeJobWithdrawnMu.RUnlock()
+	return planeJobWithdrawnFn
 }
 
 func newPlaneClient(tlsInsecure bool) *http.Client {

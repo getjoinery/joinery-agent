@@ -172,14 +172,12 @@ var pinnedVocabulary = map[string]Class{
 	"managed_domain_prepare": ClassOperate,
 	"managed_domain_notice":  ClassOperate,
 
-	// Two more compiled-names settings writers, the same shape as the notice
-	// and pinned for the same reason: each writes SETTINGS, and what bounds it
-	// is that the names live in the node-side script. clone_export_arm hands
-	// the SOURCE of a clone one export key for the length of a provision;
-	// fleet_enroll seeds a new site's fleet-service credentials. Both retire
-	// an SSH session (specs/ssh_single_bootstrap.md).
-	"clone_export_arm": ClassOperate,
-	"fleet_enroll":     ClassOperate,
+	// One more compiled-names settings writer, the same shape as the notice
+	// and pinned for the same reason: it writes SETTINGS, and what bounds it
+	// is that the names live in the node-side script. fleet_enroll seeds a new
+	// site's fleet-service credentials, retiring an SSH session
+	// (specs/ssh_single_bootstrap.md).
+	"fleet_enroll": ClassOperate,
 
 	// The hosted tier's two, and they are the same shape as the three above for
 	// the same reason: each writes SETTINGS, and what bounds it is that the
