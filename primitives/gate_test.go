@@ -149,6 +149,10 @@ var pinnedVocabulary = map[string]Class{
 	// secrets arrived earlier in an export the owner approved.
 	"copy_vouch":      ClassOperate,
 	"copy_take_vouch": ClassOperate,
+	// A copy from backups (specs/site_copy.md WP10): its look path, and its
+	// chain key opened by its owner on its own page.
+	"copy_look":     ClassObserve,
+	"copy_take_key": ClassOperate,
 
 	// The node-id word (specs/site_copy.md D4, step 10): a dormant copy stages
 	// its source's node id under its own key, and the job loop makes it the
@@ -593,6 +597,11 @@ func TestPrimitiveExecutionEnvIsExplicit(t *testing.T) {
 		// copy_export's gate: the export scope of the one approval mechanism,
 		// this machine's own operator on this machine's own site.
 		"ExportApproval": true,
+
+		// copy_take_key's handoff (specs/site_copy.md WP10): a copy from
+		// backups asks its own owner, on its own page, for the value that
+		// opens its chain key; the recovery key never reaches the agent.
+		"CopyKeyHandoff": true,
 	}
 
 	fset := token.NewFileSet()

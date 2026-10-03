@@ -133,6 +133,12 @@ type ExecEnv struct {
 	// mechanism, on this machine's own site, answered with its own recovery
 	// key. Nil means it cannot ask, and copy_export refuses.
 	ExportApproval ApprovalGate
+
+	// CopyKeyHandoff asks this machine's own owner, on this machine's own
+	// page, for what opens a chain key sealed to their recovery key: a copy
+	// made from backups when its source is dead (copy_take_key). Nil means it
+	// cannot ask, and copy_take_key refuses.
+	CopyKeyHandoff KeyHandoff
 }
 
 // NodeKey is what a primitive may ask of this machine's agent key.
@@ -262,6 +268,9 @@ func Execute(ctx context.Context, env *ExecEnv, policy *Policy, req Request) (ma
 	// line.
 	ctx, cancel := context.WithTimeout(ctx, p.Timeout)
 	defer cancel()
+	// The job's id travels in the context, for a word that stages something
+	// on this site's own page bound to its job (copy_take_key).
+	ctx = WithJobID(ctx, req.JobID)
 
 	// THE APPROVAL ITSELF, for anything that destroys. After validation,
 	// because the statement the operator approves is composed from validated
