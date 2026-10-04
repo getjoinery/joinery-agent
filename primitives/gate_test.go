@@ -167,6 +167,11 @@ var pinnedVocabulary = map[string]Class{
 	"ssl_probe_place": ClassOperate,
 	"ssl_probe_clear": ClassOperate,
 
+	// decommission_moved_site's proof, reported instead of enforced: a
+	// one-time token into a container's web root by docker cp, emptied after.
+	// Host posture only.
+	"moved_site_check": ClassOperate,
+
 	"provision_certificate": ClassOperate,
 
 	"apply_update": ClassOperate,
@@ -578,6 +583,10 @@ func TestPrimitiveExecutionEnvIsExplicit(t *testing.T) {
 		// approval after a switch-over (specs/site_copy.md WP14). Host posture
 		// only, like VictimCeremony.
 		"MovedSiteProof": true,
+
+		// The same proof, reported instead of enforced, for
+		// moved_site_check. Host posture only.
+		"MovedSiteCheck": true,
 
 		// This machine's own node id, read from its identity when asked: a
 		// fact like DBName that grants nothing. site_quiet off reads it to

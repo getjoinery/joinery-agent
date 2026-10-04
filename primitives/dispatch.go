@@ -110,6 +110,10 @@ type ExecEnv struct {
 	// siteless machine, nil everywhere else.
 	MovedSiteProof func(ctx context.Context, site string) (ApprovalStatement, ApprovalGate, func(), error)
 
+	// MovedSiteCheck runs the same proof for moved_site_check and reports
+	// it instead of enforcing it. Host posture only, as MovedSiteProof.
+	MovedSiteCheck func(ctx context.Context, site string) (map[string]interface{}, error)
+
 	// NodeID reads this machine's node id from its identity at the moment of
 	// asking: a fact about the machine, like DBName, that grants nothing. A
 	// function rather than a value because the node-id word changes it while

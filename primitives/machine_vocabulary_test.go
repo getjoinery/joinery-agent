@@ -21,6 +21,7 @@ var pinnedMachineWords = []string{
 	"host_converge",
 	"host_report",
 	"install_report",
+	"moved_site_check",
 	"provision_certificate",
 	"reclaim_managed_file",
 	"reset_failed_unit",

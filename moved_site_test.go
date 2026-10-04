@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 
@@ -179,7 +180,7 @@ func TestMovedProofRefusals(t *testing.T) {
 		"domain unreachable":    {&fakeWorld{remoteErr: map[string]bool{"demo.example.com": true}}, "did not answer"},
 		"origin error":          {&fakeWorld{status: map[string]int{"demo.example.com": 522}}, "answered 522"},
 		"domain does not exist": {&fakeWorld{missing: map[string]bool{"demo.example.com": true}}, "does not resolve at all"},
-		"lookup failed":         {&fakeWorld{lookupErr: map[string]bool{"old.example.com": true}}, "could not look up old.example.com"},
+		"lookup failed":         {&fakeWorld{lookupErr: map[string]bool{"old.example.com": true}}, "Could not look up old.example.com"},
 		"container silent":      {&fakeWorld{localErr: errors.New("connection refused")}, "did not serve the probe on its own port"},
 	}
 	for name, c := range cases {
@@ -195,5 +196,68 @@ func TestMovedProofIsHostPostureOnly(t *testing.T) {
 	}
 	if movedSiteProofFor(&Config{Siteless: true}) == nil {
 		t.Fatal("a host must get the proof")
+	}
+}
+
+func runMovedCheck(t *testing.T, w *fakeWorld) map[string]interface{} {
+	t.Helper()
+	out, err := w.prober().check(context.Background(), "demo")
+	if err != nil {
+		t.Fatalf("check: %v", err)
+	}
+	if len(w.copies) != 2 || w.copies[1] != "" {
+		t.Fatalf("the probe file must be placed and then emptied, got %q", w.copies)
+	}
+	return out
+}
+
+// The check is the same proof as the removal's gate, reported: what the page
+// shows and what the removal would allow cannot disagree.
+func TestMovedCheckReportsTheProof(t *testing.T) {
+	cases := map[string]struct {
+		w      *fakeWorld
+		state  string
+		detail string
+	}{
+		"moved":       {&fakeWorld{status: map[string]int{"old.example.com": 301}}, "moved", "old.example.com: answered 301 from another server"},
+		"still here":  {&fakeWorld{here: map[string]bool{"demo.example.com": true}}, "here", "still reaches this site"},
+		"unreachable": {&fakeWorld{remoteErr: map[string]bool{"demo.example.com": true}}, "unsure", "did not answer"},
+		"silent":      {&fakeWorld{localErr: errors.New("connection refused")}, "unsure", "did not serve the probe"},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			out := runMovedCheck(t, c.w)
+			if out["state"] != c.state || !strings.Contains(out["detail"].(string), c.detail) {
+				t.Fatalf("got %v", out)
+			}
+			if strings.Contains(out["detail"].(string), "Nothing was removed") {
+				t.Fatalf("a check removes nothing and must not say it refused a removal: %v", out)
+			}
+			if names := out["names"].([]string); strings.Join(names, ",") != "demo.example.com,old.example.com" {
+				t.Fatalf("names: %v", names)
+			}
+		})
+	}
+}
+
+func TestMovedCheckSaysAbsentWithoutAVhost(t *testing.T) {
+	w := &fakeWorld{}
+	p := w.prober()
+	p.vhost = func(string) ([]byte, error) { return nil, os.ErrNotExist }
+	out, err := p.check(context.Background(), "demo")
+	if err != nil || out["state"] != "absent" || len(w.copies) != 0 {
+		t.Fatalf("got %v %v, copies %q", out, err, w.copies)
+	}
+	if _, _, _, err := p.ceremony(context.Background(), "demo"); err == nil {
+		t.Fatal("the removal must refuse a site this host has no vhost for")
+	}
+}
+
+func TestMovedCheckIsHostPostureOnly(t *testing.T) {
+	if movedSiteCheckFor(&Config{Siteless: false}) != nil || movedSiteCheckFor(nil) != nil {
+		t.Fatal("a machine with a site of its own must not get the check")
+	}
+	if movedSiteCheckFor(&Config{Siteless: true}) == nil {
+		t.Fatal("a host must get the check")
 	}
 }

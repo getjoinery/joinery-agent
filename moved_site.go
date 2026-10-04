@@ -11,6 +11,9 @@ package main
 // asking the domain itself does not give it. (The SSL probe runs the other way
 // round, on the plane, because there the party it distrusts is the node.)
 //
+// moved_site_check runs the same proof and removes nothing, so the management
+// node can show where the domain goes beside the removal it would allow.
+//
 // THE PROOF, in order. Every doubt refuses: unreachable is not moved.
 //
 //  1. The names come from the host-owned vhost — the ServerName and any
@@ -96,6 +99,14 @@ func movedSiteProofFor(cfg *Config) func(context.Context, string) (primitives.Ap
 	return defaultMovedSiteProber().ceremony
 }
 
+// movedSiteCheckFor gates the check on posture, as movedSiteProofFor does.
+func movedSiteCheckFor(cfg *Config) func(context.Context, string) (map[string]interface{}, error) {
+	if cfg == nil || !cfg.Siteless {
+		return nil
+	}
+	return defaultMovedSiteProber().check
+}
+
 func defaultMovedSiteProber() movedSiteProber {
 	return movedSiteProber{
 		copyIn:  dockerCopyIn,
@@ -109,24 +120,54 @@ func defaultMovedSiteProber() movedSiteProber {
 	}
 }
 
+// movedSiteTarget is what the host-owned vhost says about one site: the
+// container's published port and every name the host proxies to it.
+type movedSiteTarget struct {
+	site    string
+	port    int
+	primary string
+	aliases []string
+}
+
+func (t movedSiteTarget) names() []string {
+	return append([]string{t.primary}, t.aliases...)
+}
+
+// errNoVhost is a site this host does not front: no vhost by its name.
+var errNoVhost = errors.New("no vhost")
+
+// locate reads the site's vhost. A refusal names what is wrong with it.
+func (m movedSiteProber) locate(site string) (movedSiteTarget, error) {
+	if !regexp.MustCompile(`^[a-z0-9_-]{1,50}$`).MatchString(site) {
+		return movedSiteTarget{}, &primitives.RefusalError{Reason: "the site name is not one this host composes paths from"}
+	}
+	raw, err := m.vhost(site)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return movedSiteTarget{}, fmt.Errorf("%w: this host has no vhost for a site named %s, so there is no such container site here", errNoVhost, site)
+		}
+		return movedSiteTarget{}, &primitives.RefusalError{Reason: fmt.Sprintf("could not read the vhost for %s: %v", site, err)}
+	}
+	port, primary, aliases, err := vhostProxyNames(raw)
+	if err != nil {
+		return movedSiteTarget{}, &primitives.RefusalError{Reason: fmt.Sprintf("the vhost for %s: %v", site, err)}
+	}
+	return movedSiteTarget{site: site, port: port, primary: primary, aliases: aliases}, nil
+}
+
 // ceremony locates the site and composes the statement; the gate it returns
 // runs the proof.
 func (m movedSiteProber) ceremony(ctx context.Context, site string) (primitives.ApprovalStatement, primitives.ApprovalGate, func(), error) {
 	none := primitives.ApprovalStatement{}
-	if !regexp.MustCompile(`^[a-z0-9_-]{1,50}$`).MatchString(site) {
-		return none, nil, nil, &primitives.RefusalError{Reason: "the site name is not one this host composes paths from"}
-	}
-	raw, err := m.vhost(site)
+	t, err := m.locate(site)
 	if err != nil {
-		return none, nil, nil, &primitives.RefusalError{Reason: fmt.Sprintf(
-			"this host has no vhost for a site named %s, so there is no such container site here", site)}
-	}
-	port, primary, aliases, err := vhostProxyNames(raw)
-	if err != nil {
-		return none, nil, nil, &primitives.RefusalError{Reason: fmt.Sprintf("the vhost for %s: %v", site, err)}
+		if errors.Is(err, errNoVhost) {
+			return none, nil, nil, &primitives.RefusalError{Reason: strings.TrimPrefix(err.Error(), errNoVhost.Error()+": ")}
+		}
+		return none, nil, nil, err
 	}
 
-	names := append([]string{primary}, aliases...)
+	names := t.names()
 	statement := primitives.ApprovalStatement{
 		Primitive: "decommission_moved_site",
 		Summary: "This permanently DESTROYS the site " + site + " on this host — its container, database, " +
@@ -138,8 +179,38 @@ func (m movedSiteProber) ceremony(ctx context.Context, site string) (primitives.
 			{Label: "Stands in for the site's approval", Value: "every name answering from another server"},
 		},
 	}
-	gate := &movedSiteGate{prober: m, site: site, port: port, primary: primary, aliases: aliases}
-	return statement, gate, nil, nil
+	return statement, &movedSiteGate{prober: m, target: t}, nil, nil
+}
+
+// check is moved_site_check: the proof, reported instead of enforced.
+//
+//	state  moved   every name reaches another server
+//	       here    the probe came back through a name: the domain still reaches this container
+//	       unsure  the proof could not decide (no answer, a 5xx, the container silent)
+//	       absent  this host has no vhost for the site: nothing here to reach
+//	detail one sentence: why, or what each name answered
+//	names  the names checked
+func (m movedSiteProber) check(ctx context.Context, site string) (map[string]interface{}, error) {
+	t, err := m.locate(site)
+	if err != nil {
+		if errors.Is(err, errNoVhost) {
+			return map[string]interface{}{
+				"state":  "absent",
+				"detail": strings.TrimPrefix(err.Error(), errNoVhost.Error()+": ") + ".",
+				"names":  []string{},
+			}, nil
+		}
+		return nil, err
+	}
+	v := m.prove(ctx, t)
+	state, detail := "unsure", v.reason
+	switch {
+	case v.moved:
+		state, detail = "moved", strings.Join(v.evidence, "; ")+"."
+	case v.here:
+		state = "here"
+	}
+	return map[string]interface{}{"state": state, "detail": detail, "names": t.names()}, nil
 }
 
 // vhostProxyNames reads the container's published port and the names the
@@ -206,83 +277,99 @@ func vhostProxyNames(raw []byte) (int, string, []string, error) {
 	return port, primary, out, nil
 }
 
-// movedSiteGate is the proof. Require returns nil only when the container
-// answered the token on its own port and no name this host serves it under
-// brought the token back.
+// movedSiteGate enforces the proof. Require returns nil only when it says
+// moved.
 type movedSiteGate struct {
-	prober  movedSiteProber
-	site    string
-	port    int
-	primary string
-	aliases []string
+	prober movedSiteProber
+	target movedSiteTarget
 }
 
 func (g *movedSiteGate) Require(ctx context.Context, jobID int64, _ primitives.ApprovalStatement) error {
-	refuse := func(format string, args ...interface{}) error {
-		return &primitives.RefusalError{Reason: fmt.Sprintf(format, args...) +
-			" Nothing was removed."}
+	v := g.prober.prove(ctx, g.target)
+	if !v.moved {
+		return &primitives.RefusalError{Reason: v.reason + " Nothing was removed."}
+	}
+	log.Printf("decommission_moved_site %s (job %d): domain has left this host — %s",
+		g.target.site, jobID, strings.Join(v.evidence, "; "))
+	return nil
+}
+
+// movedVerdict is one run of the proof.
+type movedVerdict struct {
+	moved    bool     // every name reaches another server
+	here     bool     // the probe came back through a name
+	reason   string   // why it is not moved: one sentence; empty when moved
+	evidence []string // what each name answered, when moved
+}
+
+// prove runs the proof. It answers moved only when the container served the
+// token on its own port and no name this host serves it under brought the
+// token back.
+func (m movedSiteProber) prove(ctx context.Context, t movedSiteTarget) movedVerdict {
+	not := func(format string, args ...interface{}) movedVerdict {
+		return movedVerdict{reason: fmt.Sprintf(format, args...)}
 	}
 
-	tokenHex, err := g.prober.random(12)
+	tokenHex, err := m.random(12)
 	if err != nil {
-		return refuse("could not make a probe token: %v.", err)
+		return not("Could not make a probe token: %v.", err)
 	}
 	token := "sm-ssl-probe-" + tokenHex
-	bust, err := g.prober.random(8)
+	bust, err := m.random(8)
 	if err != nil {
-		return refuse("could not make a probe token: %v.", err)
+		return not("Could not make a probe token: %v.", err)
 	}
 	path := "/" + movedProbeFile + "?moved=" + bust
 
-	if err := g.prober.copyIn(ctx, g.site, movedProbeFile, []byte(token+"\n")); err != nil {
-		return refuse("could not put the probe into the container %s: %v.", g.site, err)
+	if err := m.copyIn(ctx, t.site, movedProbeFile, []byte(token+"\n")); err != nil {
+		return not("Could not put the probe into the container %s: %v.", t.site, err)
 	}
 	defer func() {
 		cctx, cancel := context.WithTimeout(context.Background(), movedCopyTimeout)
 		defer cancel()
-		if err := g.prober.copyIn(cctx, g.site, movedProbeFile, nil); err != nil {
-			log.Printf("decommission_moved_site %s: could not empty the probe file: %v", g.site, err)
+		if err := m.copyIn(cctx, t.site, movedProbeFile, nil); err != nil {
+			log.Printf("moved-site proof %s: could not empty the probe file: %v", t.site, err)
 		}
 	}()
 
-	status, body, err := g.prober.local(ctx, g.port, g.primary, path)
+	status, body, err := m.local(ctx, t.port, t.primary, path)
 	if err != nil || status != http.StatusOK || strings.TrimSpace(body) != token {
 		why := fmt.Sprintf("answered %d without the token", status)
 		if err != nil {
 			why = err.Error()
 		}
-		return refuse("the site %s did not serve the probe on its own port (%s), so this host cannot tell "+
-			"where its domain goes.", g.site, why)
+		return not("The site %s did not serve the probe on its own port (%s), so this host cannot tell "+
+			"where its domain goes.", t.site, why)
 	}
 
 	var evidence []string
-	for i, name := range append([]string{g.primary}, g.aliases...) {
-		found, err := g.prober.resolve(ctx, name)
+	for i, name := range t.names() {
+		found, err := m.resolve(ctx, name)
 		if err != nil {
-			return refuse("could not look up %s (%v). A name that cannot be looked up is not proof it moved.", name, err)
+			return not("Could not look up %s (%v). A name that cannot be looked up is not proof it moved.", name, err)
 		}
 		if !found {
 			if i == 0 {
-				return refuse("%s does not resolve at all. That is not proof another server holds the site.", name)
+				return not("%s does not resolve at all. That is not proof another server holds the site.", name)
 			}
 			evidence = append(evidence, name+": does not resolve")
 			continue
 		}
-		status, body, err := g.prober.remote(ctx, name, path)
+		status, body, err := m.remote(ctx, name, path)
 		if err != nil {
-			return refuse("https://%s did not answer (%v). A domain that cannot be reached is not proof it moved.", name, err)
+			return not("https://%s did not answer (%v). A domain that cannot be reached is not proof it moved.", name, err)
 		}
 		if strings.Contains(body, token) {
-			return refuse("https://%s still reaches this site: the probe came back through it.", name)
+			v := not("https://%s still reaches this site: the probe came back through it.", name)
+			v.here = true
+			return v
 		}
 		if status >= 500 {
-			return refuse("https://%s answered %d, which may be this site failing rather than another server.", name, status)
+			return not("https://%s answered %d, which may be this site failing rather than another server.", name, status)
 		}
 		evidence = append(evidence, fmt.Sprintf("%s: answered %d from another server", name, status))
 	}
-	log.Printf("decommission_moved_site %s (job %d): domain has left this host — %s",
-		g.site, jobID, strings.Join(evidence, "; "))
-	return nil
+	return movedVerdict{moved: true, evidence: evidence}
 }
 
 // dockerCopyIn writes one file into the container's web root through the
