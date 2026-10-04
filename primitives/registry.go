@@ -37,7 +37,8 @@ const (
 	// ClassDestructive destroys or replaces data (restores, decommission), or
 	// hands every secret a site has to another machine (copy_export). Never
 	// run unattended anywhere, own fleet included (A2): each one waits for
-	// the approving operator's recovery key.
+	// the approving operator's recovery key — except decommission_moved_site,
+	// whose gate is the host's proof that the site's domain has left it.
 	ClassDestructive Class = "destructive"
 )
 

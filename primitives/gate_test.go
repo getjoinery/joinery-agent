@@ -249,7 +249,8 @@ var pinnedVocabulary = map[string]Class{
 	// VICTIM approves on its own admin with its own recovery key
 	// (specs/docker_host_agent.md). The Ceremony field is what carries that;
 	// Execute still runs no destructive job without a gate answering.
-	"decommission_site": ClassDestructive,
+	"decommission_site":       ClassDestructive,
+	"decommission_moved_site": ClassDestructive,
 
 	// The source's export (specs/site_copy.md WP4): seal the chain key,
 	// certificate and DKIM keys to the copy's agent key. Destructive for what
@@ -571,6 +572,12 @@ func TestPrimitiveExecutionEnvIsExplicit(t *testing.T) {
 		// VICTIM's recovery key. Set only on a siteless machine; the widening
 		// is deliberate and documented in specs/docker_host_agent.md.
 		"VictimCeremony": true,
+
+		// decommission_moved_site's gate: the host's proof that a container
+		// site's domain reaches another server, standing in for the victim's
+		// approval after a switch-over (specs/site_copy.md WP14). Host posture
+		// only, like VictimCeremony.
+		"MovedSiteProof": true,
 
 		// This machine's own node id, read from its identity when asked: a
 		// fact like DBName that grants nothing. site_quiet off reads it to

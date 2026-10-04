@@ -22,7 +22,7 @@ import (
 // must stay ABOVE 1.1.0 forever - install_agent.sh's downgrade guard sorts
 // with sort -V and refuses to replace a "newer" binary, so anything below
 // 1.1.0 strands those agents permanently.
-var version = "1.54.0"
+var version = "1.55.0"
 
 // How often the idle loop looks at the shipped agent_dist manifest. Update
 // checks never run while a job is executing.
@@ -223,6 +223,12 @@ func execEnvFor(cfg *Config, db *DB) *primitives.ExecEnv {
 		// site of its own — gets one; everywhere else the field is nil and
 		// the primitive refuses. See victim.go.
 		VictimCeremony: victimCeremonyFor(cfg),
+
+		// How a HOST proves a co-resident site's domain has left it, standing
+		// in for that site's approval after a switch-over
+		// (decommission_moved_site). Host posture only, as above; see
+		// moved_site.go.
+		MovedSiteProof: movedSiteProofFor(cfg),
 
 		// This machine's node id, read from its identity when asked, so the
 		// node-id word's change is seen at once (site_quiet off over a copy).

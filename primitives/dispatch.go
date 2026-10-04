@@ -103,6 +103,13 @@ type ExecEnv struct {
 	// site of its own has no business destroying a co-resident one.
 	VictimCeremony func(ctx context.Context, site string) (ApprovalStatement, ApprovalGate, func(), error)
 
+	// MovedSiteProof builds the gate for decommission_moved_site: instead of
+	// the victim's approval, this host's own proof that every name its vhost
+	// gives the container reaches another server (specs/site_copy.md WP14).
+	// Same shape as VictimCeremony, and the same posture rule: set only on a
+	// siteless machine, nil everywhere else.
+	MovedSiteProof func(ctx context.Context, site string) (ApprovalStatement, ApprovalGate, func(), error)
+
 	// NodeID reads this machine's node id from its identity at the moment of
 	// asking: a fact about the machine, like DBName, that grants nothing. A
 	// function rather than a value because the node-id word changes it while
