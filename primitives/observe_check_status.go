@@ -106,8 +106,24 @@ func collectDisk(path string, result map[string]interface{}) {
 	result["disk_available"] = formatSize(available)
 }
 
+// Where collectMemory reads. Variables so a test can point them at a fixture.
+var (
+	meminfoPath   = "/proc/meminfo"
+	dockerEnvPath = "/.dockerenv"
+	ownCgroupDir  = "/sys/fs/cgroup"
+)
+
+// collectMemory reports the machine's memory, and inside a container the
+// site's own: /proc/meminfo there is the shared server's, and says nothing
+// about the site. A container's figures are its cgroup's, the way
+// host_report.sh and the management API's stats endpoint read them: in use is
+// everything the group holds but the inactive file cache (the kernel takes
+// that back before it kills anything, as MemAvailable counts it), out of the
+// group's limit, or out of the whole server where it has none, since that is
+// then what it may use. Swap stays the server's: a container has no swap of
+// its own.
 func collectMemory(result map[string]interface{}) {
-	raw, err := os.ReadFile("/proc/meminfo")
+	raw, err := os.ReadFile(meminfoPath)
 	if err != nil {
 		return
 	}
@@ -129,6 +145,17 @@ func collectMemory(result map[string]interface{}) {
 	}
 	totalMB := (totalKB + 512) / 1024
 	freeMB := (availKB + 512) / 1024
+	if usedBytes, limitBytes, ok := containerMemory(); ok {
+		totalBytes := totalKB * 1024
+		if limitBytes > 0 && limitBytes < totalBytes {
+			totalBytes = limitBytes
+		}
+		totalMB = (totalBytes + 524288) / 1048576
+		freeMB = totalMB - (usedBytes+524288)/1048576
+		if freeMB < 0 {
+			freeMB = 0
+		}
+	}
 	result["memory_total_mb"] = totalMB
 	result["memory_free_mb"] = freeMB
 	if used := totalMB - freeMB; used > 0 {
@@ -146,6 +173,45 @@ func collectMemory(result map[string]interface{}) {
 	} else {
 		result["swap_used_mb"] = int64(0)
 	}
+}
+
+// containerMemory is the site's own memory when this runs in a container:
+// bytes in use, and the group's limit (0 for none). ok is false outside a
+// container, or where the group's files cannot be read, and the caller then
+// reports /proc/meminfo as it always has.
+func containerMemory() (used int64, limit int64, ok bool) {
+	if _, err := os.Stat(dockerEnvPath); err != nil {
+		return 0, 0, false
+	}
+	current, err := readCgroupNumber(filepath.Join(ownCgroupDir, "memory.current"))
+	if err != nil {
+		return 0, 0, false
+	}
+	var inactive int64
+	if raw, err := os.ReadFile(filepath.Join(ownCgroupDir, "memory.stat")); err == nil {
+		for _, line := range strings.Split(string(raw), "\n") {
+			if f := strings.Fields(line); len(f) == 2 && f[0] == "inactive_file" {
+				inactive, _ = strconv.ParseInt(f[1], 10, 64)
+				break
+			}
+		}
+	}
+	used = current - inactive
+	if used < 0 {
+		used = 0
+	}
+	if l, err := readCgroupNumber(filepath.Join(ownCgroupDir, "memory.max")); err == nil {
+		limit = l // "max" (no limit) fails to parse and leaves 0
+	}
+	return used, limit, true
+}
+
+func readCgroupNumber(path string) (int64, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return 0, err
+	}
+	return strconv.ParseInt(strings.TrimSpace(string(raw)), 10, 64)
 }
 
 func parseMeminfoKB(line string) int64 {
