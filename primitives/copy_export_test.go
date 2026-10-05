@@ -530,6 +530,69 @@ func TestAManifestNotInTheSignedListIsNotStaged(t *testing.T) {
 	}
 }
 
+// A source's signing keys are read from where rspamd signs, and from where
+// opendkim kept them on a machine whose mail installer has not moved them yet.
+// Either way they travel under the one root name, so the copy writes them
+// where rspamd signs.
+func TestDKIMKeysAreReadFromEitherHome(t *testing.T) {
+	oldLE, oldDKIM, oldFormer := CopyLetsEncryptDir, CopyDKIMDir, CopyFormerDKIMDir
+	defer func() { CopyLetsEncryptDir, CopyDKIMDir, CopyFormerDKIMDir = oldLE, oldDKIM, oldFormer }()
+
+	writeKey := func(dir, body string) {
+		t.Helper()
+		keyDir := filepath.Join(dir, "example.org")
+		if err := os.MkdirAll(keyDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(keyDir, "mail.private"), []byte(body), 0o640); err != nil {
+			t.Fatal(err)
+		}
+	}
+	keyBody := func(entries []copyHostFile) string {
+		t.Helper()
+		for _, e := range entries {
+			if e.Root == "dkim" && e.Path == "example.org/mail.private" {
+				raw, err := base64.StdEncoding.DecodeString(e.Data)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return string(raw)
+			}
+		}
+		return ""
+	}
+
+	base := t.TempDir()
+	CopyLetsEncryptDir = filepath.Join(base, "no-letsencrypt")
+	CopyDKIMDir = filepath.Join(base, "rspamd-dkim")
+	CopyFormerDKIMDir = filepath.Join(base, "opendkim-keys")
+
+	// Only the former home exists: the source has not been moved yet.
+	writeKey(CopyFormerDKIMDir, "FORMER KEY")
+	entries, sum, err := collectHostFiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := keyBody(entries); got != "FORMER KEY" || sum.DKIMKeys != 1 {
+		t.Fatalf("a key under the former home was not carried: %q, %d key(s)", got, sum.DKIMKeys)
+	}
+
+	// Both exist: the home rspamd signs from is the one that is read.
+	writeKey(CopyDKIMDir, "CURRENT KEY")
+	entries, sum, err = collectHostFiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := keyBody(entries); got != "CURRENT KEY" || sum.DKIMKeys != 1 {
+		t.Fatalf("the key rspamd signs with was not the one carried: %q, %d key(s)", got, sum.DKIMKeys)
+	}
+
+	// And a copy writes under the home rspamd signs from, never the former one.
+	if copyHostRoots()["dkim"] != CopyDKIMDir {
+		t.Fatalf("a copy writes signing keys to %s, not %s", copyHostRoots()["dkim"], CopyDKIMDir)
+	}
+}
+
 func TestHostEntriesCannotLeaveTheirRoots(t *testing.T) {
 	dir := t.TempDir()
 	oldLE, oldDKIM := CopyLetsEncryptDir, CopyDKIMDir

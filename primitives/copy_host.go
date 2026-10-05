@@ -38,7 +38,13 @@ import (
 // so a test can point them at a fixture; nothing in production sets them.
 var (
 	CopyLetsEncryptDir = "/etc/letsencrypt"
-	CopyDKIMDir        = "/etc/opendkim/keys"
+	// A site's DKIM signing keys, one directory per domain: where rspamd signs
+	// from (the mailbox plugin's rspamd_stateless.sh). A copy is written here.
+	CopyDKIMDir = "/etc/rspamd/dkim"
+	// Where the same keys sit on a machine that signed with opendkim and whose
+	// mail installer has not moved them yet. Read from, never written to: the
+	// layout is the same, so a key read here lands in CopyDKIMDir on the copy.
+	CopyFormerDKIMDir = "/etc/opendkim/keys"
 )
 
 // copyHostRoots maps a root's name to its directory on this machine.
@@ -216,9 +222,13 @@ func collectHostFiles() ([]copyHostFile, copyHostSummary, error) {
 		}
 	}
 
-	if _, err := os.Stat(CopyDKIMDir); err == nil {
+	dkimDir := CopyDKIMDir
+	if _, err := os.Stat(dkimDir); err != nil {
+		dkimDir = CopyFormerDKIMDir
+	}
+	if _, err := os.Stat(dkimDir); err == nil {
 		before := len(c.entries)
-		if err := c.tree("dkim", CopyDKIMDir, "."); err != nil {
+		if err := c.tree("dkim", dkimDir, "."); err != nil {
 			return nil, sum, err
 		}
 		for _, e := range c.entries[before:] {
