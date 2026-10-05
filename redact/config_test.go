@@ -60,12 +60,15 @@ var configFiles = map[string][]struct{ in, want string }{
 		{"  -o smtpd_sasl_auth_enable=yes", "  -o smtpd_sasl_auth_enable=yes"},
 		{"  -o smtp_sasl_password=hunter2", "  -o smtp_sasl_password=********"},
 	},
-	"opendkim.conf / opendmarc.conf": {
-		{"KeyTable        refile:/etc/opendkim/key.table", "KeyTable        refile:/etc/opendkim/key.table"},
-		{"Socket          inet:8891@localhost", "Socket          inet:8891@localhost"},
-		{"AuthservID      mail.example.com", "AuthservID      mail.example.com"},
+	"rspamd local.d dkim_signing / rbl, override.d options": {
+		{`selector = "mail";`, `selector = "mail";`},
+		{`path_map = "/etc/rspamd/dkim/signing.map";`, `path_map = "/etc/rspamd/dkim/signing.map";`},
+		{"use_domain = \"header\";", "use_domain = \"header\";"},
+		{`    rbl = "zen.spamhaus.org";`, `    rbl = "zen.spamhaus.org";`},
+		{`local_addrs = [127.0.0.0/8, ::1];`, `local_addrs = [127.0.0.0/8, ::1];`},
+		{`gtube_patterns = "disable";`, `gtube_patterns = "disable";`},
 	},
-	"rspamd local.d actions / classifier-bayes / milter_headers / redis / worker-proxy": {
+	"rspamd local.d actions / classifier-bayes / milter_headers / worker-proxy": {
 		{"reject = 15;", "reject = 15;"},
 		{`servers = "127.0.0.1:6379";`, `servers = "127.0.0.1:6379";`},
 		{`password = "hunter2";`, "password"},

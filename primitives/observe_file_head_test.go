@@ -41,7 +41,7 @@ func runFileHeadWith(t *testing.T, env *ExecEnv, raw map[string]interface{}) (ma
 // Rule 8: no path on the list reaches a file that is itself a secret.
 func TestFileHeadNeverNamesASecret(t *testing.T) {
 	forbidden := []string{
-		"joinery-domains.cf", "/etc/opendkim/", "key.table", "signing.table",
+		"joinery-domains.cf", "/etc/opendkim/", "/etc/rspamd/dkim/", "key.table", "signing.table",
 		"letsencrypt", "joinery-agent.env", "Globalvars", "sudoers", "crypttab",
 		"/etc/passwd", "/etc/shadow", "/etc/ssh", "sasl_passwd", "/root", "/home",
 	}
@@ -81,17 +81,17 @@ func TestFileHeadShape(t *testing.T) {
 
 func TestFileHeadReadsRedactsAndCaps(t *testing.T) {
 	root := withFileHeadRoot(t)
-	writeUnder(t, root, "etc/rspamd/local.d/redis.conf", "servers = \"127.0.0.1:6379\";\npassword = \"hunter2\";\n")
+	writeUnder(t, root, "etc/rspamd/local.d/worker-proxy.inc", "upstream \"local\" {\n  hosts = \"127.0.0.1:11333\";\n}\npassword = \"hunter2\";\n")
 	env := &ExecEnv{SiteRoot: "/var/www/html/joinerytest"}
-	res, err := runFileHeadWith(t, env, map[string]interface{}{"file": "rspamd_redis"})
+	res, err := runFileHeadWith(t, env, map[string]interface{}{"file": "rspamd_worker_proxy"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := res["text"].(string)
-	if strings.Contains(text, "hunter2") || !strings.Contains(text, "password\n") || !strings.Contains(text, "127.0.0.1:6379") {
+	if strings.Contains(text, "hunter2") || !strings.Contains(text, "password\n") || !strings.Contains(text, "127.0.0.1:11333") {
 		t.Errorf("the password line must be the key alone and the address kept, got %q", text)
 	}
-	if res["path"] != "/etc/rspamd/local.d/redis.conf" || res["present"] != true {
+	if res["path"] != "/etc/rspamd/local.d/worker-proxy.inc" || res["present"] != true {
 		t.Errorf("path/present wrong: %v %v", res["path"], res["present"])
 	}
 

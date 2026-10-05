@@ -34,7 +34,7 @@ import (
 //
 //   - The files that ARE secrets are not on the list and cannot be named:
 //     the maps main.cf points at (joinery-domains.cf holds a database
-//     password), OpenDKIM's keys and tables, letsencrypt/live, the agent's
+//     password), the DKIM signing keys and their map, letsencrypt/live, the agent's
 //     env file, Globalvars_site.php, sudoers, crypttab, passwd, shadow, and
 //     /etc/ssh. TestFileHeadNeverNamesASecret pins that no path here reaches
 //     one.
@@ -98,12 +98,12 @@ var fileHeadFiles = map[string]fileHeadFile{
 	"sysctl_security":         {Path: "/etc/sysctl.d/99-security.conf"},
 	"postfix_main":            {Path: "/etc/postfix/main.cf"},
 	"postfix_master":          {Path: "/etc/postfix/master.cf"},
-	"opendkim_conf":           {Path: "/etc/opendkim.conf"},
-	"opendmarc_conf":          {Path: "/etc/opendmarc.conf"},
 	"rspamd_actions":          {Path: "/etc/rspamd/local.d/actions.conf"},
 	"rspamd_classifier_bayes": {Path: "/etc/rspamd/local.d/classifier-bayes.conf"},
+	"rspamd_dkim_signing":     {Path: "/etc/rspamd/local.d/dkim_signing.conf"},
 	"rspamd_milter_headers":   {Path: "/etc/rspamd/local.d/milter_headers.conf"},
-	"rspamd_redis":            {Path: "/etc/rspamd/local.d/redis.conf"},
+	"rspamd_options":          {Path: "/etc/rspamd/override.d/options.inc"},
+	"rspamd_rbl":              {Path: "/etc/rspamd/local.d/rbl.conf"},
 	"rspamd_worker_proxy":     {Path: "/etc/rspamd/local.d/worker-proxy.inc"},
 }
 
