@@ -130,6 +130,10 @@ var pinnedVocabulary = map[string]Class{
 	// removed, or started again. Operate: the container and its volumes stay.
 	"hold_container": ClassOperate,
 
+	// A site's suspended page on its host's proxy, shown or taken down.
+	// Operate: the site and its container are untouched.
+	"suspended_page": ClassOperate,
+
 	// One installer by name through the host runner: a core installer, or an
 	// active plugin's host_installer.
 	"run_installer": ClassOperate,

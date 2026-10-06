@@ -31,6 +31,7 @@ var pinnedMachineWords = []string{
 	"restart_container",
 	"restart_unit",
 	"run_installer",
+	"suspended_page",
 	"unit_journal",
 }
 
