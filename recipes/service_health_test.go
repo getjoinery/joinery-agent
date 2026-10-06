@@ -64,6 +64,8 @@ func TestContainerHealthVerdicts(t *testing.T) {
 		{"all good", `{"containers":[{"name":"a","state":"running","answers":"yes"},{"name":"b","state":"running","answers":"unknown"}]}`, Pass, ""},
 		{"exited", `{"containers":[{"name":"a","state":"running","answers":"yes"},{"name":"b","state":"exited","answers":"no"}]}`, Fail, "b"},
 		{"runs, does not answer", `{"containers":[{"name":"a","state":"running","answers":"no"}]}`, Fail, "a"},
+		{"unhealthy", `{"containers":[{"name":"a","state":"running","health":"healthy","answers":"yes"},{"name":"b","state":"running","health":"unhealthy","answers":"yes"}]}`, Fail, "b"},
+		{"no check, starting", `{"containers":[{"name":"a","state":"running","health":"none","answers":"yes"},{"name":"b","state":"running","health":"starting","answers":"yes"}]}`, Pass, ""},
 	}
 	for _, c := range cases {
 		v, name := containerHealthVerdict(rawReport(c.json), nil)

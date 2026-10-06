@@ -22,7 +22,11 @@ import (
 // a service that was only failing because the one under it was.
 //
 // container_health is the same sentence for a Docker host's site containers:
-// the check is host_report's `containers`, the repair restart_container.
+// the check is host_report's `containers`, the repair restart_container. A
+// container Docker reports unhealthy fails too: its health check is the site
+// supervisor's (_site_supervisor.sh --check), which turns unhealthy only when
+// PostgreSQL, PHP-FPM, Apache or cron stays down after the supervisor's own
+// restarts (specs/multi_tenant_docker_hosts.md WP2).
 // Two recipes rather than one because a recipe is one check word and one
 // repair word (registry_test.go pins both), and a container is not a unit.
 //
@@ -59,7 +63,7 @@ func init() {
 	Register(Recipe{
 		Name:        "container_health",
 		Scope:       ScopeHost,
-		Description: "Each Joinery site container on this host is running and its site answers through PHP; otherwise restart the first that does not.",
+		Description: "Each Joinery site container on this host is running, not unhealthy, and its site answers through PHP; otherwise restart the first that is not.",
 		MinInterval: TickInterval,
 		CheckWord:   "host_report",
 		RepairWord:  "restart_container",
@@ -150,7 +154,9 @@ func serviceHealthVerdict(result map[string]interface{}, err error) (Verdict, st
 }
 
 // containerHealthVerdict reads host_report's containers: Pass when there are
-// none or every one runs and answers, Fail naming the first that does not.
+// none or every one runs, is not unhealthy and answers, Fail naming the first
+// that is not. A container with no health check reports "none", and
+// "starting" is a start still in progress: neither fails.
 func containerHealthVerdict(result map[string]interface{}, err error) (Verdict, string) {
 	r, bad := readHostReport(result, err)
 	if bad != nil {
@@ -169,6 +175,7 @@ func containerHealthVerdict(result map[string]interface{}, err error) (Verdict, 
 	var list []struct {
 		Name    string `json:"name"`
 		State   string `json:"state"`
+		Health  string `json:"health"`
 		Answers string `json:"answers"`
 	}
 	if json.Unmarshal(r.Containers, &list) != nil {
@@ -177,6 +184,9 @@ func containerHealthVerdict(result map[string]interface{}, err error) (Verdict, 
 	for _, c := range list {
 		if c.State != "running" {
 			return Verdict{Fail, "container " + c.Name + " is " + orUnknown(c.State)}, c.Name
+		}
+		if c.Health == "unhealthy" {
+			return Verdict{Fail, "container " + c.Name + " is unhealthy: a main process stays down"}, c.Name
 		}
 		if c.Answers == "no" {
 			return Verdict{Fail, "container " + c.Name + " runs and its site does not answer"}, c.Name
