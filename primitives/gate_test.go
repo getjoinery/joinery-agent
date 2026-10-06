@@ -121,6 +121,11 @@ var pinnedVocabulary = map[string]Class{
 	"restart_unit":      ClassOperate,
 	"restart_container": ClassOperate,
 
+	// A removed site's certificate (its Let's Encrypt lineage and placeholder),
+	// refused while any enabled site names it. Operate: nothing serves with
+	// it, and it is issued again by asking.
+	"remove_site_certificate": ClassOperate,
+
 	// One installer by name through the host runner: a core installer, or an
 	// active plugin's host_installer.
 	"run_installer": ClassOperate,

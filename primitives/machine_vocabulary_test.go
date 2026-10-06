@@ -24,6 +24,7 @@ var pinnedMachineWords = []string{
 	"moved_site_check",
 	"provision_certificate",
 	"reclaim_managed_file",
+	"remove_site_certificate",
 	"reset_failed_unit",
 	"restart_agent",
 	"restart_container",
