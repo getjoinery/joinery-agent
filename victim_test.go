@@ -7,6 +7,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -157,6 +158,61 @@ $this->settings['webDir'] = 'scratchsite.example.com';
 	}
 	if settings["dbname"] != "scratchsite" || settings["dbusername"] != "scratch_user" {
 		t.Fatalf("config parse missed the DB identity: %+v", settings)
+	}
+}
+
+// TestVictimConfigIsUnderDockersOwnRoot: the config volume is found under the
+// root the daemon names, so a host with user-namespace remapping (volumes one
+// directory deeper) is read the same as any other, and a root Docker cannot
+// name, or names oddly, is a refusal rather than a guess.
+func TestVictimConfigIsUnderDockersOwnRoot(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "docker", "100000.100000")
+	dir := filepath.Join(root, "volumes", "remapped_config", "_data")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	content := "<?php\n$this->settings['dbusername'] = 'u';\n$this->settings['dbname'] = 'remapped';\n$this->settings['dbpassword'] = 'p';\n"
+	if err := os.WriteFile(filepath.Join(dir, "Globalvars_site.php"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	saved := dockerRootDir
+	defer func() { dockerRootDir = saved }()
+
+	dockerRootDir = func() (string, error) { return root, nil }
+	cfg, err := victimConfig("remapped")
+	if err != nil || cfg["dbname"] != "remapped" {
+		t.Fatalf("the config under a remapped root was not read: %v %+v", err, cfg)
+	}
+
+	dockerRootDir = func() (string, error) { return "", errors.New("daemon down") }
+	_, err = victimConfig("remapped")
+	var refusal *primitives.RefusalError
+	if !errors.As(err, &refusal) || !strings.Contains(err.Error(), "did not say where it keeps") {
+		t.Fatalf("an unanswered root must be a refusal, got %v", err)
+	}
+
+	for _, bad := range []string{"", "var/lib/docker", "/var/lib/../etc", "/var/lib/docker/"} {
+		if _, err := checkDockerRoot(bad); err == nil {
+			t.Fatalf("root %q must be refused", bad)
+		}
+	}
+	if got, err := checkDockerRoot("/var/lib/docker/100000.100000"); err != nil || got != "/var/lib/docker/100000.100000" {
+		t.Fatalf("a clean remapped root must pass: %q %v", got, err)
+	}
+}
+
+// TestDockerRootSaysWhyDockerDidNotAnswer: when the docker CLI fails, the
+// refusal carries what Docker said, not only an exit status.
+func TestDockerRootSaysWhyDockerDidNotAnswer(t *testing.T) {
+	dir := t.TempDir()
+	stub := "#!/bin/sh\necho 'Cannot connect to the Docker daemon at unix:///var/run/docker.sock' >&2\nexit 1\n"
+	if err := os.WriteFile(filepath.Join(dir, "docker"), []byte(stub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	_, err := dockerRootDir()
+	if err == nil || !strings.Contains(err.Error(), "Cannot connect to the Docker daemon") {
+		t.Fatalf("the refusal must carry Docker's own words, got %v", err)
 	}
 }
 

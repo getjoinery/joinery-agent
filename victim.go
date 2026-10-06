@@ -13,10 +13,12 @@ package main
 //     the container's published web port, and install.sh publishes the
 //     container's Postgres on 127.0.0.1 at web port + 1000 (both allocations
 //     are install.sh's own; see do_site_docker).
-//   - /var/lib/docker/volumes/<site>_config/_data/Globalvars_site.php — the
+//   - <Docker root>/volumes/<site>_config/_data/Globalvars_site.php — the
 //     config volume's host-side path. Read from the host filesystem, NEVER
 //     via docker exec: a teardown must not execute a binary inside a
-//     possibly-compromised container as its first act.
+//     possibly-compromised container as its first act. The Docker root is
+//     the daemon's own answer (docker info), not a guess: /var/lib/docker, or
+//     /var/lib/docker/<uid>.<gid> on a host with user-namespace remapping.
 //
 // TRUST BOUNDARY, NAMED: the config file and every row read from the victim's
 // database are container-controlled bytes. The config parse stays the same
@@ -31,8 +33,11 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -46,7 +51,7 @@ const (
 	// locations. %s is the validated site name (^[a-z0-9_-]{1,50}$ — no
 	// separators, so no composed path escapes its directory).
 	victimVhostPattern  = "/etc/apache2/sites-available/%s.conf"
-	victimConfigPattern = "/var/lib/docker/volumes/%s_config/_data/Globalvars_site.php"
+	victimConfigPattern = "%s/volumes/%s_config/_data/Globalvars_site.php"
 
 	// victimDBPortOffset is install.sh's own allocation rule: the container
 	// publishes Postgres on 127.0.0.1 at web port + 1000 (do_site_docker,
@@ -143,7 +148,12 @@ func victimWebPort(site string) (int, error) {
 // host-side path — the same narrow line regex the agent uses on its own
 // config, over container-controlled bytes.
 func victimConfig(site string) (map[string]string, error) {
-	path := fmt.Sprintf(victimConfigPattern, site)
+	root, err := dockerRootDir()
+	if err != nil {
+		return nil, &primitives.RefusalError{Reason: fmt.Sprintf(
+			"Docker did not say where it keeps the site %s's volumes, so its config cannot be read: %v", site, err)}
+	}
+	path := fmt.Sprintf(victimConfigPattern, root, site)
 	settings, err := parseGlobalvars(path)
 	if err != nil {
 		return nil, &primitives.RefusalError{Reason: fmt.Sprintf(
@@ -269,4 +279,36 @@ func quoteDSNValue(s string) string {
 	s = strings.ReplaceAll(s, `\`, `\\`)
 	s = strings.ReplaceAll(s, `'`, `\'`)
 	return "'" + s + "'"
+}
+
+// dockerRootDir is where the daemon keeps its data, from the daemon itself.
+// With user-namespace remapping every volume lives one directory deeper
+// (/var/lib/docker/100000.100000/volumes), so the path is never assumed.
+// Only the host's Docker CLI runs; nothing runs inside a container. A var so
+// a test can answer for the daemon.
+var dockerRootDir = func() (string, error) {
+	docker, err := exec.LookPath("docker")
+	if err != nil {
+		return "", errors.New("docker is not on this host's path")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), victimDialTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, docker, "info", "-f", "{{.DockerRootDir}}").Output()
+	if err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) && len(ee.Stderr) > 0 {
+			return "", fmt.Errorf("docker info: %v: %s", err, displaySafe(strings.TrimSpace(string(ee.Stderr)), 200))
+		}
+		return "", fmt.Errorf("docker info: %v", err)
+	}
+	return checkDockerRoot(strings.TrimSpace(string(out)))
+}
+
+// checkDockerRoot accepts only a clean absolute directory: the answer is
+// composed into a path, so anything else is refused rather than followed.
+func checkDockerRoot(root string) (string, error) {
+	if root == "" || !filepath.IsAbs(root) || filepath.Clean(root) != root {
+		return "", fmt.Errorf("Docker's root directory came back as %q, which is not a clean absolute path", displaySafe(root, 120))
+	}
+	return root, nil
 }
