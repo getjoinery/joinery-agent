@@ -18,6 +18,7 @@ var pinnedMachineWords = []string{
 	"decommission_site",
 	"disk_usage",
 	"file_head",
+	"hold_container",
 	"host_converge",
 	"host_report",
 	"install_report",

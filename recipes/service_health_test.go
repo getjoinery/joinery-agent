@@ -66,6 +66,9 @@ func TestContainerHealthVerdicts(t *testing.T) {
 		{"runs, does not answer", `{"containers":[{"name":"a","state":"running","answers":"no"}]}`, Fail, "a"},
 		{"unhealthy", `{"containers":[{"name":"a","state":"running","health":"healthy","answers":"yes"},{"name":"b","state":"running","health":"unhealthy","answers":"yes"}]}`, Fail, "b"},
 		{"no check, starting", `{"containers":[{"name":"a","state":"running","health":"none","answers":"yes"},{"name":"b","state":"running","health":"starting","answers":"yes"}]}`, Pass, ""},
+		{"held stopped is left alone", `{"containers":[{"name":"a","state":"running","answers":"yes"},{"name":"b","state":"exited","answers":"no","held":true}]}`, Pass, ""},
+		{"held does not hide another", `{"containers":[{"name":"b","state":"exited","answers":"no","held":true},{"name":"c","state":"exited","answers":"no","held":false}]}`, Fail, "c"},
+		{"older report, no held key", `{"containers":[{"name":"b","state":"exited","answers":"no"}]}`, Fail, "b"},
 	}
 	for _, c := range cases {
 		v, name := containerHealthVerdict(rawReport(c.json), nil)

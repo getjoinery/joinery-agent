@@ -126,6 +126,10 @@ var pinnedVocabulary = map[string]Class{
 	// it, and it is issued again by asking.
 	"remove_site_certificate": ClassOperate,
 
+	// A switch-over's old container, stopped and kept stopped until it is
+	// removed, or started again. Operate: the container and its volumes stay.
+	"hold_container": ClassOperate,
+
 	// One installer by name through the host runner: a core installer, or an
 	// active plugin's host_installer.
 	"run_installer": ClassOperate,

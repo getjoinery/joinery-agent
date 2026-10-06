@@ -23,6 +23,8 @@ import (
 //
 // container_health is the same sentence for a Docker host's site containers:
 // the check is host_report's `containers`, the repair restart_container. A
+// container held stopped (hold_container, a switch-over's old container) is
+// left alone. A
 // container Docker reports unhealthy fails too: its health check is the site
 // supervisor's (_site_supervisor.sh --check), which turns unhealthy only when
 // PostgreSQL, PHP-FPM, Apache or cron stays down after the supervisor's own
@@ -177,11 +179,19 @@ func containerHealthVerdict(result map[string]interface{}, err error) (Verdict, 
 		State   string `json:"state"`
 		Health  string `json:"health"`
 		Answers string `json:"answers"`
+		Held    bool   `json:"held"`
 	}
 	if json.Unmarshal(r.Containers, &list) != nil {
 		return Verdict{Unknown, "the container list is not what it should be"}, ""
 	}
+	held := 0
 	for _, c := range list {
+		// Held stopped by hold_container: a switch-over's old container,
+		// stopped on purpose until it is removed. Not this recipe's to start.
+		if c.Held {
+			held++
+			continue
+		}
 		if c.State != "running" {
 			return Verdict{Fail, "container " + c.Name + " is " + orUnknown(c.State)}, c.Name
 		}
@@ -191,6 +201,9 @@ func containerHealthVerdict(result map[string]interface{}, err error) (Verdict, 
 		if c.Answers == "no" {
 			return Verdict{Fail, "container " + c.Name + " runs and its site does not answer"}, c.Name
 		}
+	}
+	if held > 0 {
+		return Verdict{Pass, fmt.Sprintf("%d site container(s) running and answering, %d held stopped", len(list)-held, held)}, ""
 	}
 	return Verdict{Pass, fmt.Sprintf("%d site container(s) running and answering", len(list))}, ""
 }
