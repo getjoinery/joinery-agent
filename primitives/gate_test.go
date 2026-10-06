@@ -134,6 +134,10 @@ var pinnedVocabulary = map[string]Class{
 	// Operate: the site and its container are untouched.
 	"suspended_page": ClassOperate,
 
+	// The machine's outbound limits turned on or off, or their figures set,
+	// the machine's or one container site's. Operate: nothing is removed.
+	"outbound_limits": ClassOperate,
+
 	// One installer by name through the host runner: a core installer, or an
 	// active plugin's host_installer.
 	"run_installer": ClassOperate,

@@ -23,6 +23,7 @@ var pinnedMachineWords = []string{
 	"host_report",
 	"install_report",
 	"moved_site_check",
+	"outbound_limits",
 	"provision_certificate",
 	"reclaim_managed_file",
 	"remove_site_certificate",
