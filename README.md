@@ -170,6 +170,7 @@ joinery-agent/
   stagedwatch.go   Finishing a CLI join once the management node approves
   identity.go      This node's Ed25519 identity
   update.go        Signed self-update, with a watchdog rollback
+  releaselog.go    Is a new binary's release in Sigstore's public log
   bundle.go        The support bundle, for a machine with no site tree
   manifestheal.go  Recovering a node that has stopped trusting its own files
   quiet.go         The run switch

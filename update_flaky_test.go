@@ -14,8 +14,9 @@ type flakySource struct {
 	opens    int
 }
 
-func (f *flakySource) Manifest() ([]byte, error) { return f.inner.Manifest() }
-func (f *flakySource) Describe() string          { return "flaky " + f.inner.Describe() }
+func (f *flakySource) Manifest() ([]byte, error)  { return f.inner.Manifest() }
+func (f *flakySource) Statement() ([]byte, error) { return f.inner.Statement() }
+func (f *flakySource) Describe() string           { return "flaky " + f.inner.Describe() }
 func (f *flakySource) Open(platform string, entry distBinary) (io.ReadCloser, error) {
 	f.opens++
 	if f.opens <= f.failures {

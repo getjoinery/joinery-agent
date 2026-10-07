@@ -42,6 +42,11 @@ const (
 	updateStateUnsignedBuild = "unsigned_build"
 	updateStateNoBinary      = "no_binary"
 	updateStateRejected      = "version_rejected"
+	// Signed, but not shown to be in the public log, on a machine that holds
+	// the keys to check: the shape of a build the publisher was made to sign
+	// and nobody can see. Held apart from verify_failed (spec
+	// release_transparency, Q4).
+	updateStateUnlogged = "unlogged"
 )
 
 type distManifest struct {
@@ -74,6 +79,13 @@ type Updater struct {
 	pubKey      ed25519.PublicKey
 	running     string
 
+	// bakedLogKeys are the release-log keys compiled into this binary, and
+	// keyDir the root-owned directory holding the ones proven since
+	// (releaselog.go). Together they are what this machine holds, and holding
+	// both kinds is what makes the public log required here.
+	bakedLogKeys releaseLogKeys
+	keyDir       string
+
 	// convergeService installs the shipped systemd unit when it differs from
 	// the live one, so Restart=always is in place before the swap-and-exit.
 	// Nil-able for tests.
@@ -82,7 +94,8 @@ type Updater struct {
 	mu                sync.Mutex
 	bundled           string
 	state             string
-	failedManifestSum string // backoff: a manifest that failed verification is not retried until it changes
+	failedManifestSum string // backoff: a release that failed verification is not retried until it changes
+	failedState       string // the verdict the backoff holds
 	warned            map[string]bool
 }
 
@@ -99,6 +112,8 @@ func NewUpdater(cfg *Config, runningVersion string) *Updater {
 		platform:        "linux-" + runtime.GOARCH,
 		running:         runningVersion,
 		convergeService: convergeSystemdUnit,
+		bakedLogKeys:    bakedReleaseLogKeys(),
+		keyDir:          agentStateDir(),
 		warned:          map[string]bool{},
 	}
 	if exe, err := os.Executable(); err == nil {
@@ -142,6 +157,15 @@ func (u *Updater) warnOnce(key, format string, args ...interface{}) {
 	}
 	u.warned[key] = true
 	log.Printf(format, args...)
+}
+
+// heldLogKeys is every release-log key this machine holds now.
+func (u *Updater) heldLogKeys() releaseLogKeys {
+	held := u.bakedLogKeys.clone()
+	if u.keyDir != "" {
+		held.merge(readReleaseLogKeyFiles(u.keyDir))
+	}
+	return held
 }
 
 func (u *Updater) bakPath() string      { return u.installPath + ".bak" }
@@ -300,11 +324,32 @@ func (u *Updater) CheckAndApply() bool {
 		return false
 	}
 
+	// A machine that holds the keys to check the public log asks for the
+	// release's statement too; one that does not never asks, and updates on
+	// the signature alone, as before the log existed.
+	held := u.heldLogKeys()
+	var statement []byte
+	if held.holds() {
+		statement, err = u.source.Statement()
+		if err != nil {
+			u.setState(m.Version, updateStateFetchFailed)
+			u.warnOnce("statement-"+manifestSum, "self-update: could not fetch the release statement for v%s from %s: %v — will retry", m.Version, u.source.Describe(), err)
+			return false
+		}
+	}
+	// A verdict holds until the release on offer changes, and the statement
+	// is part of the release: a manifest seen before the statement beside it
+	// was written is retried once the statement arrives.
+	releaseSum := fmt.Sprintf("%x", sha256.Sum256(append(append(append([]byte{}, raw...), 0), statement...)))
+
 	u.mu.Lock()
-	backoff := u.failedManifestSum == manifestSum
+	backoff := u.failedManifestSum == releaseSum
 	u.mu.Unlock()
 	if backoff {
-		u.setState(m.Version, updateStateVerifyFailed)
+		u.mu.Lock()
+		state := u.failedState
+		u.mu.Unlock()
+		u.setState(m.Version, state)
 		return false
 	}
 
@@ -313,6 +358,27 @@ func (u *Updater) CheckAndApply() bool {
 		u.setState(m.Version, updateStateNoBinary)
 		u.warnOnce("noarch-"+manifestSum, "self-update: manifest v%s has no binary for %s", m.Version, u.platform)
 		return false
+	}
+
+	// The public log, before a byte of the binary is fetched: the statement
+	// must record the hash the manifest gives for this platform, and the
+	// binary must then hash to it and carry the release signature.
+	var logged *releaseLogVerdict
+	if held.holds() {
+		logged, err = verifyReleaseStatement(statement, "agent/"+u.platform, entry.Sha256, held)
+		if err != nil {
+			u.refuse(releaseSum, updateStateUnlogged)
+			u.setState(m.Version, updateStateUnlogged)
+			log.Printf("=== Self-update === REFUSED v%s: not shown to be in the public log: %v", m.Version, err)
+			log.Printf("  The binary from %s may carry the release signature, but this machine installs only releases it can see in the public log.", u.source.Describe())
+			if named := statementVersion(statement); named != "" {
+				// A publish that built the agent and stopped before logging
+				// leaves a new manifest beside the last release's statement.
+				log.Printf("  The statement beside it names release %s (unverified).", named)
+			}
+			log.Printf("  Not retrying until the release changes.")
+			return false
+		}
 	}
 
 	binary, err := u.fetchAndVerify(entry)
@@ -329,9 +395,7 @@ func (u *Updater) CheckAndApply() bool {
 			u.warnOnce("fetch-"+manifestSum, "self-update: could not fetch v%s from %s: %v — will retry", m.Version, u.source.Describe(), err)
 			return false
 		}
-		u.mu.Lock()
-		u.failedManifestSum = manifestSum
-		u.mu.Unlock()
+		u.refuse(releaseSum, updateStateVerifyFailed)
 		u.setState(m.Version, updateStateVerifyFailed)
 		log.Printf("=== Self-update === REFUSED v%s: %v", m.Version, err)
 		log.Printf("  The artifact from %s does not verify against this agent's embedded public key.", u.source.Describe())
@@ -339,10 +403,28 @@ func (u *Updater) CheckAndApply() bool {
 		return false
 	}
 
+	// The keys first, then the swap. They are what holds the next binary to
+	// the log, and the one about to be installed may carry none of its own:
+	// a swap whose keys were not kept would lower the bar it was checked
+	// against. Writing them is idempotent and the chain proved them whether
+	// or not the swap happens; a failure here is retried on the next check.
+	if logged != nil && u.keyDir != "" {
+		keep := held.clone()
+		keep.merge(logged.proven)
+		added, err := persistReleaseLogKeys(u.keyDir, keep)
+		if err != nil {
+			u.setState(m.Version, updateStateFetchFailed)
+			log.Printf("=== Self-update === NOT installing v%s: the release-log keys this machine holds could not be recorded in %s: %v — will retry", m.Version, u.keyDir, err)
+			return false
+		}
+		log.Printf("self-update: v%s is in the public log: %s index %d (release %s)", m.Version, logged.origin, logged.index, logged.version)
+		for _, line := range added {
+			log.Printf("self-update: release-log key recorded: %s", line)
+		}
+	}
+
 	if err := u.install(binary); err != nil {
-		u.mu.Lock()
-		u.failedManifestSum = manifestSum
-		u.mu.Unlock()
+		u.refuse(releaseSum, updateStateVerifyFailed)
 		u.setState(m.Version, updateStateVerifyFailed)
 		log.Printf("=== Self-update === FAILED installing v%s: %v", m.Version, err)
 		return false
@@ -359,6 +441,14 @@ func (u *Updater) CheckAndApply() bool {
 	u.setState(m.Version, updateStatePending)
 	log.Printf("=== Self-update === installed v%s (was v%s); exiting for supervisor restart", m.Version, u.running)
 	return true
+}
+
+// refuse holds a verdict on a release until it changes.
+func (u *Updater) refuse(releaseSum, state string) {
+	u.mu.Lock()
+	u.failedManifestSum = releaseSum
+	u.failedState = state
+	u.mu.Unlock()
 }
 
 // errArtifactRefused marks a failure that is the artifact's own fault — a wrong

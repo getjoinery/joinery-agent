@@ -3,8 +3,14 @@ VERSION ?= 0.4.1
 # never self-update. The platform publisher (publish_upgrade.php) always
 # injects the key from the control plane's config/agent_signing_key.pub.
 PUBKEY ?=
+# Release-log keys (releaselog.go), comma-separated: base64 P-256 statement
+# keys, and <origin>:<base64 key> checkpoint keys. A build with both holds its
+# self-updates to Sigstore's public log; the publisher injects them from
+# release_keys/.
+STATEMENT_KEYS ?=
+LOG_KEYS ?=
 
-LDFLAGS = -X main.version=$(VERSION) -X main.updatePubKeyB64=$(PUBKEY)
+LDFLAGS = -X main.version=$(VERSION) -X main.updatePubKeyB64=$(PUBKEY) -X main.releaseStatementKeysB64=$(STATEMENT_KEYS) -X main.releaseLogKeysB64=$(LOG_KEYS)
 
 .PHONY: build test clean release
 

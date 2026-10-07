@@ -1,0 +1,10 @@
+{
+    "payloadType": "application/vnd.joinery.release-statement+json",
+    "payload": "eyJwcm9iZSI6ImpvaW5lcnkgcmVsZWFzZSB0cmFuc3BhcmVuY3kgV1AxOiBoYXNoZWRyZWtvcmQgb3ZlciBEU1NFIFBBRSIsImF0IjoiMjAyNi0xMC0wN1QxNjo1OTo1MCswMDowMCJ9",
+    "signatures": [
+        {
+            "keyid": "d3c2813d34ef19c330b5d0001d5af960c1d880c64f1655fc6c8feeda7754a734",
+            "sig": "MEUCIQCzvObnt5rUY/ITufANZ689UqmAA0OeqNEajpSS9ksbBwIgS7LT6BmU/NuB88m4O9lUackFlhRAXzClR9rAIy4WFKs="
+        }
+    ]
+}

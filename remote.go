@@ -85,7 +85,7 @@ const (
 )
 
 // What the artifact endpoint may be asked for. A flat, compiled-in set: the
-// node names one of these five things and nothing else, so there is no shape
+// node names one of these six things and nothing else, so there is no shape
 // in which a request from here becomes a path over there.
 const (
 	artifactKindAgentManifest   = "agent_manifest"
@@ -93,6 +93,7 @@ const (
 	artifactKindBundleInfo      = "bundle_manifest"
 	artifactKindBundleBody      = "bundle_body"
 	artifactKindReleaseManifest = "release_manifest"
+	artifactKindAgentStatement  = "agent_statement"
 )
 
 // RemoteJob is one unit of work as the plane offers it. A primitive name and

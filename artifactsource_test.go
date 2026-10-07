@@ -36,6 +36,11 @@ type planeArtifact struct {
 	binaryGz []byte
 	bundleGz []byte
 
+	// statement is the release statement the plane serves beside the
+	// manifest; noStatementKind makes it a plane that predates the kind.
+	statement       []byte
+	noStatementKind bool
+
 	// requests records what the node asked for, so a test can assert the node
 	// named an architecture rather than a file.
 	requests []map[string]interface{}
@@ -80,6 +85,13 @@ func (p *planeArtifact) handler(t *testing.T) http.HandlerFunc {
 				return
 			}
 			w.Write(p.binaryGz)
+		case artifactKindAgentStatement:
+			if p.noStatementKind {
+				w.WriteHeader(http.StatusBadRequest)
+				json.NewEncoder(w).Encode(map[string]interface{}{"error": "Unknown artifact kind."})
+				return
+			}
+			writeEnvelope(w, map[string]interface{}{"statement": string(p.statement)})
 		case artifactKindBundleInfo:
 			sum := sha256.Sum256(p.bundleGz)
 			writeEnvelope(w, map[string]interface{}{

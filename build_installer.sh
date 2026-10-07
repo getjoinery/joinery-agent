@@ -27,10 +27,12 @@ echo "Building installer for joinery-agent v${VERSION}..."
 # Build binary. PUBKEY (base64 Ed25519, optional) enables self-update
 # verification in the built agent — pass the control plane's
 # config/agent_signing_key.pub contents.
+# STATEMENT_KEYS and LOG_KEYS (optional, see the Makefile) hold its
+# self-updates to the public release log.
 echo "  Compiling..."
 go build \
     -trimpath \
-    -ldflags "-X main.version=${VERSION} -X main.updatePubKeyB64=${PUBKEY:-}" \
+    -ldflags "-X main.version=${VERSION} -X main.updatePubKeyB64=${PUBKEY:-} -X main.releaseStatementKeysB64=${STATEMENT_KEYS:-} -X main.releaseLogKeysB64=${LOG_KEYS:-}" \
     -o "${STAGE_DIR}/joinery-agent" \
     "${SCRIPT_DIR}"
 BINARY_SIZE="$(du -sh "${STAGE_DIR}/joinery-agent" | cut -f1)"

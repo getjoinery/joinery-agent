@@ -46,6 +46,12 @@ type artifactSource interface {
 	// architecture" does not need it.
 	Open(platform string, entry distBinary) (io.ReadCloser, error)
 
+	// Statement returns the release's RELEASE_STATEMENT, the public log's
+	// record of what the release shipped, or nil when the source has none.
+	// Asked only by a machine that holds the keys to check one; the updater
+	// decides what a missing statement means, not the source.
+	Statement() ([]byte, error)
+
 	// Describe names the source in a log line, so a refusal says where the
 	// bytes it refused came from.
 	Describe() string
@@ -81,6 +87,11 @@ const (
 	// transfer is megabytes rather than a job envelope, and a relay on a poor
 	// link should still finish.
 	artifactHTTPTimeout = 10 * time.Minute
+
+	// maxReleaseStatementEnvelopeBytes bounds the plane's answer carrying a
+	// release statement: the statement's own cap, with room for the JSON
+	// escaping of it inside the envelope.
+	maxReleaseStatementEnvelopeBytes = 4 * maxReleaseStatementBytes
 )
 
 // ── The local directory: a machine whose release delivered the artifact ──
@@ -96,6 +107,25 @@ func (s localDirSource) Open(platform string, entry distBinary) (io.ReadCloser, 
 		return nil, fmt.Errorf("manifest names an unusable artifact file")
 	}
 	return os.Open(filepath.Join(s.dir, entry.File))
+}
+
+func (s localDirSource) Statement() ([]byte, error) {
+	f, err := os.Open(filepath.Join(s.dir, releaseStatementName))
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, maxReleaseStatementBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxReleaseStatementBytes {
+		return nil, fmt.Errorf("%s is larger than this agent reads", releaseStatementName)
+	}
+	return data, nil
 }
 
 func (s localDirSource) Describe() string { return s.dir }
@@ -153,6 +183,38 @@ func (s *channelSource) Manifest() ([]byte, error) {
 		return nil, os.ErrNotExist
 	}
 	return []byte(payload.Manifest), nil
+}
+
+// Statement asks the plane for the release statement beside its manifest.
+// Its own request, under its own cap, because a statement grows by a few
+// kilobytes with every key ever rotated and the manifest's envelope is held
+// to a job's 64 KiB. A plane with no statement answers with an empty one.
+func (s *channelSource) Statement() ([]byte, error) {
+	id, err := s.identity()
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), remoteHTTPTimeout)
+	defer cancel()
+
+	raw, err := signedPlanePostCapped(ctx, s.client, id, pathArtifact,
+		artifactRequestBody(id, artifactKindAgentStatement, ""), maxReleaseStatementEnvelopeBytes)
+	if err != nil {
+		return nil, err
+	}
+	var payload struct {
+		Statement string `json:"statement"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return nil, fmt.Errorf("the management node sent an unreadable release statement: %w", err)
+	}
+	if payload.Statement == "" {
+		return nil, nil
+	}
+	if len(payload.Statement) > maxReleaseStatementBytes {
+		return nil, fmt.Errorf("the management node's %s is larger than this agent reads", releaseStatementName)
+	}
+	return []byte(payload.Statement), nil
 }
 
 func (s *channelSource) Open(platform string, entry distBinary) (io.ReadCloser, error) {
