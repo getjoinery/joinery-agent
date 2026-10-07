@@ -26,6 +26,9 @@ import (
 //   - FAIL when available bytes are under 10% of the filesystem's size, or
 //     under 5 GiB, whichever is met first.
 //   - PASS otherwise.
+//   - On a Docker host whose /var/lib/docker is a disk pool of its own
+//     (host_report's disk_pool), the pool is held to the same floor, and
+//     either failing fails: the root disk never shows the pool filling.
 //   - UNKNOWN when either figure is unknown or the report is unreadable (an
 //     agent whose host_report.sh predates avail_bytes, a machine df cannot
 //     answer for). Unknown opens nothing.
@@ -77,23 +80,48 @@ func diskHeadroomVerdict(result map[string]interface{}, err error) Verdict {
 	}
 	output, _ := result["output"].(string)
 	var report struct {
-		Disk struct {
-			Avail json.RawMessage `json:"avail_bytes"`
-			Total json.RawMessage `json:"total_bytes"`
-		} `json:"disk"`
+		Disk     diskFigures     `json:"disk"`
+		DiskPool json.RawMessage `json:"disk_pool"`
 	}
 	if err := json.Unmarshal([]byte(strings.TrimSpace(output)), &report); err != nil {
 		return Verdict{Unknown, "host_report output is not the JSON object it should be"}
 	}
-	avail, okA := byteCount(report.Disk.Avail)
-	total, okT := byteCount(report.Disk.Total)
+	verdict := diskFiguresVerdict("the disk", report.Disk)
+	// A Docker host's disk pool (/var/lib/docker on a filesystem of its own,
+	// host_report 1.15): the root disk never shows it filling, since its file
+	// is allocated whole. Its own floor, the same rule; either failing fails.
+	var pool diskFigures
+	if len(report.DiskPool) > 0 && report.DiskPool[0] == '{' && json.Unmarshal(report.DiskPool, &pool) == nil {
+		pv := diskFiguresVerdict("the Docker disk pool", pool)
+		switch {
+		case pv.Kind == Fail && verdict.Kind == Fail:
+			verdict = Verdict{Fail, verdict.Reason + "; " + pv.Reason}
+		case pv.Kind == Fail:
+			verdict = pv
+		case verdict.Kind == Fail:
+		case pv.Kind == Pass && verdict.Kind == Pass:
+			verdict = Verdict{Pass, verdict.Reason + "; the Docker disk pool: " + pv.Reason}
+		}
+	}
+	return verdict
+}
+
+type diskFigures struct {
+	Avail json.RawMessage `json:"avail_bytes"`
+	Total json.RawMessage `json:"total_bytes"`
+}
+
+// diskFiguresVerdict applies the floor to one filesystem's figures.
+func diskFiguresVerdict(what string, d diskFigures) Verdict {
+	avail, okA := byteCount(d.Avail)
+	total, okT := byteCount(d.Total)
 	if !okA || !okT || total == 0 {
-		return Verdict{Unknown, "the disk's available or total bytes are unknown"}
+		return Verdict{Unknown, what + "'s available or total bytes are unknown"}
 	}
 	pct := float64(avail) * 100 / float64(total)
 	figures := fmt.Sprintf("%s available of %s (%.1f%%)", humanBytes(avail), humanBytes(total), pct)
 	if avail < diskHeadroomFloorBytes || pct < diskHeadroomFloorPercent {
-		return Verdict{Fail, "the disk is nearly full: " + figures}
+		return Verdict{Fail, what + " is nearly full: " + figures}
 	}
 	return Verdict{Pass, figures}
 }

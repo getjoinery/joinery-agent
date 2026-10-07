@@ -133,6 +133,7 @@ var pinnedVocabulary = map[string]Class{
 	// A site's suspended page on its host's proxy, shown or taken down.
 	// Operate: the site and its container are untouched.
 	"suspended_page": ClassOperate,
+	"site_limits":    ClassOperate,
 
 	// The machine's outbound limits turned on or off, or their figures set,
 	// the machine's or one container site's. Operate: nothing is removed.
