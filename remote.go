@@ -220,6 +220,26 @@ var (
 	planeJobWithdrawnFn func(ctx context.Context, jobID int64) (bool, error)
 )
 
+// selfUpdateReport is the running updater's UpdateReport, set once at start
+// before any remote source polls. Nil in tests and before it is set: the
+// claim then carries no update fields, which the plane reads as no answer.
+var (
+	selfUpdateReportMu sync.RWMutex
+	selfUpdateReportFn func() (offered, state string, ok bool)
+)
+
+func setSelfUpdateReport(fn func() (offered, state string, ok bool)) {
+	selfUpdateReportMu.Lock()
+	defer selfUpdateReportMu.Unlock()
+	selfUpdateReportFn = fn
+}
+
+func selfUpdateReport() func() (offered, state string, ok bool) {
+	selfUpdateReportMu.RLock()
+	defer selfUpdateReportMu.RUnlock()
+	return selfUpdateReportFn
+}
+
 func setPlaneJobWithdrawn(fn func(ctx context.Context, jobID int64) (bool, error)) {
 	planeJobWithdrawnMu.Lock()
 	defer planeJobWithdrawnMu.Unlock()
@@ -440,6 +460,17 @@ func (r *RemoteSource) claim(ctx context.Context) (*RemoteJob, error) {
 		// both look like; the plane must not read that as good news.
 		if v := r.scriptTrust(); v != "" {
 			claimBody["script_trust"] = v
+		}
+		// Where this machine's own self-update stands: the version on offer
+		// and the verdict on it. A refused update is otherwise seen only on
+		// the machine itself, as an agent version that never moves; the plane
+		// raises it as an incident (spec release_transparency, O7). Sent only
+		// once a check has concluded, and a closed set of words.
+		if report := selfUpdateReport(); report != nil {
+			if offered, state, ok := report(); ok {
+				claimBody["update_state"] = state
+				claimBody["update_offered"] = offered
+			}
 		}
 		// The largest claim this agent reads. The plane holds every job it
 		// hands out to it, so a chain job too large for an older agent is

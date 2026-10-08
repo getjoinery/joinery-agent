@@ -47,6 +47,9 @@ const (
 	// and nobody can see. Held apart from verify_failed (spec
 	// release_transparency, Q4).
 	updateStateUnlogged = "unlogged"
+	// Nothing on offer, as the poll reports it: a concluded check, unlike
+	// the empty state a fresh start has before its first check.
+	updateStateNone = "none"
 )
 
 type distManifest struct {
@@ -94,6 +97,7 @@ type Updater struct {
 	mu                sync.Mutex
 	bundled           string
 	state             string
+	checked           bool
 	failedManifestSum string // backoff: a release that failed verification is not retried until it changes
 	failedState       string // the verdict the backoff holds
 	warned            map[string]bool
@@ -144,10 +148,27 @@ func (u *Updater) HeartbeatInfo() (bundled, state string) {
 	return u.bundled, u.state
 }
 
+// UpdateReport is what the poll tells the management node about this
+// machine's self-update: the version on offer and the verdict on it. ok is
+// false until a check has concluded, so a fresh start says nothing rather
+// than reading as a refusal cleared (spec release_transparency, O7).
+func (u *Updater) UpdateReport() (offered, state string, ok bool) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if !u.checked {
+		return "", "", false
+	}
+	if u.state == "" {
+		return "", updateStateNone, true
+	}
+	return u.bundled, u.state, true
+}
+
 func (u *Updater) setState(bundled, state string) {
 	u.mu.Lock()
 	u.bundled = bundled
 	u.state = state
+	u.checked = true
 	u.mu.Unlock()
 }
 
