@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // updatePubKeyB64 is the Ed25519 public key (base64, 32 raw bytes) that agent
@@ -98,6 +99,7 @@ type Updater struct {
 	bundled           string
 	state             string
 	checked           bool
+	unloggedSince     time.Time // when the verdict on the version on offer became unlogged
 	failedManifestSum string // backoff: a release that failed verification is not retried until it changes
 	failedState       string // the verdict the backoff holds
 	warned            map[string]bool
@@ -161,11 +163,29 @@ func (u *Updater) UpdateReport() (offered, state string, ok bool) {
 	if u.state == "" {
 		return "", updateStateNone, true
 	}
+	if u.state == updateStateUnlogged && reportClock().Sub(u.unloggedSince) < unloggedReportGrace {
+		return "", "", false
+	}
 	return u.bundled, u.state, true
 }
 
+// unloggedReportGrace is how long an unlogged verdict stands before it is
+// reported. Publish writes the agent's binaries and support bundle before the
+// statement that records them, so a machine that asks in between refuses the
+// new release beside the last release's statement and takes it a few minutes
+// later; reported at once, that is a critical incident on every publish. A
+// release that stays unlogged past the grace (a publish that stopped, or one
+// nobody logged) is reported as ever.
+const unloggedReportGrace = 15 * time.Minute
+
+// reportClock is the clock the grace is measured by; tests move it.
+var reportClock = time.Now
+
 func (u *Updater) setState(bundled, state string) {
 	u.mu.Lock()
+	if state == updateStateUnlogged && (u.state != updateStateUnlogged || u.bundled != bundled) {
+		u.unloggedSince = reportClock()
+	}
 	u.bundled = bundled
 	u.state = state
 	u.checked = true
@@ -182,9 +202,16 @@ func (u *Updater) warnOnce(key, format string, args ...interface{}) {
 
 // heldLogKeys is every release-log key this machine holds now.
 func (u *Updater) heldLogKeys() releaseLogKeys {
-	held := u.bakedLogKeys.clone()
-	if u.keyDir != "" {
-		held.merge(readReleaseLogKeyFiles(u.keyDir))
+	return heldReleaseLogKeys(u.bakedLogKeys, u.keyDir)
+}
+
+// heldReleaseLogKeys is what this machine checks the public log with: the keys
+// compiled in, and the ones logged releases proved, kept in dir. The binary and
+// the support bundle are judged by the same set.
+func heldReleaseLogKeys(baked releaseLogKeys, dir string) releaseLogKeys {
+	held := baked.clone()
+	if dir != "" {
+		held.merge(readReleaseLogKeyFiles(dir))
 	}
 	return held
 }

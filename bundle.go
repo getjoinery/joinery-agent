@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -16,6 +17,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"joinery-agent/primitives"
 )
@@ -119,6 +121,12 @@ type BundleSync struct {
 	source   *channelSource
 	pubKey   ed25519.PublicKey
 	siteless bool
+	// The release-log keys this machine holds: the ones compiled in and the
+	// ones a logged release proved, kept in keyDir. Holding them, a bundle is
+	// installed only when the release's statement in the public log records
+	// its bytes, the bar the self-update holds the binary to.
+	bakedLogKeys releaseLogKeys
+	keyDir       string
 
 	mu     sync.Mutex
 	warned map[string]bool
@@ -126,6 +134,51 @@ type BundleSync struct {
 	// the plane offers different bytes. Same backoff shape the updater applies
 	// to a manifest that would not verify.
 	failedSha string
+	// state is the verdict on the bundle on offer, reported on every claim
+	// (Report): empty until a check concludes, then current, unlogged or
+	// verify_failed. A refusal holds while failedSha does.
+	state string
+	// An unlogged refusal holds only while the statement beside the bundle is
+	// the one it was judged against. Publish writes the new bundle before the
+	// statement that records it, so an agent that asks in between sees the new
+	// bytes beside the last release's statement; when the statement changes,
+	// the same bytes are tried again (the self-update's release sum, for the
+	// same reason). lastStatementSum is the statement checkLogged last read.
+	unloggedSha      string
+	unloggedStmtSum  string
+	lastStatementSum string
+	unloggedSince    time.Time
+}
+
+// Bundle verdicts, reported on claim as bundle_state.
+const (
+	bundleStateCurrent      = "current"
+	bundleStateUnlogged     = "unlogged"
+	bundleStateVerifyFailed = "verify_failed"
+)
+
+// Report is the bundle verdict for the claim: not ok until a check has
+// concluded, so an agent that has not looked yet leaves the last answer
+// standing on the plane.
+func (b *BundleSync) Report() (string, bool) {
+	if b == nil {
+		return "", false
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.state == bundleStateUnlogged && reportClock().Sub(b.unloggedSince) < unloggedReportGrace {
+		return "", false // the self-update's grace, for the same publish window
+	}
+	return b.state, b.state != ""
+}
+
+func (b *BundleSync) setState(state string) {
+	b.mu.Lock()
+	if state == bundleStateUnlogged && b.state != bundleStateUnlogged {
+		b.unloggedSince = reportClock()
+	}
+	b.state = state
+	b.mu.Unlock()
 }
 
 // NewBundleSync returns nil when this machine has no business holding a
@@ -143,10 +196,12 @@ func NewBundleSync(cfg *Config) *BundleSync {
 		return nil
 	}
 	return &BundleSync{
-		source:   newChannelSource(cfg.PlaneTLSInsecure),
-		pubKey:   ed25519.PublicKey(key),
-		siteless: true,
-		warned:   map[string]bool{},
+		source:       newChannelSource(cfg.PlaneTLSInsecure),
+		pubKey:       ed25519.PublicKey(key),
+		siteless:     true,
+		bakedLogKeys: bakedReleaseLogKeys(),
+		keyDir:       agentStateDir(),
+		warned:       map[string]bool{},
 	}
 }
 
@@ -192,10 +247,14 @@ func (b *BundleSync) CheckAndApply() bool {
 
 	stamp := readBundleStamp()
 	if stamp != nil && strings.EqualFold(stamp.SourceSha256, offer.Sha256) && bundleTreePresent() {
+		b.setState(bundleStateCurrent)
 		return false // already installed
 	}
 	if b.failedSha != "" && strings.EqualFold(offer.Sha256, b.failedSha) {
 		return false // refused once; not retried until the plane offers different bytes
+	}
+	if b.unloggedHolds(offer.Sha256, b.source.Statement) {
+		return false // unlogged against this statement; retried when the statement changes
 	}
 	if offer.Bytes > maxBundleArtifactBytes {
 		b.warnOnce("size-"+offer.Sha256, "support bundle: %s offers a %d-byte bundle, over this agent's %d-byte limit — not fetched",
@@ -205,13 +264,29 @@ func (b *BundleSync) CheckAndApply() bool {
 	}
 
 	version, err := b.install(id, offer.Sha256)
+	if err != nil && errors.Is(err, errBundleRetry) {
+		// Transport, not verdict: the statement could not be fetched or the
+		// proven keys could not be kept. Nothing is known against the bytes.
+		b.warnOnce("retry-"+offer.Sha256, "support bundle: %v — will retry", err)
+		return false
+	}
+	if err != nil && errors.Is(err, errBundleUnlogged) {
+		b.unloggedSha, b.unloggedStmtSum = offer.Sha256, b.lastStatementSum
+		b.setState(bundleStateUnlogged)
+		log.Printf("=== Support bundle === REFUSED: %v", err)
+		log.Printf("  Not retrying until the management node offers a different bundle or release statement.")
+		return false
+	}
 	if err != nil {
 		b.failedSha = offer.Sha256
+		b.setState(bundleStateVerifyFailed)
 		log.Printf("=== Support bundle === REFUSED: %v", err)
 		log.Printf("  Not retrying until the management node offers a different bundle.")
 		return false
 	}
 
+	b.unloggedSha, b.unloggedStmtSum = "", ""
+	b.setState(bundleStateCurrent)
 	log.Printf("=== Support bundle === installed %s at %s — script primitives are available on this machine",
 		version, BundleRoot())
 	return true
@@ -260,6 +335,12 @@ func (b *BundleSync) install(id *NodeIdentity, wantSha string) (string, error) {
 		return "", err
 	}
 
+	// The public log, before the swap.
+	if err := b.checkLogged(got, version, b.source.Statement); err != nil {
+		removeTree(staging)
+		return "", err
+	}
+
 	// Swap. The previous tree is kept only until the new one is in place; there
 	// is no rollback to it, because a bundle that verified is by construction
 	// the publisher's and a bundle that did not never got here.
@@ -286,6 +367,68 @@ func (b *BundleSync) install(id *NodeIdentity, wantSha string) (string, error) {
 	}
 	return version, nil
 }
+
+// checkLogged holds a bundle to the public log: a machine that holds the keys
+// to read it installs only a bundle whose release statement records these
+// bytes (artifact support_bundle), the bar the self-update holds the binary
+// to. The keys the statement's chain proves are kept before the swap, as the
+// self-update keeps them before its own. A machine holding no keys installs on
+// the signature alone, as before the log existed, and never asks.
+func (b *BundleSync) checkLogged(sha256Hex, version string, fetchStatement func() ([]byte, error)) error {
+	held := heldReleaseLogKeys(b.bakedLogKeys, b.keyDir)
+	if !held.holds() {
+		return nil
+	}
+	statement, err := fetchStatement()
+	if err != nil {
+		return fmt.Errorf("%w: could not fetch the release statement: %v", errBundleRetry, err)
+	}
+	b.lastStatementSum = statementSum(statement)
+	logged, err := verifyReleaseStatement(statement, "support_bundle", sha256Hex, held)
+	if err != nil {
+		return fmt.Errorf("%w: %v", errBundleUnlogged, err)
+	}
+	if b.keyDir != "" {
+		keep := held.clone()
+		keep.merge(logged.proven)
+		added, err := persistReleaseLogKeys(b.keyDir, keep)
+		if err != nil {
+			return fmt.Errorf("%w: the release-log keys could not be recorded in %s: %v", errBundleRetry, b.keyDir, err)
+		}
+		for _, line := range added {
+			log.Printf("support bundle: release-log key recorded: %s", line)
+		}
+	}
+	log.Printf("support bundle: %s is in the public log: %s index %d (release %s)", version, logged.origin, logged.index, logged.version)
+	return nil
+}
+
+// unloggedHolds reports whether the bundle on offer was refused as unlogged
+// against the statement the plane serves now. A statement that cannot be
+// fetched holds the refusal until it can be.
+func (b *BundleSync) unloggedHolds(offerSha string, fetchStatement func() ([]byte, error)) bool {
+	if b.unloggedSha == "" || !strings.EqualFold(offerSha, b.unloggedSha) {
+		return false
+	}
+	statement, err := fetchStatement()
+	if err != nil {
+		return true
+	}
+	return statementSum(statement) == b.unloggedStmtSum
+}
+
+func statementSum(statement []byte) string {
+	sum := sha256.Sum256(statement)
+	return hex.EncodeToString(sum[:])
+}
+
+// errBundleRetry marks an install that stopped for a reason that says nothing
+// about the bundle's bytes; the next check tries the same bytes again.
+var errBundleRetry = errors.New("not installed yet")
+
+// errBundleUnlogged is the refusal of a bundle that carries the release
+// signature but whose release statement in the public log does not record it.
+var errBundleUnlogged = errors.New("not shown to be in the public log (unlogged)")
 
 func bundleTreePresent() bool {
 	info, err := os.Stat(filepath.Join(BundleRoot(), primitivesManifestName))

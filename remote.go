@@ -240,6 +240,25 @@ func selfUpdateReport() func() (offered, state string, ok bool) {
 	return selfUpdateReportFn
 }
 
+// bundleReport is the support bundle's Report on a siteless machine, set once
+// it is built; nil elsewhere, and the claim then carries no bundle_state.
+var (
+	bundleReportMu sync.RWMutex
+	bundleReportFn func() (string, bool)
+)
+
+func setBundleReport(fn func() (string, bool)) {
+	bundleReportMu.Lock()
+	defer bundleReportMu.Unlock()
+	bundleReportFn = fn
+}
+
+func bundleReport() func() (string, bool) {
+	bundleReportMu.RLock()
+	defer bundleReportMu.RUnlock()
+	return bundleReportFn
+}
+
 func setPlaneJobWithdrawn(fn func(ctx context.Context, jobID int64) (bool, error)) {
 	planeJobWithdrawnMu.Lock()
 	defer planeJobWithdrawnMu.Unlock()
@@ -470,6 +489,11 @@ func (r *RemoteSource) claim(ctx context.Context) (*RemoteJob, error) {
 			if offered, state, ok := report(); ok {
 				claimBody["update_state"] = state
 				claimBody["update_offered"] = offered
+			}
+		}
+		if report := bundleReport(); report != nil {
+			if state, ok := report(); ok {
+				claimBody["bundle_state"] = state
 			}
 		}
 		// The largest claim this agent reads. The plane holds every job it
