@@ -59,13 +59,10 @@ func (w *StagedJoinWatcher) Run(ctx context.Context) {
 	if start == nil {
 		start = func() {
 			source := startRemoteSource(w.cfg, w.db, w.jobLock, w.agentVersion)
-			// Connected mid-process on a site machine, so the leave watcher
-			// main() starts for an already-connected agent starts here —
-			// the same hand-off JoinWatcher.promote makes. A siteless machine
-			// leaves through the CLI and has no settings table to watch.
-			if source != nil && !w.cfg.Siteless && w.db != nil {
-				leaver := &LeaveWatcher{db: w.db, identity: source.identity, jobLock: w.jobLock}
-				go leaver.Run(ctx)
+			// Connected mid-process: start what main() starts for an agent
+			// that boots connected, the same hand-off JoinWatcher.promote makes.
+			if source != nil {
+				startConnectedWatchers(ctx, w.cfg, w.db, w.jobLock, w.agentVersion, source.identity)
 			}
 		}
 	}

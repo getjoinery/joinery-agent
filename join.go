@@ -310,10 +310,9 @@ func (w *JoinWatcher) promote(ctx context.Context, request *joinRequest, staged 
 
 	source := startRemoteSource(w.cfg, w.db, w.jobLock, w.agentVersion)
 	if source != nil {
-		// Connected mid-process, so the leave watcher main() starts for an
-		// already-connected agent has to start here instead.
-		leaver := &LeaveWatcher{db: w.db, identity: source.identity, jobLock: w.jobLock}
-		go leaver.Run(ctx)
+		// Connected mid-process: start what main() starts for an agent that
+		// boots connected.
+		startConnectedWatchers(ctx, w.cfg, w.db, w.jobLock, w.agentVersion, source.identity)
 	}
 	return source != nil
 }

@@ -192,3 +192,47 @@ func TestMoveWatcherLeavesAPlainJoinAlone(t *testing.T) {
 		t.Fatalf("the move watcher must not ask about a staged join that is not a move")
 	}
 }
+
+// A connection that began mid-process (a join approved while the agent ran,
+// which is how every freshly installed machine connects) must run the move
+// watcher too, not only one that booted connected. Before startConnectedWatchers,
+// such a machine took move_to_plane, was approved on the new plane, and never
+// asked again (wp5node2-host, 2026-10-09).
+func TestEveryConnectionRunsTheMoveWatcher(t *testing.T) {
+	t.Setenv("AGENT_IDENTITY_PATH", filepath.Join(t.TempDir(), "node_identity.json"))
+
+	newPlane := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		planeReply(w, map[string]interface{}{"status": "approved", "fingerprint": "x", "node_id": 3, "node_slug": "wp5node2-host"})
+	}))
+	defer newPlane.Close()
+	oldPlane := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		planeReply(w, map[string]interface{}{"ok": true})
+	}))
+	defer oldPlane.Close()
+
+	old := connectedTo(t, oldPlane.URL, 122256)
+	pub, priv, _ := GenerateIdentityKeys()
+	if err := (&stagedIdentity{PlaneURL: newPlane.URL, PublicKey: pub, PrivateKey: priv, ClaimedName: "wp5node2-host", Moving: true}).save(); err != nil {
+		t.Fatal(err)
+	}
+
+	exited := make(chan struct{}, 1)
+	savedInterval, savedExit := moveWatcherInterval, moveWatcherExit
+	moveWatcherInterval = 5 * time.Millisecond
+	moveWatcherExit = func() { exited <- struct{}{} }
+	defer func() { moveWatcherInterval, moveWatcherExit = savedInterval, savedExit }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var lock sync.Mutex
+	startConnectedWatchers(ctx, &Config{Siteless: true, PlaneTLSInsecure: true}, nil, &lock, "test", old)
+
+	select {
+	case <-exited:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("the move watcher a connection starts never finished an approved move")
+	}
+	if current, _ := LoadIdentity(IdentityPath()); current == nil || current.PlaneURL != newPlane.URL || current.NodeID != 3 {
+		t.Fatalf("the credential must be the new plane's after the move: %+v", current)
+	}
+}

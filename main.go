@@ -22,7 +22,7 @@ import (
 // must stay ABOVE 1.1.0 forever - install_agent.sh's downgrade guard sorts
 // with sort -V and refuses to replace a "newer" binary, so anything below
 // 1.1.0 strands those agents permanently.
-var version = "1.67.0"
+var version = "1.67.1"
 
 // How often the idle loop looks at the shipped agent_dist manifest. Update
 // checks never run while a job is executing.
@@ -85,6 +85,23 @@ func loadConfigWaiting() *Config {
 // that cannot take remote work must still run: it heartbeats, it self-updates,
 // it heals its own manifest, and it watches for the join that would give it a
 // management node. Exiting would strand exactly the machine that needs it.
+// startConnectedWatchers starts what a connected agent runs beside its remote
+// source, whichever way the connection began: at boot, or mid-process when a
+// join is approved (JoinWatcher.promote, StagedJoinWatcher). One place, so a
+// watcher added here runs after every kind of join, not only after a restart.
+//
+// The leave watcher reads the settings table, so a machine with no site (no
+// table) leaves through the CLI instead. The move watcher reads one file and
+// asks the new plane, so it runs on both postures.
+func startConnectedWatchers(ctx context.Context, cfg *Config, db *DB, jobLock *sync.Mutex, agentVersion string, identity *NodeIdentity) {
+	if !cfg.Siteless && db != nil {
+		leaver := &LeaveWatcher{db: db, identity: identity, jobLock: jobLock}
+		go leaver.Run(ctx)
+	}
+	mover := &MoveWatcher{cfg: cfg, jobLock: jobLock, agentVersion: agentVersion, identity: identity}
+	go mover.Run(ctx)
+}
+
 func startRemoteSource(cfg *Config, db *DB, jobLock *sync.Mutex, agentVersion string) *RemoteSource {
 	remoteStart.mu.Lock()
 	defer remoteStart.mu.Unlock()
@@ -438,14 +455,7 @@ func main() {
 		// of leaving a request for a watcher to notice. Running them anyway
 		// would be a query that fails every few seconds for the life of the
 		// process, which is how a machine ends up with a log nobody reads.
-		if !cfg.Siteless {
-			leaver := &LeaveWatcher{db: db, identity: remote.identity, jobLock: &jobLock}
-			go leaver.Run(context.Background())
-		}
-		// A move the management node asked for (move_to_plane) is finished
-		// here, on both postures: it reads one file and asks the new plane.
-		mover := &MoveWatcher{cfg: cfg, jobLock: &jobLock, agentVersion: version, identity: remote.identity}
-		go mover.Run(context.Background())
+		startConnectedWatchers(context.Background(), cfg, db, &jobLock, version, remote.identity)
 	} else {
 		if !cfg.Siteless {
 			clearStaleLeaveRequest(db)

@@ -110,6 +110,16 @@ func moveToPlaneFor(cfg *Config) func(ctx context.Context, planeURL, claimedName
 // the new management node whether it has been approved.
 const moveCheckInterval = 30 * time.Second
 
+// moveWatcherInterval and moveWatcherExit are what a MoveWatcher uses when its
+// own fields are unset: the poll interval, and how the process ends after a
+// finished move (the supervisor starts it again on the new credential).
+// Package variables so a test can drive the watcher startConnectedWatchers
+// starts.
+var (
+	moveWatcherInterval = moveCheckInterval
+	moveWatcherExit     = func() { os.Exit(0) }
+)
+
 // MoveWatcher finishes a move_to_plane once the new management node approves
 // it. It runs while this machine is connected, on both postures, and does
 // nothing until a staged move exists.
@@ -130,7 +140,7 @@ type MoveWatcher struct {
 func (w *MoveWatcher) Run(ctx context.Context) {
 	interval := w.interval
 	if interval <= 0 {
-		interval = moveCheckInterval
+		interval = moveWatcherInterval
 	}
 	caller := &JoinWatcher{cfg: w.cfg, agentVersion: w.agentVersion}
 	lastWarning := ""
@@ -221,7 +231,7 @@ func (w *MoveWatcher) finish(ctx context.Context, staged *stagedIdentity, status
 	if w.exit != nil {
 		w.exit()
 	} else {
-		os.Exit(0)
+		moveWatcherExit()
 	}
 	return true
 }
