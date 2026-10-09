@@ -114,6 +114,13 @@ type ExecEnv struct {
 	// it instead of enforcing it. Host posture only, as MovedSiteProof.
 	MovedSiteCheck func(ctx context.Context, site string) (map[string]interface{}, error)
 
+	// MoveToPlane asks another management node to adopt this machine while
+	// the current connection stays up (move_to_plane): it stages a keypair for
+	// that management node, files the join there and answers the fingerprint
+	// the operator compares. The running agent finishes the move once it is
+	// approved. Set on every posture; nil only in tests that never move.
+	MoveToPlane func(ctx context.Context, planeURL, claimedName string) (map[string]interface{}, error)
+
 	// NodeID reads this machine's node id from its identity at the moment of
 	// asking: a fact about the machine, like DBName, that grants nothing. A
 	// function rather than a value because the node-id word changes it while

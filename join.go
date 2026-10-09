@@ -65,6 +65,10 @@ type stagedIdentity struct {
 	// CLI's --name, else the hostname at the time of the ask), kept so a
 	// renewal presents the same name the operator is looking for.
 	ClaimedName string `json:"claimed_name,omitempty"`
+	// Moving marks an ask the CURRENT management node made for this machine
+	// to move to another one (move_to_plane): the identity on disk stays in
+	// use until MoveWatcher sees this one approved.
+	Moving bool `json:"moving,omitempty"`
 }
 
 func stagedIdentityPath() string {

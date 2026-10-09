@@ -22,7 +22,7 @@ import (
 // must stay ABOVE 1.1.0 forever - install_agent.sh's downgrade guard sorts
 // with sort -V and refuses to replace a "newer" binary, so anything below
 // 1.1.0 strands those agents permanently.
-var version = "1.66.0"
+var version = "1.67.0"
 
 // How often the idle loop looks at the shipped agent_dist manifest. Update
 // checks never run while a job is executing.
@@ -229,6 +229,10 @@ func execEnvFor(cfg *Config, db *DB) *primitives.ExecEnv {
 		// (decommission_moved_site). Host posture only, as above; see
 		// moved_site.go.
 		MovedSiteProof: movedSiteProofFor(cfg),
+		// A machine with no site has no page to move from; its management
+		// node asks instead (move_to_plane). Every posture: a site may move
+		// this way too, and its page stays the owner's own way.
+		MoveToPlane: moveToPlaneFor(cfg),
 
 		// The same proof, reported rather than enforced (moved_site_check),
 		// so the management node can show where the domain goes.
@@ -438,6 +442,10 @@ func main() {
 			leaver := &LeaveWatcher{db: db, identity: remote.identity, jobLock: &jobLock}
 			go leaver.Run(context.Background())
 		}
+		// A move the management node asked for (move_to_plane) is finished
+		// here, on both postures: it reads one file and asks the new plane.
+		mover := &MoveWatcher{cfg: cfg, jobLock: &jobLock, agentVersion: version, identity: remote.identity}
+		go mover.Run(context.Background())
 	} else {
 		if !cfg.Siteless {
 			clearStaleLeaveRequest(db)

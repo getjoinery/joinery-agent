@@ -22,6 +22,7 @@ var pinnedMachineWords = []string{
 	"host_converge",
 	"host_report",
 	"install_report",
+	"move_to_plane",
 	"moved_site_check",
 	"outbound_limits",
 	"provision_certificate",

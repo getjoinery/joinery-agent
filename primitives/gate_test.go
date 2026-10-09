@@ -190,6 +190,10 @@ var pinnedVocabulary = map[string]Class{
 	// Host posture only.
 	"moved_site_check": ClassOperate,
 
+	// Asks another management node to adopt this machine; the current one
+	// stays until that is approved (the host has no page to move from).
+	"move_to_plane": ClassOperate,
+
 	"provision_certificate": ClassOperate,
 
 	"apply_update": ClassOperate,
@@ -605,6 +609,12 @@ func TestPrimitiveExecutionEnvIsExplicit(t *testing.T) {
 		// The same proof, reported instead of enforced, for
 		// moved_site_check. Host posture only.
 		"MovedSiteCheck": true,
+
+		// move_to_plane: stage a keypair for another management node and file
+		// the join there. It changes which plane this machine answers to only
+		// once a person approves the ask on that plane; the plane managing it
+		// now already holds every power this one grants.
+		"MoveToPlane": true,
 
 		// This machine's own node id, read from its identity when asked: a
 		// fact like DBName that grants nothing. site_quiet off reads it to
