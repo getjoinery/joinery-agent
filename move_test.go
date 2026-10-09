@@ -236,3 +236,39 @@ func TestEveryConnectionRunsTheMoveWatcher(t *testing.T) {
 		t.Fatalf("the credential must be the new plane's after the move: %+v", current)
 	}
 }
+
+// A connected agent reports the connection actually in use to its site's
+// Management Node page, whichever way it began; that page offered Connect to
+// getjoinery while its agent was connected to dev (2026-10-09).
+func TestConnectionStateNamesTheConnectionInUse(t *testing.T) {
+	t.Setenv("AGENT_IDENTITY_PATH", filepath.Join(t.TempDir(), "node_identity.json"))
+	id := connectedTo(t, "https://dev.example.com", 33)
+	st := connectionState(id)
+	staged := &stagedIdentity{PublicKey: id.PublicKey}
+	fp, _ := stagedFingerprint(staged)
+	if st["status"] != "connected" || st["url"] != "https://dev.example.com" || st["node_id"] != int64(33) ||
+		st["node_slug"] != "docker-prod" || st["fingerprint"] != fp || fp == "" {
+		t.Fatalf("the reported state must name the plane, node and key in use: %+v (fingerprint %s)", st, fp)
+	}
+}
+
+// The report is rewritten when the page's view drifts: a join request recorded
+// while connected, a state cleared by Connect or Cancel, or another plane's.
+func TestConnectionReportStaleness(t *testing.T) {
+	t.Setenv("AGENT_IDENTITY_PATH", filepath.Join(t.TempDir(), "node_identity.json"))
+	id := connectedTo(t, "https://dev.example.com", 33)
+	body, _ := json.Marshal(connectionState(id))
+	if connectionReportStale("", string(body), id) {
+		t.Fatalf("a report of this connection with no request pending is current")
+	}
+	for name, c := range map[string][2]string{
+		"a join request recorded while connected": {`{"url":"https://getjoinery.com"}`, string(body)},
+		"the state cleared":                       {"", ""},
+		"another plane's state":                   {"", `{"status":"connected","url":"https://other.example.com","node_id":33}`},
+		"a waiting state":                         {"", `{"status":"waiting","url":"https://dev.example.com"}`},
+	} {
+		if !connectionReportStale(c[0], c[1], id) {
+			t.Fatalf("%s must be rewritten", name)
+		}
+	}
+}

@@ -4,11 +4,13 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -22,7 +24,7 @@ import (
 // must stay ABOVE 1.1.0 forever - install_agent.sh's downgrade guard sorts
 // with sort -V and refuses to replace a "newer" binary, so anything below
 // 1.1.0 strands those agents permanently.
-var version = "1.67.1"
+var version = "1.67.2"
 
 // How often the idle loop looks at the shipped agent_dist manifest. Update
 // checks never run while a job is executing.
@@ -93,8 +95,73 @@ func loadConfigWaiting() *Config {
 // The leave watcher reads the settings table, so a machine with no site (no
 // table) leaves through the CLI instead. The move watcher reads one file and
 // asks the new plane, so it runs on both postures.
+// reportConnection tells this site's Management Node page the connection
+// that is actually in use: which management node, as which node, with which
+// key. The page renders agent_join_state, which a join made from the page
+// writes; a connection made any other way (joinery-agent join, a site copy,
+// move_to_plane, or one that predates the page) left it empty, and the page
+// offered Connect to a machine already connected, whose agent ignores a join
+// request while it has a credential (getjoinery, 2026-10-09). A join request
+// recorded while connected is moot for the same reason, and is cleared so it
+// does not fire after a later disconnect.
+func reportConnection(db *DB, identity *NodeIdentity) {
+	body, err := json.Marshal(connectionState(identity))
+	if err != nil {
+		return
+	}
+	_ = writeAgentSetting(db, settingJoinState, string(body))
+	_ = writeAgentSetting(db, settingJoinRequest, "")
+}
+
+// keepConnectionReported reports the connection at once and again whenever the
+// page's view drifts from it: a Connect or Cancel pressed while connected
+// rewrites agent_join_request / agent_join_state, and the page would otherwise
+// read "waiting" until the next restart.
+func keepConnectionReported(ctx context.Context, db *DB, identity *NodeIdentity) {
+	for {
+		request, _ := readAgentSetting(db, settingJoinRequest)
+		current, _ := readAgentSetting(db, settingJoinState)
+		if connectionReportStale(request, current, identity) {
+			reportConnection(db, identity)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(joinCheckInterval):
+		}
+	}
+}
+
+// connectionReportStale: a join request is recorded, or the reported state is
+// not this connection.
+func connectionReportStale(request, current string, identity *NodeIdentity) bool {
+	if strings.TrimSpace(request) != "" {
+		return true
+	}
+	var st map[string]interface{}
+	if json.Unmarshal([]byte(current), &st) != nil {
+		return true
+	}
+	id, _ := st["node_id"].(float64)
+	return st["status"] != "connected" || st["url"] != identity.PlaneURL || int64(id) != identity.NodeID
+}
+
+// connectionState is the agent_join_state a connected agent reports, in the
+// shape a page-driven join writes (JoinWatcher.promote).
+func connectionState(identity *NodeIdentity) map[string]interface{} {
+	fingerprint := ""
+	if raw, err := base64.StdEncoding.DecodeString(identity.PublicKey); err == nil {
+		fingerprint = Fingerprint(raw)
+	}
+	return map[string]interface{}{
+		"status": "connected", "url": identity.PlaneURL, "fingerprint": fingerprint,
+		"node_id": identity.NodeID, "node_slug": identity.NodeSlug, "updated_time": gmNow(),
+	}
+}
+
 func startConnectedWatchers(ctx context.Context, cfg *Config, db *DB, jobLock *sync.Mutex, agentVersion string, identity *NodeIdentity) {
 	if !cfg.Siteless && db != nil {
+		go keepConnectionReported(ctx, db, identity)
 		leaver := &LeaveWatcher{db: db, identity: identity, jobLock: jobLock}
 		go leaver.Run(ctx)
 	}
