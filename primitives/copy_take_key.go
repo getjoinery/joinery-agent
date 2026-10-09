@@ -13,9 +13,11 @@ package primitives
 //
 //   copy_look      report the look path, so the owner can reach this copy's
 //                  page past the quiet state (the management node shows it).
-//   copy_take_key  stage the backup's statement on this site's own page (the
-//                  chain, its newest run, its manifest hash, the recovery key's
-//                  fingerprint) and wait for the owner. Their browser imports
+//   copy_take_key  read the chain's manifest from its storage provider and hold
+//                  it to the job (copy_stored_manifest.go), stage the backup's
+//                  statement on this site's own page (the chain, its newest
+//                  run, when the provider stored it, its manifest hash, the
+//                  recovery key's fingerprint) and wait for the owner. Their browser imports
 //                  the recovery key and works out the one value that opens the
 //                  sealed box: the X25519 of the recovery key with the box's
 //                  ephemeral public key. The browser has no XSalsa20, so the
@@ -29,14 +31,17 @@ package primitives
 // HOSTILE-CALLER REVIEW (rule 5).
 //
 // What can a compromised management node do with these words? Name a chain
-// and a manifest hash of its choosing: the owner sees both on this machine's
-// page before answering, and the key only opens the box M sent if the owner's
-// recovery key opens it. It could have made the whole chain itself, sealed to
-// the recovery public key (which is public): then it knows the data key
-// already and gains nothing, and the owner is the authority on whether this
-// is their backup (the spec's Phase 2 trust: no machine that made the archive
-// is left to vouch for it). It cannot learn the recovery key: the page that
-// takes it is served by this machine, and what comes back opens one box.
+// of its choosing: this machine reads that chain's manifest from its storage
+// itself, takes the run and the hash from the bytes, and asks the owner to
+// open only the key that manifest seals. It could have made the whole chain
+// itself, sealed to the recovery public key (which is public): then its
+// provider stored it when it was made, after the site's server died, and the
+// page shows that date beside the run (specs/storage_targets.md F7). It could
+// sign a link to a server of its own, which answers any date it likes: the
+// date is believed only from a provider's storage host, and anywhere else the
+// page says it could not be checked. Opening the key gains it nothing it did
+// not have. It cannot learn the recovery key: the page that takes it is
+// served by this machine, and what comes back opens one box.
 //
 // The words run only on a dormant copy (quiet copy), so a live site never
 // takes a chain key from anyone.
@@ -68,6 +73,8 @@ type CopyKeyRequest struct {
 	ChainID             string `json:"chain_id"`
 	ManifestSHA256      string `json:"manifest_sha256"`
 	RunTime             string `json:"run_time"`
+	StoredTime          string `json:"stored_time"` // when the provider stored the manifest; "" when not checked
+	StoredAt            string `json:"stored_at"`   // the provider that says so; "" when not checked
 	RecoveryFingerprint string `json:"recovery_fingerprint"`
 	EphemeralPublic     string `json:"ephemeral_public"`
 	Site                string `json:"site"`
@@ -104,6 +111,10 @@ func init() {
 			{Name: "recovery_fingerprint", Type: ParamString, Required: true, MaxLen: 64, Pattern: sha256Hex},
 			{Name: "recovery_sealed", Type: ParamString, Required: true, MaxLen: copyTakeKeyMaxSealed},
 			{Name: "site", Type: ParamString, MaxLen: 253},
+			// A link to the chain's newest manifest, signed by the management
+			// node for one object: this machine reads the backup itself rather
+			// than taking the statement on the management node's word.
+			{Name: "manifest_url", Type: ParamString, Required: true, MaxLen: 2048, Pattern: signedURLPattern},
 		},
 		Run:     copyTakeKeyRun,
 		Timeout: ApprovalWindow + 5*time.Minute,
@@ -144,13 +155,22 @@ func copyTakeKeyRun(ctx context.Context, env *ExecEnv, params Params) (map[strin
 	chainID := params.String("chain_id")
 	manifest := params.String("manifest_sha256")
 	fingerprint := params.String("recovery_fingerprint")
+	stored, err := readStoredManifest(ctx, params.String("manifest_url"), chainID, manifest,
+		params.String("recovery_sealed"), fingerprint)
+	if err != nil {
+		return nil, refusedf("copy_take_key: %v", err)
+	}
 	req := CopyKeyRequest{
 		ChainID:             chainID,
 		ManifestSHA256:      manifest,
-		RunTime:             params.String("run_time"),
+		RunTime:             stored.NewestRun.Format(time.RFC3339),
+		StoredAt:            stored.StoredAt,
 		RecoveryFingerprint: fingerprint,
 		EphemeralPublic:     base64.StdEncoding.EncodeToString(sealed[:32]),
 		Site:                params.String("site"),
+	}
+	if !stored.StoredTime.IsZero() {
+		req.StoredTime = stored.StoredTime.Format(time.RFC3339)
 	}
 
 	var dataKey []byte
@@ -191,6 +211,9 @@ func copyTakeKeyRun(ctx context.Context, env *ExecEnv, params Params) (map[strin
 		"chain_id":             chainID,
 		"manifest_sha256":      manifest,
 		"recovery_fingerprint": fingerprint,
+		"run_time":             req.RunTime,
+		"stored_time":          req.StoredTime,
+		"stored_at":            req.StoredAt,
 	}, nil
 }
 
