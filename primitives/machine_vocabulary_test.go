@@ -14,6 +14,7 @@ import (
 var pinnedMachineWords = []string{
 	"agent_report",
 	"check_status",
+	"data_root_migrate",
 	"decommission_moved_site",
 	"decommission_site",
 	"disk_usage",

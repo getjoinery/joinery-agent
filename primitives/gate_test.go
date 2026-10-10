@@ -135,6 +135,11 @@ var pinnedVocabulary = map[string]Class{
 	"suspended_page": ClassOperate,
 	"site_limits":    ClassOperate,
 
+	// This host's data moved onto its data root (specs/one_data_root.md D5).
+	// Operate: the services stop for one copy, and a move that does not
+	// finish puts everything back; the originals stay until a reboot proves it.
+	"data_root_migrate": ClassOperate,
+
 	// The machine's outbound limits turned on or off, or their figures set,
 	// the machine's or one container site's. Operate: nothing is removed.
 	"outbound_limits": ClassOperate,
