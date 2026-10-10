@@ -432,6 +432,12 @@ func (r *RemoteSource) claim(ctx context.Context) (*RemoteJob, error) {
 		// node is report-only (specs/agent_tier1_recipes.md, "Rules of the
 		// loop" — reported at poll beside the vocabulary).
 		claimBody["recipes"] = recipes.Report()
+		// A site agent inside a container says so, as its join does: a site
+		// that paired before agents reported it is grouped under its Docker
+		// host from this claim.
+		if r.env != nil && reportsContainer(r.env.SiteRoot != "") {
+			claimBody["container"] = true
+		}
 		// And its cases: for each recipe, the most recent escalation, open or
 		// closed, with the body until a claim carrying it has succeeded. The
 		// one thing a node pushes at the plane on its own initiative
