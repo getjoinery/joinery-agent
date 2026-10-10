@@ -26,9 +26,10 @@ import (
 //   - FAIL when available bytes are under 10% of the filesystem's size, or
 //     under 5 GiB, whichever is met first.
 //   - PASS otherwise.
-//   - On a Docker host whose /var/lib/docker is a disk pool of its own
-//     (host_report's disk_pool), the pool is held to the same floor, and
-//     either failing fails: the root disk never shows the pool filling.
+//   - On a host with a data root (/srv/joinery, a filesystem of its own that
+//     holds the sites' data, the database and Docker's; host_report's
+//     disk_pool), the data root is held to the same floor, and either failing
+//     fails: the root disk never shows the data root filling.
 //   - UNKNOWN when either figure is unknown or the report is unreadable (an
 //     agent whose host_report.sh predates avail_bytes, a machine df cannot
 //     answer for). Unknown opens nothing.
@@ -87,12 +88,13 @@ func diskHeadroomVerdict(result map[string]interface{}, err error) Verdict {
 		return Verdict{Unknown, "host_report output is not the JSON object it should be"}
 	}
 	verdict := diskFiguresVerdict("the disk", report.Disk)
-	// A Docker host's disk pool (/var/lib/docker on a filesystem of its own,
-	// host_report 1.15): the root disk never shows it filling, since its file
-	// is allocated whole. Its own floor, the same rule; either failing fails.
+	// The host's data root (/srv/joinery on a filesystem of its own,
+	// host_report 1.17's disk_pool): the root disk never shows it filling,
+	// since its file is allocated whole. Its own floor, the same rule; either
+	// failing fails.
 	var pool diskFigures
 	if len(report.DiskPool) > 0 && report.DiskPool[0] == '{' && json.Unmarshal(report.DiskPool, &pool) == nil {
-		pv := diskFiguresVerdict("the Docker disk pool", pool)
+		pv := diskFiguresVerdict("the data root", pool)
 		switch {
 		case pv.Kind == Fail && verdict.Kind == Fail:
 			verdict = Verdict{Fail, verdict.Reason + "; " + pv.Reason}
@@ -100,7 +102,7 @@ func diskHeadroomVerdict(result map[string]interface{}, err error) Verdict {
 			verdict = pv
 		case verdict.Kind == Fail:
 		case pv.Kind == Pass && verdict.Kind == Pass:
-			verdict = Verdict{Pass, verdict.Reason + "; the Docker disk pool: " + pv.Reason}
+			verdict = Verdict{Pass, verdict.Reason + "; the data root: " + pv.Reason}
 		}
 	}
 	return verdict

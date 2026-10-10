@@ -158,8 +158,8 @@ func TestACheckOnlyRecipeRespectsTheHold(t *testing.T) {
 	}
 }
 
-// A Docker host's disk pool is held to the same floor, and either failing
-// fails: the root disk never shows the pool filling (host_report 1.15).
+// The host's data root (host_report's disk_pool) is held to the same floor,
+// and either failing fails: the root disk never shows the data root filling.
 func TestDiskHeadroomHoldsTheDockerPoolToTheFloor(t *testing.T) {
 	const gib = 1024 * 1024 * 1024
 	with := func(rootAvail, poolAvail uint64, pool bool) map[string]interface{} {
@@ -175,8 +175,8 @@ func TestDiskHeadroomHoldsTheDockerPoolToTheFloor(t *testing.T) {
 	if v := diskHeadroomVerdict(with(30*gib, 30*gib, true), nil); v.Kind != Pass {
 		t.Errorf("both roomy should pass, got %v", v)
 	}
-	if v := diskHeadroomVerdict(with(30*gib, 2*gib, true), nil); v.Kind != Fail || !strings.Contains(v.Reason, "pool") {
-		t.Errorf("a nearly full pool under a roomy root disk must fail, naming the pool, got %v", v)
+	if v := diskHeadroomVerdict(with(30*gib, 2*gib, true), nil); v.Kind != Fail || !strings.Contains(v.Reason, "the data root") {
+		t.Errorf("a nearly full data root under a roomy root disk must fail, naming the data root, got %v", v)
 	}
 	if v := diskHeadroomVerdict(with(1*gib, 30*gib, true), nil); v.Kind != Fail {
 		t.Errorf("a nearly full root disk still fails beside a roomy pool, got %v", v)
