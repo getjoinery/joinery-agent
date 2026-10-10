@@ -24,7 +24,7 @@ import (
 // must stay ABOVE 1.1.0 forever - install_agent.sh's downgrade guard sorts
 // with sort -V and refuses to replace a "newer" binary, so anything below
 // 1.1.0 strands those agents permanently.
-var version = "1.70.0"
+var version = "1.71.0"
 
 // How often the idle loop looks at the shipped agent_dist manifest. Update
 // checks never run while a job is executing.
@@ -281,6 +281,11 @@ func execEnvFor(cfg *Config, db *DB) *primitives.ExecEnv {
 		// unverified. That is the same posture as before, now with a refusal
 		// that names which artifact could not be checked.
 		Manifest: releaseVerifier(cfg.SiteRoot),
+
+		// How restore_release_file asks the management node for a deployment
+		// file when no kept copy verifies. Carries bytes only; the word checks
+		// them against the signed manifest.
+		FetchReleaseFile: releaseFileFetcher(cfg),
 
 		// The support bundle, for a machine with no site tree to verify
 		// against. Set unconditionally on a siteless machine, before any bundle
@@ -626,10 +631,19 @@ func main() {
 		go func() {
 			// Once at startup: an agent that has just been restarted onto a
 			// wedged node should not wait out the first interval before trying.
+			//
+			// The same tick settles the deployment files an upgrade replaces
+			// first (primitives/release_files.go): put back from the copies kept
+			// before the run if it stopped short, which also covers an agent
+			// that was killed with the upgrade.
+			settleEnv := execEnvFor(cfg, db)
+			settle := func() bool { primitives.RecoverSelfUpdateFiles(settleEnv); return false }
+			attemptUpdate(&jobLock, settle)
 			attemptUpdate(&jobLock, healer.CheckAndHeal)
 			ticker := time.NewTicker(healCheckInterval)
 			defer ticker.Stop()
 			for range ticker.C {
+				attemptUpdate(&jobLock, settle)
 				attemptUpdate(&jobLock, healer.CheckAndHeal)
 			}
 		}()

@@ -168,6 +168,15 @@ func runScriptPrimitive(ctx context.Context, env *ExecEnv, p Primitive, params P
 		return nil, err
 	}
 
+	// An upgrade replaces its own deployment files before it deploys anything.
+	// The agent keeps the signed copies first and settles the files afterwards,
+	// however the run ends, so a stopped upgrade cannot leave a node that can
+	// no longer be upgraded (release_files.go).
+	if p.Name == "apply_update" {
+		guard := BeginSelfUpdateGuard(env)
+		defer guard.Finish()
+	}
+
 	cmd := exec.CommandContext(ctx, p.Script.Interpreter, append([]string{scriptPath}, argv...)...)
 
 	// THE WHOLE PROCESS GROUP DIES ON TIMEOUT, not only the interpreter.

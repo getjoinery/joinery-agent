@@ -84,6 +84,13 @@ type ExecEnv struct {
 	// same posture when it is absent: no manifest means no script runs.
 	ToolManifest ManifestVerifier
 
+	// FetchReleaseFile asks the management node for one self-update file out of
+	// the published core archive of the installed release (restore_release_file).
+	// The caller checks the bytes against the signed manifest; this only carries
+	// them. Nil where the agent cannot ask. The file is one of SelfUpdateFiles
+	// and the version the installed one: nothing else can be named.
+	FetchReleaseFile func(ctx context.Context, version, rel string) ([]byte, error)
+
 	// Approval is how this node asks its OWN operator to authorize a
 	// destructive job. Nil means it cannot ask, and a node that cannot ask
 	// refuses every destructive job — see Execute. It is a field here, rather

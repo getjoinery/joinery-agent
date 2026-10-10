@@ -93,6 +93,7 @@ const (
 	artifactKindBundleInfo      = "bundle_manifest"
 	artifactKindBundleBody      = "bundle_body"
 	artifactKindReleaseManifest = "release_manifest"
+	artifactKindReleaseFile     = "release_file"
 	artifactKindAgentStatement  = "agent_statement"
 )
 
@@ -407,7 +408,25 @@ func (r *RemoteSource) scriptTrust() string {
 	if err := artifacts.Usable(""); err != nil {
 		return "untrusted_manifest"
 	}
+	// The manifest is fine; are the files the next upgrade starts from? A site
+	// only: the five deployment files live in a site tree, not the bundle.
+	if r.env.SiteRoot != "" {
+		if names, checked := primitives.DifferingSelfUpdateFiles(r.env); checked && len(names) > 0 {
+			return "untrusted_file"
+		}
+	}
 	return "ok"
+}
+
+// scriptTrustFiles names the self-update files that differ from the signed
+// manifest, and whether it looked at all. Checked with an empty list is the node
+// saying every one matches, which is how the plane learns to clear a file state
+// that a repair has fixed; not checked sends nothing, as an older agent does.
+func (r *RemoteSource) scriptTrustFiles() ([]string, bool) {
+	if r.env == nil || r.env.SiteRoot == "" {
+		return nil, false
+	}
+	return primitives.DifferingSelfUpdateFiles(r.env)
 }
 
 // claim asks the plane for one job.
@@ -485,6 +504,12 @@ func (r *RemoteSource) claim(ctx context.Context) (*RemoteJob, error) {
 		// both look like; the plane must not read that as good news.
 		if v := r.scriptTrust(); v != "" {
 			claimBody["script_trust"] = v
+		}
+		// And which files, by name, when it looked at them (at most the five
+		// deployment files): the plane lists them on the incident and offers
+		// the repair for each.
+		if names, checked := r.scriptTrustFiles(); checked {
+			claimBody["script_trust_files"] = names
 		}
 		// Where this machine's own self-update stands: the version on offer
 		// and the verdict on it. A refused update is otherwise seen only on

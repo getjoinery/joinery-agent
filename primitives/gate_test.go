@@ -139,6 +139,13 @@ var pinnedVocabulary = map[string]Class{
 	// Operate: the services stop for one copy, and a move that does not
 	// finish puts everything back; the originals stay until a reboot proves it.
 	"data_root_migrate": ClassOperate,
+	// The two words of specs/release_file_repair.md. restore_release_file puts
+	// one of the five deployment files an upgrade replaces first back to the
+	// bytes the installed release signed; its one parameter is an enum of those
+	// five. upgrade_preflight reads whether an upgrade would stop before it
+	// started: no parameters, six facts, no content.
+	"restore_release_file": ClassOperate,
+	"upgrade_preflight":    ClassObserve,
 
 	// The machine's outbound limits turned on or off, or their figures set,
 	// the machine's or one container site's. Operate: nothing is removed.
@@ -651,6 +658,13 @@ func TestPrimitiveExecutionEnvIsExplicit(t *testing.T) {
 		// backups asks its own owner, on its own page, for the value that
 		// opens its chain key; the recovery key never reaches the agent.
 		"CopyKeyHandoff": true,
+
+		// restore_release_file's source of bytes (specs/release_file_repair.md):
+		// asks the management node for one of five named deployment files out
+		// of the installed release's archive. It carries bytes and decides
+		// nothing; the word checks them against the signed manifest before
+		// writing, so a hostile plane's answer restores nothing.
+		"FetchReleaseFile": true,
 	}
 
 	fset := token.NewFileSet()
