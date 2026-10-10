@@ -153,7 +153,7 @@ Database credentials are read automatically from `Globalvars_site.php`. Environm
 
 5. **Single-threaded execution**: one job at a time, under a lock the self-update, bundle sync and manifest healer also take — so nothing swaps the binary or its scripts out from under a running job.
 
-6. **A claim that never comes back is returned**: the management node re-queues a claim older than its budget and fails the job after three, so a crash mid-job strands nothing.
+6. **A result is kept until it is delivered, and a job is never run twice**: the agent writes each result to `/etc/joinery-agent/outbox` before posting it, keeps it until the management node takes it or refuses it for good (a 4xx other than a rate limit or a refusal for the node's clock), and delivers what it kept before it claims anything. After an hour undelivered a result is sent as its outcome alone; after a day it is dropped and the log says so. A `take_node_id` result whose post failed is dropped at once, with the identity it staged. Its claim says `idle` (not while a unit a primitive started, such as the data root move, still runs), and the management node fails as lost any job it still has running for the node — a restart mid-job frees the node's queue at the next poll instead of after the job's budget. A job lost any way (idle, budget, an operator) is never handed out again; a result that arrives later replaces `lost`.
 
 ## File Structure
 

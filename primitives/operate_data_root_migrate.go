@@ -63,3 +63,13 @@ func init() {
 }
 
 const dataRootMigrateScript = "maintenance_scripts/install_tools/joinery_data_root.sh"
+
+// DetachedUnits are the systemd units a primitive starts that outlive the
+// agent process: the data root move runs in its own unit so a timed-out or
+// restarted agent never ends a half-finished move. While one is active the
+// machine is still doing a job's work even though this process is not, so the
+// agent's claim must not say idle (the management node would free the node's
+// queue and dispatch a backup while Postgres is stopped for the move). The
+// agent asks systemd about them in its job loop (detachedWorkRunning, main
+// package): nothing in this package starts a process but script.go.
+var DetachedUnits = []string{"joinery-data-root-migrate.service"}

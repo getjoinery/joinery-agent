@@ -12,6 +12,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
@@ -340,6 +341,14 @@ func (r *RemoteSource) pollOnce(ctx context.Context) {
 	}
 	defer r.jobLock.Unlock()
 
+	// A result still owed is delivered before anything is claimed, and while
+	// one cannot be, nothing is: the claim below says idle, and the management
+	// node fails as lost whatever it still has running for this node. See
+	// outbox.go.
+	if !r.deliverKeptResults(ctx) {
+		return
+	}
+
 	job, err := r.claim(ctx)
 	if err != nil {
 		r.noteFailure(err)
@@ -532,6 +541,20 @@ func (r *RemoteSource) claim(ctx context.Context) (*RemoteJob, error) {
 		// refused at dispatch, naming the update, rather than sent to be
 		// refused unread.
 		claimBody["claim_bytes"] = agentMaxClaimBody
+		// This process runs no job and owes no result: a claim is made only
+		// with the job lock held and the outbox delivered (pollOnce). So a
+		// job the management node still has as running for this node was
+		// lost — this agent or its machine restarted before it reported, or
+		// the hand-out never arrived — and it fails it now instead of holding
+		// the node's queue for the job's whole budget (1.72.0).
+		//
+		// Not while a unit a primitive started outlives this process (the
+		// data root move runs in its own): the machine is still doing that
+		// job's work, and the node's queue must stay held until it reports
+		// or its budget runs out (reviewer2 F7).
+		if !detachedWorkRunning(ctx) {
+			claimBody["idle"] = true
+		}
 		for field := range r.refusedFields {
 			delete(claimBody, field)
 		}
@@ -668,7 +691,7 @@ func (r *RemoteSource) runJobLocked(ctx context.Context, job *RemoteJob) {
 	// supervisor starts it as the node (the word refused unless one would).
 	// Anything else deletes the staged file: this machine stays what it was.
 	if takeID := primitives.ConsumeIdentityTake(); takeID != 0 {
-		if r.finishIdentityTake(takeID, answer, postErr) {
+		if r.settleIdentityTake(job.JobID, takeID, answer, postErr) {
 			clearJobMarker()
 			os.Exit(0)
 		}
@@ -696,9 +719,27 @@ func (r *RemoteSource) runJobLocked(ctx context.Context, job *RemoteJob) {
 	}
 }
 
-// postResult reports a terminal outcome. A failure to post is logged and
-// dropped: the plane's claim timeout returns the job to pending, which is the
-// same recovery path a crashed agent takes.
+// detachedWorkRunning reports whether a unit a primitive started is still
+// active (primitives.DetachedUnits): the machine is then doing a job's work
+// that this process no longer runs. No systemctl (a site container) means none
+// can be. A var so the tests can say what the machine is doing without a
+// systemd.
+var detachedWorkRunning = func(ctx context.Context) bool {
+	if _, err := exec.LookPath("systemctl"); err != nil {
+		return false
+	}
+	for _, unit := range primitives.DetachedUnits {
+		if exec.CommandContext(ctx, "systemctl", "is-active", "--quiet", unit).Run() == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// postResult reports a terminal outcome. The result is kept in the outbox
+// before it is posted, and removed once the management node has taken it or
+// refused it for good; a post that fails otherwise leaves it there, and the
+// next poll delivers it before this agent takes another job (outbox.go).
 func (r *RemoteSource) postResult(ctx context.Context, jobID int64, status string, data map[string]interface{}, logText, reason string) (json.RawMessage, error) {
 	kept, total := capLog(logText)
 
@@ -743,11 +784,35 @@ func (r *RemoteSource) postResult(ctx context.Context, jobID int64, status strin
 		body, _ = json.Marshal(payload)
 	}
 
+	keepResult(jobID, body)
 	answer, err := r.signedPost(ctx, pathResult, body)
-	if err != nil {
-		log.Printf("ERROR: could not post result for job #%d (the plane will time the claim out and re-queue it): %v", jobID, err)
+	switch {
+	case err == nil:
+		dropResult(jobID)
+	case planeAnsweredForGood(err):
+		log.Printf("the management node will not take the result of job #%d: %v", jobID, err)
+		dropResult(jobID)
+	default:
+		log.Printf("ERROR: could not post result for job #%d; it is kept and sent again before this agent takes another job: %v", jobID, err)
 	}
 	return answer, err
+}
+
+// settleIdentityTake ends a take_node_id job's identity question once its
+// result was posted, and reports whether this process must restart as the
+// node it took.
+//
+// A take's result must never outlive its staged identity. A post that failed
+// leaves this machine what it was (finishIdentityTake deletes the staged file),
+// so the kept result goes too: delivered later, it would have the management
+// node swap the node rows while this machine still signs as the copy, and
+// neither row would name it again (reviewer2 F1). The job is lost at the next
+// claim, and the copy step is run again.
+func (r *RemoteSource) settleIdentityTake(jobID, takeID int64, answer json.RawMessage, postErr error) bool {
+	if postErr != nil {
+		dropResult(jobID)
+	}
+	return r.finishIdentityTake(takeID, answer, postErr)
 }
 
 // finishIdentityTake acts on a staged node id once the result is posted: it
@@ -990,14 +1055,19 @@ func readEnvelopeUpTo(resp *http.Response, url string, max int) (json.RawMessage
 		Error string          `json:"error"`
 	}
 	if err := json.Unmarshal(raw, &envelope); err != nil {
-		return nil, fmt.Errorf("plane response from %s is not valid JSON (HTTP %d)", url, resp.StatusCode)
+		// Not the management node's own answer (an error page, a proxy), so
+		// never a refusal for good, whatever its status: planeStatusError
+		// with status 0 is "not now".
+		return nil, &planeStatusError{Status: 0,
+			msg: fmt.Sprintf("plane response from %s is not valid JSON (HTTP %d)", url, resp.StatusCode)}
 	}
 	if resp.StatusCode != http.StatusOK {
 		message := envelope.Error
 		if message == "" {
 			message = "no reason given"
 		}
-		return nil, fmt.Errorf("plane returned HTTP %d for %s: %s", resp.StatusCode, url, message)
+		return nil, &planeStatusError{Status: resp.StatusCode,
+			msg: fmt.Sprintf("plane returned HTTP %d for %s: %s", resp.StatusCode, url, message)}
 	}
 	return envelope.Data, nil
 }
