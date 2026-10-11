@@ -24,7 +24,7 @@ import (
 // must stay ABOVE 1.1.0 forever - install_agent.sh's downgrade guard sorts
 // with sort -V and refuses to replace a "newer" binary, so anything below
 // 1.1.0 strands those agents permanently.
-var version = "1.72.0"
+var version = "1.73.0"
 
 // How often the idle loop looks at the shipped agent_dist manifest. Update
 // checks never run while a job is executing.
@@ -323,6 +323,10 @@ func execEnvFor(cfg *Config, db *DB) *primitives.ExecEnv {
 		// this way too, and its page stays the owner's own way.
 		MoveToPlane: moveToPlaneFor(cfg),
 
+		// The encrypted data root's escrow, with this machine's management
+		// node as holder (data_root_enrol; escrow.go).
+		DataRootEnrol: dataRootEnrolForPlane,
+
 		// The same proof, reported rather than enforced (moved_site_check),
 		// so the management node can show where the domain goes.
 		MovedSiteCheck: movedSiteCheckFor(cfg),
@@ -547,6 +551,11 @@ func main() {
 		go stagedWatcher.Run(context.Background())
 	}
 
+	// The escrow holder's record of this machine (D3): its addresses and its
+	// break-glass box, said when they change. Nothing on a machine whose data
+	// root is not encrypted and enrolled.
+	go (&EscrowReportWatcher{}).Run(context.Background())
+
 	// The run switch. Projects the setting into the marker the supervisor reads,
 	// and stops this process when an operator turns the agent off — saying so to
 	// the management node first, when there is one to tell.
@@ -588,6 +597,10 @@ func main() {
 	// The bundle is checked FIRST and does not exit — a machine that has just
 	// been given its scripts should be able to use them without waiting for a
 	// restart it has no other reason to make.
+	if cfg.SiteWaiting {
+		go watchSiteConfig(joineryConfigPath(), &jobLock)
+	}
+
 	bundle := NewBundleSync(cfg)
 	if bundle != nil {
 		setBundleReport(bundle.Report)

@@ -14,7 +14,12 @@ import (
 var pinnedMachineWords = []string{
 	"agent_report",
 	"check_status",
+	"data_root_decrypt",
+	"data_root_encrypt",
+	"data_root_enrol",
 	"data_root_migrate",
+	"data_root_recipient",
+	"data_root_rekey",
 	"decommission_moved_site",
 	"decommission_site",
 	"disk_usage",

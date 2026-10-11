@@ -128,6 +128,12 @@ type ExecEnv struct {
 	// approved. Set on every posture; nil only in tests that never move.
 	MoveToPlane func(ctx context.Context, planeURL, claimedName string) (map[string]interface{}, error)
 
+	// DataRootEnrol enrols the encrypted data root with this machine's
+	// management node as escrow holder (data_root_enrol): signed with the
+	// unlock identity and the node key, the secret taken in answer and added
+	// as a key slot. Nil only in tests that never enrol.
+	DataRootEnrol func(ctx context.Context) (map[string]interface{}, error)
+
 	// NodeID reads this machine's node id from its identity at the moment of
 	// asking: a fact about the machine, like DBName, that grants nothing. A
 	// function rather than a value because the node-id word changes it while

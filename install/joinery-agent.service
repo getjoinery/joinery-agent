@@ -1,7 +1,10 @@
 [Unit]
 Description=Joinery Agent - Remote server management executor
-After=postgresql.service network.target
-Wants=postgresql.service
+# Not after PostgreSQL, and not pulling it in. The agent works without the
+# database and reconnects when it comes; and where the data root is encrypted,
+# PostgreSQL waits for the unlock while the agent must be up to say the machine
+# is locked (specs/hosted_data_promise_disk_encryption.md D4).
+After=network.target
 
 [Service]
 Type=simple

@@ -204,7 +204,12 @@ var pinnedVocabulary = map[string]Class{
 
 	// Asks another management node to adopt this machine; the current one
 	// stays until that is approved (the host has no page to move from).
-	"move_to_plane": ClassOperate,
+	"move_to_plane":       ClassOperate,
+	"data_root_enrol":     ClassOperate,
+	"data_root_encrypt":   ClassOperate,
+	"data_root_decrypt":   ClassOperate,
+	"data_root_recipient": ClassOperate,
+	"data_root_rekey":     ClassOperate,
 
 	"provision_certificate": ClassOperate,
 
@@ -626,7 +631,8 @@ func TestPrimitiveExecutionEnvIsExplicit(t *testing.T) {
 		// the join there. It changes which plane this machine answers to only
 		// once a person approves the ask on that plane; the plane managing it
 		// now already holds every power this one grants.
-		"MoveToPlane": true,
+		"MoveToPlane":   true,
+		"DataRootEnrol": true,
 
 		// This machine's own node id, read from its identity when asked: a
 		// fact like DBName that grants nothing. site_quiet off reads it to

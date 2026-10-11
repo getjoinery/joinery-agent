@@ -68,6 +68,16 @@ type Config struct {
 	// would silently stop doing its own site's work. So this is set only when
 	// the config file is ABSENT, never when it is present and unusable.
 	Siteless bool
+
+	// SiteWaiting is true when the config is absent only because it lives on
+	// the data root, which is not mounted yet: an encrypted machine's config/
+	// is a bind of it (specs/hosted_data_promise_disk_encryption.md D9), and
+	// while the data root is locked the folder is an empty mountpoint. That
+	// is a site machine, never a siteless one: it keeps site posture, with no
+	// database login (its database is on the data root too, so it is not
+	// running), and restarts to read the config once it is readable
+	// (watchSiteConfig).
+	SiteWaiting bool
 }
 
 // Default path to the Joinery config file. Override with JOINERY_CONFIG env var.
@@ -145,7 +155,10 @@ func LoadConfig() (*Config, error) {
 		// whole distinction, and getting it the wrong way round would either
 		// wedge a relay for ever or let a node mid-upgrade quietly decide it
 		// has no site and stop doing that site's work.
-		if os.IsNotExist(err) {
+		if os.IsNotExist(err) && siteConfigAwaitsDataRoot(configPath) {
+			cfg.SiteWaiting = true
+			log.Printf("the site config at %s is on the data root, which is not mounted yet: site posture, and its database login is read once it is", configPath)
+		} else if os.IsNotExist(err) {
 			cfg.Siteless = true
 			log.Printf("no Joinery site at %s — starting in machine posture (no site, no local database)", configPath)
 		} else {
@@ -229,8 +242,9 @@ func LoadConfig() (*Config, error) {
 	// right for a node whose config is briefly absent and fatal for a machine
 	// where it is absent by design. Environment variables still win above, so
 	// a siteless machine CAN be pointed at a database if it ever has a reason
-	// to; it simply is not required to have one.
-	if cfg.Siteless {
+	// to; it simply is not required to have one. A site waiting for its data
+	// root has one, and learns its name when it restarts to read the config.
+	if cfg.Siteless || cfg.SiteWaiting {
 		return cfg, nil
 	}
 

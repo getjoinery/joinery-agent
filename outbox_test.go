@@ -22,6 +22,8 @@ func TestMain(m *testing.M) {
 		panic(err)
 	}
 	resultOutboxDir = filepath.Join(dir, "outbox")
+	dataRootOutboxDir = filepath.Join(dir, "data-root-outbox")
+	outboxDataRootConf = filepath.Join(dir, "no-data-root")
 	// No test may ask the real systemd what the machine is doing.
 	detachedWorkRunning = func(context.Context) bool { return false }
 	code := m.Run()
@@ -354,5 +356,57 @@ func TestNoIdleWhileDetachedWorkRuns(t *testing.T) {
 	}
 	if _, said := plane.claims[0]["idle"]; said {
 		t.Fatal("but must not say idle while a move it started is still running")
+	}
+}
+
+// On an encrypted machine a result is kept on the data root while it is
+// mounted, and on the root disk while it is not; both are delivered, and one
+// result is only ever in one of them (D10).
+func TestOutboxOnAnEncryptedDataRoot(t *testing.T) {
+	useOutbox(t)
+	dir := t.TempDir()
+	oldD, oldC, oldM, oldMI := dataRootOutboxDir, outboxDataRootConf, outboxDataRootMount, mountInfoPath
+	t.Cleanup(func() {
+		dataRootOutboxDir, outboxDataRootConf, outboxDataRootMount, mountInfoPath = oldD, oldC, oldM, oldMI
+	})
+	dataRootOutboxDir = filepath.Join(dir, "srv/joinery/agent-outbox")
+	outboxDataRootConf = filepath.Join(dir, "data_root")
+	outboxDataRootMount = filepath.Join(dir, "srv/joinery")
+	mountInfoPath = filepath.Join(dir, "mountinfo")
+	os.WriteFile(outboxDataRootConf, []byte("backing=luks-file\nsource=/srv/joinery.img\n"), 0o644)
+	locked := "22 1 252:1 / / rw - ext4 /dev/vda1 rw\n"
+	open := locked + "80 22 252:2 / " + outboxDataRootMount + " rw - xfs /dev/mapper/joinery-data rw\n"
+
+	os.WriteFile(mountInfoPath, []byte(locked), 0o644)
+	keepResult(7, []byte(`{"job_id":7}`))
+	if _, err := os.Stat(outboxPathIn(resultOutboxDir, 7)); err != nil {
+		t.Fatalf("locked: not kept on the root disk: %v", err)
+	}
+	os.WriteFile(mountInfoPath, []byte(open), 0o644)
+	keepResult(8, []byte(`{"job_id":8}`))
+	if _, err := os.Stat(outboxPathIn(dataRootOutboxDir, 8)); err != nil {
+		t.Fatalf("open: not kept on the data root: %v", err)
+	}
+	if _, err := os.Stat(outboxPathIn(resultOutboxDir, 8)); !os.IsNotExist(err) {
+		t.Fatal("open: a result is on the root disk too")
+	}
+	if ks := keptResults(); len(ks) != 2 || ks[0].JobID != 7 || ks[1].JobID != 8 {
+		t.Fatalf("both are not read back, oldest first: %+v", ks)
+	}
+	// Kept again (shed) once open: it moves to the data root, one copy.
+	keepResult(7, []byte(`{"job_id":7,"log":""}`))
+	if _, err := os.Stat(outboxPathIn(resultOutboxDir, 7)); !os.IsNotExist(err) {
+		t.Fatal("a result kept again on the data root left its root-disk copy")
+	}
+	dropResult(7)
+	dropResult(8)
+	if ks := keptResults(); len(ks) != 0 {
+		t.Fatalf("dropped results are still kept: %+v", ks)
+	}
+	// A plain data root keeps them where they always were.
+	os.WriteFile(outboxDataRootConf, []byte("backing=file\nsource=/srv/joinery.img\n"), 0o644)
+	keepResult(9, []byte(`{"job_id":9}`))
+	if _, err := os.Stat(outboxPathIn(resultOutboxDir, 9)); err != nil {
+		t.Fatalf("plain: not kept on the root disk: %v", err)
 	}
 }

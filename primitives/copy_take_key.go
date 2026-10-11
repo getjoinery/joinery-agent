@@ -217,6 +217,13 @@ func copyTakeKeyRun(ctx context.Context, env *ExecEnv, params Params) (map[strin
 	}, nil
 }
 
+// OpenRecoverySealed is openRecoverySealed for the encrypted data root's
+// unlock page (the agent's unlock mode), which takes the same 32-byte value
+// from a browser for the break-glass copy's box.
+func OpenRecoverySealed(sealed, shared, recipientPublic []byte) ([]byte, error) {
+	return openRecoverySealed(sealed, shared, recipientPublic)
+}
+
 // openRecoverySealed finishes opening a libsodium sealed box
 // (crypto_box_seal) given the X25519 shared secret of the recipient's private
 // key with the box's ephemeral public key, which is what the owner's browser

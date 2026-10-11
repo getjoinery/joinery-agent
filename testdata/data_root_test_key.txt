@@ -1,0 +1,3 @@
+# A TEST recovery keypair for the data-root sidecar fixtures; it guards nothing.
+secret=oQPzooLmSXpB1fa9huP2sWYl0yBUmYzC9vG9iDKdC9E=
+public=FUlFq6ANNWbjoxS/AOfEfBCTQntsOSlTwpgiPhLelXE=

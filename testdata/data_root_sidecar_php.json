@@ -1,0 +1,13 @@
+{
+    "version": 1,
+    "artifact": "data-root",
+    "cipher": "luks2-volume-key",
+    "created": "2026-10-11T00:00:00Z",
+    "recipients": [
+        {
+            "kind": "recovery",
+            "fingerprint": "c707c5c392f898b1e3ba7dc1ddeb3fd640e83aeca7199d2d21d49b332a4413db",
+            "sealed": "bp8EoKWFgKUz/off9EJWaGDLKu0PnXi77VVo/MRjllcumpf1yA17gIimVzofyep9uZ/Ny5rAQYPH0pZ50GWEGLgJo8EbI7GEp9Cp6KEHwr0BtEJP9sw+H6T+nig9wS5XXbdRR6Ik8n8A1nmPXf9UfQ=="
+        }
+    ]
+}

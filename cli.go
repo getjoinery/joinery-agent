@@ -69,6 +69,10 @@ func runCLI(args []string) (handled bool, exit int) {
 		return true, cliSwitch(true)
 	case "disable":
 		return true, cliSwitch(false)
+	case "unlock":
+		return true, cliUnlock(args[2:])
+	case "data-root":
+		return true, cliDataRoot(args[2:])
 	case "help", "--help", "-h":
 		cliUsage(os.Stdout)
 		return true, 0
@@ -87,6 +91,9 @@ func cliUsage(w *os.File) {
   joinery-agent status                       what this machine is connected to, and its key fingerprint
   joinery-agent leave                        disconnect from the management node and delete the credential
   joinery-agent enable | disable             turn the agent on or off on this machine
+  joinery-agent unlock [--close]             open this machine's encrypted data root (its boot unit runs this)
+  joinery-agent data-root seal|unseal|check-recipient|slots
+                                             the encrypted data root's key material (joinery_data_root.sh runs these)
   joinery-agent --version
 
 Joining prints a key fingerprint. Approve the request on the management node
