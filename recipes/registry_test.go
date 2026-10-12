@@ -38,6 +38,9 @@ var pinnedRecipes = map[string][2]string{
 	"service_health":     {"host_report", "restart_unit"},
 	"container_health":   {"host_report", "restart_container"},
 	"certificate_expiry": {"host_report", "provision_certificate"},
+	// specs/mail_apps_plugin.md, Running the gateway: while a site has mail
+	// apps on, the gateway runs and greets; else restart the one unit.
+	"mail_gateway": {"host_report", "restart_unit"},
 }
 
 // pinnedNodeDerived is the set of recipes whose repair word takes a value the
@@ -47,6 +50,7 @@ var pinnedNodeDerived = map[string]bool{
 	"service_health":     true,
 	"container_health":   true,
 	"certificate_expiry": true,
+	"mail_gateway":       true,
 }
 
 func TestNodeDerivedRecipesArePinned(t *testing.T) {

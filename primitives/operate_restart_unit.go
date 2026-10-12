@@ -57,15 +57,16 @@ func init() {
 }
 
 // restartUnitUnits is the closed list: host_report.sh's expected units, in
-// its order, and a MIRROR of UNITS in restart_unit.sh and of
-// RESTART_UNIT_UNITS on the plane. php-fpm is resolved by the script to the
-// versioned unit file the host runs.
+// its order, then the mail apps gateway (host_report's mail_gateway), and a
+// MIRROR of UNITS in restart_unit.sh and of RESTART_UNIT_UNITS on the plane.
+// php-fpm is resolved by the script to the versioned unit file the host runs.
 var restartUnitUnits = []string{
 	"fail2ban",
 	"apache2",
 	"php-fpm",
 	"cron",
 	"postgresql",
+	"joinery-mail-gateway",
 }
 
 const restartUnitScript = "maintenance_scripts/sysadmin_tools/restart_unit.sh"

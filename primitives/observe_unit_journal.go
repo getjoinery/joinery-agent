@@ -92,8 +92,9 @@ func init() {
 //
 // Four of the five units the Host card names (sshd is not among them and is
 // not added: its journal is a record of who connected from where, which is
-// exactly what host_report refuses to carry), the agent itself, and the
-// housekeeping units that turn up failed on an ordinary Debian box.
+// exactly what host_report refuses to carry), the agent itself, the
+// housekeeping units that turn up failed on an ordinary Debian box, and the
+// mail apps gateway (host_report's mail_gateway).
 var unitJournalUnits = []string{
 	"fail2ban",
 	"apache2",
@@ -107,6 +108,7 @@ var unitJournalUnits = []string{
 	"apt-daily-upgrade",
 	"fstrim",
 	"e2scrub_all",
+	"joinery-mail-gateway",
 }
 
 const (

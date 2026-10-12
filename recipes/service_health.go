@@ -96,6 +96,7 @@ type hostReportHealth struct {
 	Answers       json.RawMessage        `json:"answers"`
 	Containers    json.RawMessage        `json:"containers"`
 	Served        json.RawMessage        `json:"served_certificates"`
+	MailGateway   json.RawMessage        `json:"mail_gateway"`
 }
 
 func readHostReport(result map[string]interface{}, err error) (hostReportHealth, *Verdict) {
