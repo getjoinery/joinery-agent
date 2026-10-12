@@ -376,7 +376,7 @@ func luksSlotsOf(dev string, header ...string) ([]luksSlot, error) {
 // cliDataRoot is `joinery-agent data-root ...`, joinery_data_root.sh's helper.
 func cliDataRoot(args []string) int {
 	if len(args) == 0 {
-		return cliError("data-root: seal --recipient FILE [--slot] | unseal --sidecar FILE | reseal --recipient FILE | check-recipient FILE | slots DEVICE | add-slot DEVICE | identity | enrol --holder URL [--wait SECONDS] | report STATE | preflight | report-key | escrow-rekey --old-report-key-file FILE")
+		return cliError("data-root: seal --recipient FILE [--slot] | unseal --sidecar FILE | reseal --recipient FILE | check-recipient FILE | slots DEVICE | add-slot DEVICE | prune-tokens DEVICE | identity | enrol --holder URL [--wait SECONDS] | report STATE | preflight | report-key | escrow-rekey --old-report-key-file FILE")
 	}
 	flag := func(name string) string {
 		for i, a := range args[1:] {

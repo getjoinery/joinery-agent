@@ -192,17 +192,32 @@ func TestTheSwitchIsWrittenWhereTheSupervisorReadsIt(t *testing.T) {
 		t.Skipf("agent state dir is not overridable in this build (marker at %s)", markerPath())
 	}
 
-	if code := cliSwitch(true); code != 0 {
+	siteless := &Config{Siteless: true}
+	if code := switchFor(siteless, true); code != 0 {
 		t.Fatalf("enable failed with code %d", code)
 	}
 	if !markerSaysRun() {
 		t.Error("after enable, the marker should read as on")
 	}
 
-	if code := cliSwitch(false); code != 0 {
+	if code := switchFor(siteless, false); code != 0 {
 		t.Fatalf("disable failed with code %d", code)
 	}
 	if markerSaysRun() {
 		t.Error("after disable, the marker should read as off")
+	}
+
+	// A machine with a site: its own setting decides, so the command refuses
+	// and leaves the marker alone rather than writing one the next installer
+	// run overwrites.
+	site := &Config{SiteRoot: filepath.Join(dir, "examplesite")}
+	if code := switchFor(site, true); code == 0 {
+		t.Error("enable on a machine with a site should refuse and point at the site's switch")
+	}
+	if markerSaysRun() {
+		t.Error("a refused enable must not write the marker")
+	}
+	if got := siteAgentInstaller(site); got != filepath.Join(dir, "examplesite", "maintenance_scripts", "install_tools", "install_agent.sh")+" examplesite" {
+		t.Errorf("installer command: %q", got)
 	}
 }
