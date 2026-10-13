@@ -122,3 +122,21 @@ func TestEscrowClientOffersPostQuantumKeyExchange(t *testing.T) {
 	}
 	t.Fatalf("the escrow client offers %v, without X25519MLKEM768", offered)
 }
+
+// A person approving an enrolment by sight must recognise the machine: an
+// image's own hostname says nothing (B21).
+func TestEscrowMachineNameSkipsImageHostnames(t *testing.T) {
+	for _, h := range []string{"", "localhost", "LOCALHOST", "localhost.localdomain", "ubuntu", "debian"} {
+		if meaningfulHostname(h) {
+			t.Errorf("%q should not name a machine", h)
+		}
+	}
+	for _, h := range []string{"mgr-a", "li1234-56.members.linode.com", "getjoinery"} {
+		if !meaningfulHostname(h) {
+			t.Errorf("%q names a machine", h)
+		}
+	}
+	if n := escrowMachineName(); n == "" || n == "localhost" {
+		t.Errorf("escrowMachineName() = %q", n)
+	}
+}

@@ -106,3 +106,63 @@ func clearStaleLeaveRequest(db *DB) {
 	}
 	_ = writeAgentSetting(db, settingLeaveRequest, "")
 }
+
+// identityCheckInterval is how often a connected agent looks at its credential.
+const identityCheckInterval = 5 * time.Second
+
+// IdentityWatcher restarts a connected agent whose credential went away or
+// was replaced behind its back: `joinery-agent leave` at a terminal runs in
+// another process and deletes the file this one connected with. Kept running
+// on the identity it loaded at start, the agent polls a plane that has
+// forgotten it into a 401 with backoff, and a join asked for after the leave
+// (staged for this process to finish) waits for a restart nobody makes. On
+// restart it starts from what is on disk: disconnected, or the new credential.
+type IdentityWatcher struct {
+	identity *NodeIdentity
+	jobLock  *sync.Mutex
+	path     string
+	interval time.Duration
+	exit     func()
+}
+
+// Run loops until the credential is not this process's, then exits.
+func (w *IdentityWatcher) Run(ctx context.Context) {
+	interval := w.interval
+	if interval <= 0 {
+		interval = identityCheckInterval
+	}
+	path := w.path
+	if path == "" {
+		path = IdentityPath()
+	}
+	exit := w.exit
+	if exit == nil {
+		exit = func() { os.Exit(0) }
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(interval):
+		}
+		if identityStillOurs(path, w.identity) {
+			continue
+		}
+		// A job mid-run finishes first, and none starts after.
+		w.jobLock.Lock()
+		log.Printf("the credential at %s is gone or replaced (a leave or a join at the terminal): restarting into what is on disk", path)
+		exit()
+		return
+	}
+}
+
+// identityStillOurs is false only when the file is gone or names another key.
+// A read that fails for another reason keeps the agent as it is: a restart
+// would not read it any better.
+func identityStillOurs(path string, id *NodeIdentity) bool {
+	cur, err := LoadIdentity(path)
+	if err != nil {
+		return true
+	}
+	return cur != nil && cur.PublicKey == id.PublicKey && cur.NodeID == id.NodeID && sameHolder(cur.PlaneURL, id.PlaneURL)
+}

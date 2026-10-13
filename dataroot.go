@@ -376,7 +376,7 @@ func luksSlotsOf(dev string, header ...string) ([]luksSlot, error) {
 // cliDataRoot is `joinery-agent data-root ...`, joinery_data_root.sh's helper.
 func cliDataRoot(args []string) int {
 	if len(args) == 0 {
-		return cliError("data-root: seal --recipient FILE [--slot] | unseal --sidecar FILE | reseal --recipient FILE | check-recipient FILE | slots DEVICE | add-slot DEVICE | prune-tokens DEVICE | identity | enrol --holder URL [--wait SECONDS] | report STATE | preflight | report-key | escrow-rekey --old-report-key-file FILE")
+		return cliError("data-root: seal --recipient FILE [--slot] | unseal --sidecar FILE | reseal --recipient FILE | check-recipient FILE | slots DEVICE | add-slot DEVICE | prune-tokens DEVICE | identity | enrol --holder URL [--wait SECONDS] [--name NAME] | report STATE | preflight | report-key | escrow-rekey --old-report-key-file FILE")
 	}
 	flag := func(name string) string {
 		for i, a := range args[1:] {
@@ -591,7 +591,9 @@ func cliDataRoot(args []string) int {
 				wait = time.Duration(n) * time.Second
 			}
 		}
-		slot, err := escrowEnrol(context.Background(), holder, wait, func(f string, a ...interface{}) {
+		// --name: what the holder's page calls it; by default its site's
+		// domain, its node and its hostname (escrowMachineName).
+		slot, err := escrowEnrol(context.Background(), holder, flag("name"), wait, func(f string, a ...interface{}) {
 			fmt.Printf(f+"\n", a...)
 		})
 		if err != nil {

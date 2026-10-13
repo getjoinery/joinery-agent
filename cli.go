@@ -351,7 +351,7 @@ func cliLeave() int {
 	if err := performLeave(ctx, newPlaneClient(cliConfig().PlaneTLSInsecure), identity); err != nil {
 		return cliError("could not remove the local credential at %s: %v", IdentityPath(), err)
 	}
-	fmt.Printf("Disconnected from %s. The local credential is gone.\n", identity.PlaneURL)
+	fmt.Printf("Disconnected from %s. The local credential is gone; the running agent restarts without it within seconds.\n", identity.PlaneURL)
 	return 0
 }
 

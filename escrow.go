@@ -333,7 +333,7 @@ type escrowEnrolAnswer struct {
 // needed; with any other holder the request waits for a person to approve it
 // on the holder's dashboard after comparing fingerprints (C-3). wait bounds how
 // long this call polls for that approval.
-func escrowEnrol(ctx context.Context, holderURL string, wait time.Duration, say func(string, ...interface{})) (int, error) {
+func escrowEnrol(ctx context.Context, holderURL, name string, wait time.Duration, say func(string, ...interface{})) (int, error) {
 	conf, err := readDataRootConfig(dataRootConfPath)
 	if err != nil {
 		return 0, err
@@ -351,7 +351,9 @@ func escrowEnrol(ctx context.Context, holderURL string, wait time.Duration, say 
 	if err != nil {
 		return 0, fmt.Errorf("the unlock identity: %v", err)
 	}
-	host, _ := os.Hostname()
+	if strings.TrimSpace(name) == "" {
+		name = escrowMachineName()
+	}
 	vk, err := volumeKeyFromMapping()
 	if err != nil {
 		return 0, err
@@ -361,7 +363,7 @@ func escrowEnrol(ctx context.Context, holderURL string, wait time.Duration, say 
 	// Its own addresses, both families (D3): a dual-stack machine may ask
 	// over either. The holder adds the one the request comes from.
 	payload := map[string]interface{}{
-		"addresses": machineAddresses(), "box": sidecarBox(conf), "hostname": host,
+		"addresses": machineAddresses(), "box": sidecarBox(conf), "hostname": name,
 		"holder": strings.TrimRight(holderURL, "/"), "report_key": base64.StdEncoding.EncodeToString(reportKey),
 	}
 	// Enrolling with its own management node, the machine signs the identity
@@ -637,6 +639,46 @@ func cryptsetupOpenKeySlot(dev string, header []string, secret []byte, slot int)
 	return werr
 }
 
+// escrowMachineName is what the holder's page names this machine by: a
+// person approving an enrolment by sight (C-3) must recognise it, and a fresh
+// Linode's hostname is "localhost". Its site's domain, then its node at its
+// management node, then its hostname where that says anything.
+func escrowMachineName() string {
+	var parts []string
+	if php, err := parseGlobalvars(joineryConfigPath()); err == nil {
+		if d := siteDomainFromWebDir(php["webDir"]); d != "" {
+			parts = append(parts, d)
+		}
+	}
+	if nid, err := LoadIdentity(IdentityPath()); err == nil && nid != nil && nid.NodeSlug != "" {
+		where := nid.PlaneURL
+		if u, err := url.Parse(nid.PlaneURL); err == nil && u.Host != "" {
+			where = u.Host
+		}
+		parts = append(parts, "node "+nid.NodeSlug+" at "+where)
+	}
+	if h, _ := os.Hostname(); meaningfulHostname(h) {
+		parts = append(parts, h)
+	}
+	if len(parts) == 0 {
+		return "an unnamed machine"
+	}
+	name := strings.Join(parts, " · ")
+	if len(name) > 255 {
+		name = name[:255]
+	}
+	return name
+}
+
+// meaningfulHostname is false for the names an image is born with.
+func meaningfulHostname(h string) bool {
+	switch strings.ToLower(strings.TrimSpace(h)) {
+	case "", "localhost", "localhost.localdomain", "ubuntu", "debian", "none", "(none)":
+		return false
+	}
+	return true
+}
+
 func sameHolder(a, b string) bool {
 	return strings.EqualFold(strings.TrimRight(a, "/"), strings.TrimRight(b, "/"))
 }
@@ -649,7 +691,7 @@ func dataRootEnrolForPlane(ctx context.Context) (map[string]interface{}, error) 
 		return nil, errors.New("this machine is not connected to a management node")
 	}
 	var said []string
-	slot, err := escrowEnrol(ctx, nid.PlaneURL, 30*time.Second, func(f string, a ...interface{}) {
+	slot, err := escrowEnrol(ctx, nid.PlaneURL, "", 30*time.Second, func(f string, a ...interface{}) {
 		said = append(said, fmt.Sprintf(f, a...))
 	})
 	if err != nil {

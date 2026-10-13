@@ -11,7 +11,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 )
 
 // Leaving is unilateral: the disconnect the local admin asked for happens on
@@ -109,5 +111,45 @@ func TestLeaveDiscardsAStagedKeypairToo(t *testing.T) {
 	}
 	if _, err := os.Stat(stagedIdentityPath()); !os.IsNotExist(err) {
 		t.Fatal("a staged keypair survived the leave")
+	}
+}
+
+// A leave at the terminal runs in another process: the running agent sees
+// its credential gone and restarts into what is on disk, so it stops polling
+// a plane that forgot it and a join asked for after the leave gets finished
+// (B33). A credential replaced under it is the same. Its own stays.
+func TestIdentityWatcherRestartsWhenTheCredentialGoes(t *testing.T) {
+	t.Setenv("AGENT_IDENTITY_PATH", filepath.Join(t.TempDir(), "node_identity.json"))
+	id := connectedTo(t, "https://plane.example", 7)
+
+	run := func() chan struct{} {
+		exited := make(chan struct{}, 1)
+		w := &IdentityWatcher{identity: id, jobLock: &sync.Mutex{}, interval: 10 * time.Millisecond,
+			exit: func() { exited <- struct{}{} }}
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		t.Cleanup(cancel)
+		go w.Run(ctx)
+		return exited
+	}
+
+	exited := run()
+	select {
+	case <-exited:
+		t.Fatal("restarted while its own credential is in place")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	if err := os.Remove(IdentityPath()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-exited:
+	case <-time.After(time.Second):
+		t.Fatal("the credential is gone and the agent did not restart")
+	}
+
+	other := connectedTo(t, "https://plane.example", 8)
+	if identityStillOurs(IdentityPath(), id) || !identityStillOurs(IdentityPath(), other) {
+		t.Fatal("a credential for another node is not this process's; its own is")
 	}
 }

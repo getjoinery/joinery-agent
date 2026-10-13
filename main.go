@@ -24,7 +24,7 @@ import (
 // must stay ABOVE 1.1.0 forever - install_agent.sh's downgrade guard sorts
 // with sort -V and refuses to replace a "newer" binary, so anything below
 // 1.1.0 strands those agents permanently.
-var version = "1.75.0"
+var version = "1.75.1"
 
 // How often the idle loop looks at the shipped agent_dist manifest. Update
 // checks never run while a job is executing.
@@ -167,6 +167,7 @@ func startConnectedWatchers(ctx context.Context, cfg *Config, db *DB, jobLock *s
 	}
 	mover := &MoveWatcher{cfg: cfg, jobLock: jobLock, agentVersion: agentVersion, identity: identity}
 	go mover.Run(ctx)
+	go (&IdentityWatcher{identity: identity, jobLock: jobLock}).Run(ctx)
 }
 
 func startRemoteSource(cfg *Config, db *DB, jobLock *sync.Mutex, agentVersion string) *RemoteSource {

@@ -29,3 +29,18 @@ func TestMachineAddressesAreGlobalUnicastOnly(t *testing.T) {
 		}
 	}
 }
+
+// Docker's bridges are never stated: nothing outside the machine routes to
+// them, and a container's request to this host arrives from one.
+func TestContainerBridgesAreLeftOut(t *testing.T) {
+	for _, name := range []string{"docker0", "br-3f2a9c1d0e4b", "docker_gwbridge", "veth1a2b3c4"} {
+		if !containerBridge(name) {
+			t.Errorf("%s should be left out", name)
+		}
+	}
+	for _, name := range []string{"eth0", "ens3", "enp1s0", "wg0", "bridge0", "lo"} {
+		if containerBridge(name) {
+			t.Errorf("%s is not Docker's and should be stated", name)
+		}
+	}
+}
