@@ -76,13 +76,15 @@ var (
 		"install_host_converger.sh",
 		"render_vhost.sh",
 		"host_housekeeping.sh",
+		"host_swap.sh",
 		"site_housekeeping.sh",
 	}
 	runInstallerHost = []string{
 		"host_housekeeping.sh",
+		"host_swap.sh",
 		"install_host_converger.sh",
 	}
-	runInstallerName = regexp.MustCompile(`^(install_agent\.sh|install_parser_jail\.sh|install_host_converger\.sh|render_vhost\.sh|host_housekeeping\.sh|site_housekeeping\.sh|plugin:[a-z][a-z0-9_]{1,49})$`)
+	runInstallerName = regexp.MustCompile(`^(install_agent\.sh|install_parser_jail\.sh|install_host_converger\.sh|render_vhost\.sh|host_housekeeping\.sh|host_swap\.sh|site_housekeeping\.sh|plugin:[a-z][a-z0-9_]{1,49})$`)
 )
 
 func runInstallerArgv(_ context.Context, env *ExecEnv, p Params) ([]string, error) {
