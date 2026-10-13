@@ -350,11 +350,12 @@ type joinStatusResponse struct {
 //
 // A machine carrying a site claims the SITE's name — the site root's directory
 // name, which is what its operator, its installer and its plane already call
-// it. A siteless machine has nothing better than its OS hostname (the docker
-// installer names those explicitly through the CLI's --name). Found live: a
-// bare-metal site on a fresh cloud instance whose hostname was "localhost"
-// asked to join as "localhost", and the operator approving it had to match a
-// fingerprint against a name that named nothing.
+// it. A siteless machine claims its OS hostname where that names it, and
+// otherwise its address (the docker installer names those explicitly through
+// the CLI's --name). Found live: a bare-metal site on a fresh cloud instance
+// whose hostname was "localhost" asked to join as "localhost", and the
+// operator approving it had to match a fingerprint against a name that named
+// nothing; a shared host joined from the CLI did the same (B54).
 func (w *JoinWatcher) claimedName() string {
 	return claimedNameFor(func() string {
 		if w.cfg == nil {
@@ -372,6 +373,12 @@ func claimedNameFor(siteRoot string) string {
 		}
 	}
 	hostname, _ := os.Hostname()
+	if meaningfulHostname(hostname) {
+		return hostname
+	}
+	if addrs := machineAddresses(); len(addrs) > 0 {
+		return "machine at " + addrs[0]
+	}
 	return hostname
 }
 

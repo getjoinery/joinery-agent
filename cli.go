@@ -195,9 +195,11 @@ func cliJoin(args []string) int {
 		return cliError("the staged keypair is unusable and has been discarded; run join again: %v", err)
 	}
 
+	// No --name: what the site-driven ask claims, the site's name, or a
+	// siteless machine's own (claimedNameFor), never an image's "localhost".
 	name := staged.ClaimedName
 	if name == "" {
-		name, _ = os.Hostname()
+		name = watcher.claimedName()
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), howLongToWaitForApproval+time.Minute)
 	defer cancel()

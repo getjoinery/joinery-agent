@@ -85,11 +85,30 @@ func TestClaimedNameIsTheSiteNameWhenThereIsASite(t *testing.T) {
 		t.Fatalf("a trailing slash must not change the name, got %q", got)
 	}
 	host, _ := os.Hostname()
-	if got := claimedNameFor(""); got != host {
-		t.Fatalf("a siteless machine claims its hostname %q, got %q", host, got)
+	want := host
+	if !meaningfulHostname(host) {
+		if addrs := machineAddresses(); len(addrs) > 0 {
+			want = "machine at " + addrs[0]
+		}
 	}
-	if got := claimedNameFor("/"); got != host {
-		t.Fatalf("a site root of / names nothing and falls back to the hostname, got %q", got)
+	if got := claimedNameFor(""); got != want {
+		t.Fatalf("a siteless machine claims %q, got %q", want, got)
+	}
+	if got := claimedNameFor("/"); got != want {
+		t.Fatalf("a site root of / names nothing and falls back as a siteless machine does, got %q", got)
+	}
+}
+
+// An image's own hostname names nothing to the operator approving a join
+// (B54): a siteless machine whose hostname is one claims its address instead.
+func TestImageHostnamesNameNothing(t *testing.T) {
+	for _, h := range []string{"localhost", "localhost.localdomain", "ubuntu", ""} {
+		if meaningfulHostname(h) {
+			t.Errorf("%q should not name a machine", h)
+		}
+	}
+	if !meaningfulHostname("mt-enc") {
+		t.Errorf("a hostname someone chose names the machine")
 	}
 }
 
