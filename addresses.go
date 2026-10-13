@@ -2,6 +2,8 @@ package main
 
 import (
 	"net"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 )
@@ -11,15 +13,40 @@ import (
 // placement record by.
 const maxReportedAddresses = 16
 
-// containerBridge reports an interface Docker made for its containers:
-// docker0, a user network's br-<id>, the swarm gateway, a container's veth
-// end. Their addresses are this machine's side of a private network nothing
-// outside it routes to, and through Docker's port forwarding a container's
-// request to a service on this host arrives FROM the bridge's address: stated,
-// it would let a co-tenant container ask as this machine.
+// containerBridge reports an interface made for containers: docker0, a user
+// network's br-<id>, the swarm gateway, a container's veth end, and any
+// bridge whose only ports are containers' (a Docker network given a name of
+// its own, as a shared host's site networks are: jsnet1, jsnet2). Their
+// addresses are this machine's side of a private network nothing outside it
+// routes to, and through Docker's port forwarding a container's request to a
+// service on this host arrives FROM the bridge's address: stated, it would
+// let a co-tenant container ask as this machine.
 func containerBridge(name string) bool {
 	return name == "docker0" || name == "docker_gwbridge" ||
-		strings.HasPrefix(name, "br-") || strings.HasPrefix(name, "veth")
+		strings.HasPrefix(name, "br-") || strings.HasPrefix(name, "veth") ||
+		containerOnlyBridge(sysClassNet, name)
+}
+
+// sysClassNet is where the kernel lists this machine's interfaces.
+var sysClassNet = "/sys/class/net"
+
+// containerOnlyBridge reports a Linux bridge with no port but containers'
+// veth ends, or none at all yet. A machine whose uplink is a bridge (br0 over
+// eth0) has a port that is not a container's, and keeps its address.
+func containerOnlyBridge(root, name string) bool {
+	if _, err := os.Stat(filepath.Join(root, name, "bridge")); err != nil {
+		return false
+	}
+	ports, err := os.ReadDir(filepath.Join(root, name, "brif"))
+	if err != nil {
+		return false
+	}
+	for _, p := range ports {
+		if !strings.HasPrefix(p.Name(), "veth") {
+			return false
+		}
+	}
+	return true
 }
 
 // machineAddresses is every global unicast address on this machine's
