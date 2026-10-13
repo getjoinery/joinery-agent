@@ -1,6 +1,8 @@
 package main
 
 import (
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -30,11 +32,29 @@ func TestBundleConvergeYieldsToARunningJob(t *testing.T) {
 	lock.Lock()
 	defer lock.Unlock()
 	done := make(chan struct{})
+	var err error
 	go func() {
-		convergeAfterBundle(&Config{Siteless: true, PolicyPath: "/nonexistent/policy"}, nil, &lock)
+		err = convergeAfterBundle(&Config{Siteless: true, PolicyPath: "/nonexistent/policy"}, nil, &lock)
 		close(done)
 	}()
 	<-done // returned while the lock was held, without blocking
+	if err == nil {
+		t.Fatal("a converge that did not run must say so")
+	}
+}
+
+// joinery-agent bundle install fails when the converge did not run, so the
+// converge returns why: here, no tree to verify the runner against.
+func TestBundleConvergeSaysWhyItDidNotRun(t *testing.T) {
+	var lock sync.Mutex
+	t.Setenv("AGENT_TOOL_ROOT", filepath.Join(t.TempDir(), "tree"))
+	err := convergeAfterBundle(&Config{Siteless: true, PolicyPath: "/nonexistent/policy"}, nil, &lock)
+	if err == nil || !strings.Contains(err.Error(), "host_converge") {
+		t.Fatalf("a converge that did not run must say why, got %v", err)
+	}
+	if err := convergeAfterBundle(&Config{Siteless: false}, nil, &lock); err != nil {
+		t.Fatalf("a site machine has nothing to converge, which is not a failure: %v", err)
+	}
 }
 
 // The word it runs is the one the plane and the recipe run, with the bound

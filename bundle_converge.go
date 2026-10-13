@@ -21,6 +21,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"strings"
 	"sync"
@@ -30,13 +31,17 @@ import (
 )
 
 // convergeAfterBundle runs host_converge once, now, because a bundle landed.
-func convergeAfterBundle(cfg *Config, db *DB, jobLock *sync.Mutex) {
+// It says why when it did not converge. The daemon only logs that; the
+// command that installs a bundle from a file (joinery-agent bundle install)
+// fails on it, because on a host that never joins a management node nothing
+// else would install the host timer.
+func convergeAfterBundle(cfg *Config, db *DB, jobLock *sync.Mutex) error {
 	if cfg == nil || !cfg.Siteless {
-		return
+		return nil
 	}
 	if !jobLock.TryLock() {
 		log.Printf("=== Bundle converge === a job holds the lock; the host timer converges on its next tick")
-		return
+		return fmt.Errorf("a job holds the lock")
 	}
 	defer jobLock.Unlock()
 	done := writeJobMarker("bundle converge")
@@ -45,20 +50,20 @@ func convergeAfterBundle(cfg *Config, db *DB, jobLock *sync.Mutex) {
 	policy, err := primitives.LoadPolicy(cfg.PolicyPath)
 	if err != nil {
 		log.Printf("=== Bundle converge === not run: acceptance policy unusable: %v", err)
-		return
+		return fmt.Errorf("the acceptance policy is unusable: %w", err)
 	}
 	word, ok := primitives.Lookup("host_converge")
 	if !ok {
 		log.Printf("=== Bundle converge === not run: this agent has no host_converge word")
-		return
+		return fmt.Errorf("this agent has no host_converge word")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), word.Timeout)
 	defer cancel()
-	log.Printf("=== Bundle converge === a new support bundle is installed; running host_converge")
+	log.Printf("=== Bundle converge === running host_converge on the support bundle in place")
 	result, err := primitives.Execute(ctx, execEnvFor(cfg, db), policy, primitives.Request{Primitive: "host_converge"})
 	if err != nil {
 		log.Printf("=== Bundle converge === host_converge did not complete: %v", err)
-		return
+		return fmt.Errorf("host_converge did not complete: %w", err)
 	}
 	output, _ := result["output"].(string)
 	lines := strings.Split(strings.TrimRight(output, "\n"), "\n")
@@ -68,6 +73,7 @@ func convergeAfterBundle(cfg *Config, db *DB, jobLock *sync.Mutex) {
 		}
 	}
 	log.Printf("=== Bundle converge === done (%d line(s) of transcript)", len(lines))
+	return nil
 }
 
 // bundleConvergeTimeoutFloor is what a test pins: the word's own timeout is

@@ -24,7 +24,7 @@ import (
 // must stay ABOVE 1.1.0 forever - install_agent.sh's downgrade guard sorts
 // with sort -V and refuses to replace a "newer" binary, so anything below
 // 1.1.0 strands those agents permanently.
-var version = "1.74.1"
+var version = "1.75.0"
 
 // How often the idle loop looks at the shipped agent_dist manifest. Update
 // checks never run while a job is executing.
@@ -614,7 +614,7 @@ func main() {
 				// converge to it now, the machine's twin of the site's path
 				// trigger, and how the host timer first gets installed on a
 				// host nobody pressed a button for (item 6b).
-				convergeAfterBundle(cfg, db, &jobLock)
+				_ = convergeAfterBundle(cfg, db, &jobLock) // its log says why when it did not converge
 			}
 			if attemptUpdate(&jobLock, updater.CheckAndApply) {
 				os.Exit(0)

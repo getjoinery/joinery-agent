@@ -172,6 +172,7 @@ joinery-agent/
   update.go        Signed self-update, with a watchdog rollback
   releaselog.go    Is a new binary's release in Sigstore's public log
   bundle.go        The support bundle, for a machine with no site tree
+  bundle_cli.go    Installing a support bundle from a file (the release's own, at install)
   manifestheal.go  Recovering a node that has stopped trusting its own files
   quiet.go         The run switch
   db.go            This machine's own site database: facts out, heartbeat in

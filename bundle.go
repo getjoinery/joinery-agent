@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"joinery-agent/primitives"
@@ -292,15 +293,8 @@ func (b *BundleSync) CheckAndApply() bool {
 	return true
 }
 
-// install does the whole dance: fetch, integrity-check the delivery, unpack
-// into a staging tree, verify that tree against its own signed manifest, and
-// only then put it in place.
+// install fetches the bundle from the management node and installs it.
 func (b *BundleSync) install(id *NodeIdentity, wantSha string) (string, error) {
-	root := BundleRoot()
-	if err := os.MkdirAll(filepath.Dir(root), 0o755); err != nil {
-		return "", fmt.Errorf("cannot create %s: %w", filepath.Dir(root), err)
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), artifactHTTPTimeout)
 	defer cancel()
 
@@ -309,11 +303,35 @@ func (b *BundleSync) install(id *NodeIdentity, wantSha string) (string, error) {
 		return "", fmt.Errorf("fetching the bundle: %w", err)
 	}
 	defer body.Close()
+	return b.installFrom(body, wantSha, b.source.Statement)
+}
+
+// installFrom does the whole dance on bytes from wherever they came (the
+// management node, or a release's own file: joinery-agent bundle install):
+// integrity-check the delivery when a hash was advertised, unpack into a
+// staging tree, verify that tree against its own signed manifest, hold it to
+// the public log, and only then put it in place.
+func (b *BundleSync) installFrom(body io.Reader, wantSha string, fetchStatement func() ([]byte, error)) (string, error) {
+	root := BundleRoot()
+	if err := os.MkdirAll(filepath.Dir(root), 0o755); err != nil {
+		return "", fmt.Errorf("cannot create %s: %w", filepath.Dir(root), err)
+	}
+	// One install at a time, across processes: the daemon and a hand-run
+	// joinery-agent bundle install share the staging tree, and one clearing it
+	// while the other renames it would put an unverified tree in place. The
+	// lock dies with its holder, so it leaves nothing stale; held, it is a
+	// retry, never a verdict on the bytes.
+	unlock, err := lockBundleInstall(root + ".lock")
+	if err != nil {
+		return "", err
+	}
+	defer unlock()
 
 	// Hash what actually arrived, and compare it to what was advertised. This
 	// is a DELIVERY check, not a trust check — the signature below is the trust
 	// check — and it earns its place by turning a truncated transfer into a
-	// clear refusal instead of a confusing manifest failure.
+	// clear refusal instead of a confusing manifest failure. A file read from
+	// this machine advertises nothing, so there is nothing to compare.
 	hasher := sha256.New()
 	staging := root + ".new"
 	if err := removeTree(staging); err != nil {
@@ -324,9 +342,12 @@ func (b *BundleSync) install(id *NodeIdentity, wantSha string) (string, error) {
 		return "", err
 	}
 	got := hex.EncodeToString(hasher.Sum(nil))
-	if !strings.EqualFold(got, wantSha) {
+	if wantSha != "" && !strings.EqualFold(got, wantSha) {
 		removeTree(staging)
-		return "", fmt.Errorf("the management node served bytes that do not match the bundle it advertised")
+		return "", fmt.Errorf("the bytes that arrived do not match the hash they were offered under")
+	}
+	if wantSha == "" {
+		wantSha = got
 	}
 
 	version, err := verifyBundleTree(staging, b.pubKey)
@@ -336,7 +357,7 @@ func (b *BundleSync) install(id *NodeIdentity, wantSha string) (string, error) {
 	}
 
 	// The public log, before the swap.
-	if err := b.checkLogged(got, version, b.source.Statement); err != nil {
+	if err := b.checkLogged(got, version, fetchStatement); err != nil {
 		removeTree(staging)
 		return "", err
 	}
@@ -366,6 +387,19 @@ func (b *BundleSync) install(id *NodeIdentity, wantSha string) (string, error) {
 		log.Printf("support bundle: installed, but the version stamp could not be written: %v", err)
 	}
 	return version, nil
+}
+
+// lockBundleInstall takes the bundle install lock without waiting.
+func lockBundleInstall(path string) (func(), error) {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("%w: cannot open %s: %v", errBundleRetry, path, err)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("%w: another bundle install is in progress (%s)", errBundleRetry, path)
+	}
+	return func() { f.Close() }, nil
 }
 
 // checkLogged holds a bundle to the public log: a machine that holds the keys

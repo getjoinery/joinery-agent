@@ -63,7 +63,7 @@ const (
 	// this platform makes. The shell gate pins the two to one number.
 	luksSlotPBKDF      = "pbkdf2"
 	luksSlotHash       = "sha256"
-	luksSlotIterations = "2000000"
+	luksSlotIterations = "1000000"
 	// How long the unlock waits for the holder before the console and the
 	// page are offered as well (O2). It keeps asking the holder meanwhile.
 	escrowFirstWait = 60 * time.Second
