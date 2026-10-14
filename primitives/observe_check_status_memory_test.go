@@ -22,12 +22,13 @@ func TestCollectMemoryInAContainerIsTheSites(t *testing.T) {
 	write("memory.max", "268435456\n")                          // 256 MiB limit
 	write("dockerenv", "")
 
-	saved := []string{meminfoPath, dockerEnvPath, ownCgroupDir}
-	defer func() { meminfoPath, dockerEnvPath, ownCgroupDir = saved[0], saved[1], saved[2] }()
+	savedMarkers := containerMarkers
+	saved := []string{meminfoPath, ownCgroupDir}
+	defer func() { meminfoPath, ownCgroupDir, containerMarkers = saved[0], saved[1], savedMarkers }()
 	meminfoPath, ownCgroupDir = filepath.Join(dir, "meminfo"), dir
 
 	// Outside a container: the machine, as always.
-	dockerEnvPath = filepath.Join(dir, "absent")
+	containerMarkers = []string{filepath.Join(dir, "absent"), filepath.Join(dir, "absent2")}
 	r := map[string]interface{}{}
 	collectMemory(r)
 	if r["memory_total_mb"] != int64(4096) || r["memory_used_mb"] != int64(1024) {
@@ -35,7 +36,7 @@ func TestCollectMemoryInAContainerIsTheSites(t *testing.T) {
 	}
 
 	// In a container with a limit: 200 MiB used of 256.
-	dockerEnvPath = filepath.Join(dir, "dockerenv")
+	containerMarkers = []string{filepath.Join(dir, "dockerenv"), filepath.Join(dir, "absent2")}
 	r = map[string]interface{}{}
 	collectMemory(r)
 	if r["memory_total_mb"] != int64(256) || r["memory_used_mb"] != int64(200) || r["memory_free_mb"] != int64(56) {
@@ -43,6 +44,13 @@ func TestCollectMemoryInAContainerIsTheSites(t *testing.T) {
 	}
 	if r["swap_total_mb"] != int64(1024) {
 		t.Fatalf("swap stays the server's, got %v", r)
+	}
+	// The site container engine's marker counts the same (specs/site_container_engine.md WP4).
+	containerMarkers = []string{filepath.Join(dir, "absent"), filepath.Join(dir, "dockerenv")}
+	r = map[string]interface{}{}
+	collectMemory(r)
+	if r["memory_total_mb"] != int64(256) || r["memory_used_mb"] != int64(200) {
+		t.Fatalf("a site container engine container reports its own use and limit, got %v", r)
 	}
 
 	// In a container with no limit: its own use, out of the whole server.

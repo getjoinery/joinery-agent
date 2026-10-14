@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -274,13 +275,17 @@ func parseGlobalvars(path string) (map[string]string, error) {
 		return nil, err
 	}
 	defer f.Close()
+	return parseGlobalvarsFrom(f, path)
+}
 
+// parseGlobalvarsFrom reads the settings lines from r, named path in errors.
+func parseGlobalvarsFrom(r io.Reader, path string) (map[string]string, error) {
 	// Match: $this->settings['dbname'] = 'value';
 	// Captures the key (group 1) and value (group 2)
 	re := regexp.MustCompile(`\$this->settings\['([^']+)'\]\s*=\s*'([^']*)'`)
 
 	settings := make(map[string]string)
-	scanner := bufio.NewScanner(f)
+	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		matches := re.FindStringSubmatch(line)

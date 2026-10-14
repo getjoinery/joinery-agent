@@ -13,7 +13,8 @@ import (
 // placement record by.
 const maxReportedAddresses = 16
 
-// containerBridge reports an interface made for containers: docker0, a user
+// containerBridge reports an interface made for containers: docker0 (podman0 on
+// the site container engine), a user
 // network's br-<id>, the swarm gateway, a container's veth end, and any
 // bridge whose only ports are containers' (a Docker network given a name of
 // its own, as a shared host's site networks are: jsnet1, jsnet2). Their
@@ -22,7 +23,7 @@ const maxReportedAddresses = 16
 // service on this host arrives FROM the bridge's address: stated, it would
 // let a co-tenant container ask as this machine.
 func containerBridge(name string) bool {
-	return name == "docker0" || name == "docker_gwbridge" ||
+	return name == "docker0" || name == "docker_gwbridge" || name == "podman0" ||
 		strings.HasPrefix(name, "br-") || strings.HasPrefix(name, "veth") ||
 		containerOnlyBridge(sysClassNet, name)
 }
@@ -51,7 +52,7 @@ func containerOnlyBridge(root, name string) bool {
 
 // machineAddresses is every global unicast address on this machine's
 // interfaces, IPv4 first, each family sorted, loopback, link-local and
-// Docker's bridges left out. It is what a join sends so the plane can match this machine to the
+// the container engine's bridges left out. It is what a join sends so the plane can match this machine to the
 // placement record it already holds, whichever family the request travelled
 // over. Nothing here is trusted by the plane beyond "an address this machine
 // claims"; the plane validates each as an address and matches only against

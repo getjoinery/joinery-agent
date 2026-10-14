@@ -241,12 +241,12 @@ const (
 // default is the live answer for the common posture.
 var HasSite = func() bool { return true }
 
-// InContainer answers whether this process runs inside a container: the
-// Docker marker file, or no systemd to have units at all. A variable so a
-// test can say either; the loop and the claim read it through the same
-// answer.
+// InContainer answers whether this process runs inside a container: either
+// engine's marker file (primitives.RunsInContainer), or no systemd to have
+// units at all. A variable so a test can say either; the loop and the claim
+// read it through the same answer.
 var InContainer = func() bool {
-	if _, err := os.Stat("/.dockerenv"); err == nil {
+	if primitives.RunsInContainer() {
 		return true
 	}
 	if _, err := os.Stat("/run/systemd/system"); err != nil {

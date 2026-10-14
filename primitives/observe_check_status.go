@@ -108,9 +108,8 @@ func collectDisk(path string, result map[string]interface{}) {
 
 // Where collectMemory reads. Variables so a test can point them at a fixture.
 var (
-	meminfoPath   = "/proc/meminfo"
-	dockerEnvPath = "/.dockerenv"
-	ownCgroupDir  = "/sys/fs/cgroup"
+	meminfoPath  = "/proc/meminfo"
+	ownCgroupDir = "/sys/fs/cgroup"
 )
 
 // collectMemory reports the machine's memory, and inside a container the
@@ -180,7 +179,7 @@ func collectMemory(result map[string]interface{}) {
 // container, or where the group's files cannot be read, and the caller then
 // reports /proc/meminfo as it always has.
 func containerMemory() (used int64, limit int64, ok bool) {
-	if _, err := os.Stat(dockerEnvPath); err != nil {
+	if !RunsInContainer() {
 		return 0, 0, false
 	}
 	current, err := readCgroupNumber(filepath.Join(ownCgroupDir, "memory.current"))

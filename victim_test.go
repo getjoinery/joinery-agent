@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"joinery-agent/primitives"
+
+	"golang.org/x/sys/unix"
 )
 
 // TestDecommissionScopeIsItsOwnDomain pins the domain separation: the
@@ -175,16 +177,16 @@ func TestVictimConfigIsUnderDockersOwnRoot(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "Globalvars_site.php"), []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	saved := dockerRootDir
-	defer func() { dockerRootDir = saved }()
+	saved := engineRootDir
+	defer func() { engineRootDir = saved }()
 
-	dockerRootDir = func() (string, error) { return root, nil }
+	engineRootDir = func() (string, error) { return root, nil }
 	cfg, err := victimConfig("remapped")
 	if err != nil || cfg["dbname"] != "remapped" {
 		t.Fatalf("the config under a remapped root was not read: %v %+v", err, cfg)
 	}
 
-	dockerRootDir = func() (string, error) { return "", errors.New("daemon down") }
+	engineRootDir = func() (string, error) { return "", errors.New("daemon down") }
 	_, err = victimConfig("remapped")
 	var refusal *primitives.RefusalError
 	if !errors.As(err, &refusal) || !strings.Contains(err.Error(), "did not say where it keeps") {
@@ -192,11 +194,11 @@ func TestVictimConfigIsUnderDockersOwnRoot(t *testing.T) {
 	}
 
 	for _, bad := range []string{"", "var/lib/docker", "/var/lib/../etc", "/var/lib/docker/"} {
-		if _, err := checkDockerRoot(bad); err == nil {
+		if _, err := checkEngineRoot(bad); err == nil {
 			t.Fatalf("root %q must be refused", bad)
 		}
 	}
-	if got, err := checkDockerRoot("/var/lib/docker/100000.100000"); err != nil || got != "/var/lib/docker/100000.100000" {
+	if got, err := checkEngineRoot("/var/lib/docker/100000.100000"); err != nil || got != "/var/lib/docker/100000.100000" {
 		t.Fatalf("a clean remapped root must pass: %q %v", got, err)
 	}
 }
@@ -210,9 +212,43 @@ func TestDockerRootSaysWhyDockerDidNotAnswer(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir)
-	_, err := dockerRootDir()
+	savedCurrent := siteEngineCurrent
+	defer func() { siteEngineCurrent = savedCurrent }()
+	siteEngineCurrent = filepath.Join(dir, "no-site-engine")
+	_, err := engineRootDir()
 	if err == nil || !strings.Contains(err.Error(), "Cannot connect to the Docker daemon") {
 		t.Fatalf("the refusal must carry Docker's own words, got %v", err)
+	}
+}
+
+// TestEngineRootOnTheSiteContainerEngine: on a host whose sites run on the
+// site container engine the root is its storage, asked of podman as its
+// graphroot (whose volumes are laid out as Docker's), never of docker, which
+// such a host does not run (specs/site_container_engine.md WP4).
+func TestEngineRootOnTheSiteContainerEngine(t *testing.T) {
+	dir := t.TempDir()
+	podman := filepath.Join(dir, "podman")
+	stub := "#!/bin/sh\n" +
+		`[ "$1 $2 $3" = 'info -f {{.Store.GraphRoot}}' ] && { echo /srv/joinery/containers/storage; exit 0; }` + "\nexit 9\n"
+	if err := os.WriteFile(podman, []byte(stub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("6.1.4-aaaaaaaaaaaa", filepath.Join(dir, "current")); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir) // a docker here would be a misroute: there is none
+	savedCurrent, savedPodman := siteEngineCurrent, siteEnginePodman
+	defer func() { siteEngineCurrent, siteEnginePodman = savedCurrent, savedPodman }()
+	siteEngineCurrent, siteEnginePodman = filepath.Join(dir, "current"), podman
+	root, err := engineRootDir()
+	if err != nil || root != "/srv/joinery/containers/storage" {
+		t.Fatalf("the site container engine's storage is the root: %q %v", root, err)
+	}
+	if err := os.Chmod(podman, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := engineRootDir(); err == nil || !strings.Contains(err.Error(), "missing or not executable") {
+		t.Fatalf("an engine installed with no usable podman is refused, never read as Docker: %v", err)
 	}
 }
 
@@ -233,5 +269,45 @@ func TestVictimStringsAreInertDisplayData(t *testing.T) {
 func TestADSNValueCannotInjectKeys(t *testing.T) {
 	if got := quoteDSNValue(`x' sslmode='require`); got != `'x\' sslmode=\'require'` {
 		t.Errorf("quoting is wrong: %s", got)
+	}
+}
+
+// TestVictimConfigRefusesWhatTheSitePlanted: the config file is the site's
+// own, writable from its container. A FIFO there is refused at once (reading
+// it would hold the job lock, and so every job, for good) and a link is never
+// followed (one to another site's config would hand over that site's database
+// password); an ordinary file still reads (reviewer2 T1).
+func TestVictimConfigRefusesWhatTheSitePlanted(t *testing.T) {
+	dir := t.TempDir()
+	fifo := filepath.Join(dir, "fifo")
+	if err := unix.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { _, err := readVictimConfig(fifo); done <- err }()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "not a regular file") {
+			t.Fatalf("a FIFO must be refused as not a regular file, got %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("a FIFO blocked the read")
+	}
+
+	other := filepath.Join(dir, "other_config")
+	content := "<?php\n$this->settings['dbname'] = 'other';\n$this->settings['dbpassword'] = 'secret';\n"
+	if err := os.WriteFile(other, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(other, link); err != nil {
+		t.Fatal(err)
+	}
+	if cfg, err := readVictimConfig(link); err == nil || !strings.Contains(err.Error(), "is a link") {
+		t.Fatalf("a link must be refused, not followed: %v %+v", err, cfg)
+	}
+
+	if cfg, err := readVictimConfig(other); err != nil || cfg["dbname"] != "other" {
+		t.Fatalf("an ordinary config file still reads: %v %+v", err, cfg)
 	}
 }

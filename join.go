@@ -16,6 +16,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"joinery-agent/primitives"
 )
 
 // Node-initiated join (spec Phase 1.5, decision A6): enrollment shares NO
@@ -440,24 +442,24 @@ func (w *JoinWatcher) callJoin(ctx context.Context, planeURL string, staged *sta
 	return &status, nil
 }
 
-// joinWebRoot is the public_html directory a join names, so the plane makes a
-// node that hosts a site: a node with no web root gets no backup and no
-// recovery-key report. A siteless machine names none.
-// runsInContainer answers whether this process runs inside a Docker container.
-// A variable so a test can say either.
+// runsInContainer answers whether this process runs inside a site's container,
+// Docker's or the site container engine's (primitives.RunsInContainer). A
+// variable so a test can say either.
 var runsInContainer = func() bool {
-	_, err := os.Stat("/.dockerenv")
-	return err == nil
+	return primitives.RunsInContainer()
 }
 
 // reportsContainer is whether the join and the claim say "container": a site
-// agent inside one. It is what lets the plane group the site under its Docker
-// host the way a site it created itself is. A machine with no site says
+// agent inside one. It is what lets the plane group the site under its
+// container host the way a site it created itself is. A machine with no site says
 // nothing; a host's own agent is not a container site.
 func reportsContainer(hasSite bool) bool {
 	return hasSite && runsInContainer()
 }
 
+// joinWebRoot is the public_html directory a join names, so the plane makes a
+// node that hosts a site: a node with no web root gets no backup and no
+// recovery-key report. A siteless machine names none.
 func joinWebRoot(cfg *Config) string {
 	if cfg == nil || cfg.Siteless {
 		return ""

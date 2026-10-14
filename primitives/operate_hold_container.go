@@ -44,7 +44,7 @@ func init() {
 		Name:        "hold_container",
 		Class:       ClassOperate,
 		Machine:     true,
-		Description: "Stop one of this host's Joinery site containers and keep it stopped (no restart by Docker or container_health), or start it again with its restart policy back.",
+		Description: "Stop one of this host's Joinery site containers and keep it stopped (no restart by its engine or container_health), or start it again with its restart policy back.",
 		Params: []ParamSpec{
 			{Name: "action", Type: ParamEnum, Required: true, Values: []string{"stop", "start"}},
 			{Name: "name", Type: ParamString, Required: true, MaxLen: 50, Pattern: holdContainerName},

@@ -461,7 +461,7 @@ func (r *RemoteSource) claim(ctx context.Context) (*RemoteJob, error) {
 		// loop" — reported at poll beside the vocabulary).
 		claimBody["recipes"] = recipes.Report()
 		// A site agent inside a container says so, as its join does: a site
-		// that paired before agents reported it is grouped under its Docker
+		// that paired before agents reported it is grouped under its container
 		// host from this claim.
 		if r.env != nil && reportsContainer(r.env.SiteRoot != "") {
 			claimBody["container"] = true

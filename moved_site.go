@@ -109,7 +109,7 @@ func movedSiteCheckFor(cfg *Config) func(context.Context, string) (map[string]in
 
 func defaultMovedSiteProber() movedSiteProber {
 	return movedSiteProber{
-		copyIn:  dockerCopyIn,
+		copyIn:  engineCopyIn,
 		local:   fetchLocal,
 		resolve: resolveName,
 		remote:  fetchRemote,
@@ -372,15 +372,16 @@ func (m movedSiteProber) prove(ctx context.Context, t movedSiteTarget) movedVerd
 	return movedVerdict{moved: true, evidence: evidence}
 }
 
-// dockerCopyIn writes one file into the container's web root through the
-// Docker daemon's archive copy. Nothing runs inside the container, and the
+// engineCopyIn writes one file into the container's web root through the
+// engine's archive copy (Docker's, or the site container engine's, which takes
+// the same tar on stdin). Nothing runs inside the container, and the
 // destination resolves within the container's own filesystem, so a link the
 // container planted cannot aim the write at the host. Empty content empties
 // the file.
-func dockerCopyIn(ctx context.Context, site, name string, content []byte) error {
-	docker, err := exec.LookPath("docker")
+func engineCopyIn(ctx context.Context, site, name string, content []byte) error {
+	_, engine, err := siteEngine()
 	if err != nil {
-		return errors.New("docker is not on this host's path")
+		return err
 	}
 	var buf bytes.Buffer
 	tw := tar.NewWriter(&buf)
@@ -396,7 +397,7 @@ func dockerCopyIn(ctx context.Context, site, name string, content []byte) error 
 	}
 	cctx, cancel := context.WithTimeout(ctx, movedCopyTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(cctx, docker, "cp", "-", site+":"+fmt.Sprintf(movedContainerWebRoot, site))
+	cmd := exec.CommandContext(cctx, engine, "cp", "-", site+":"+fmt.Sprintf(movedContainerWebRoot, site))
 	cmd.Stdin = &buf
 	out, err := cmd.CombinedOutput()
 	if err != nil {

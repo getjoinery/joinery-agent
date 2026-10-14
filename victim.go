@@ -35,6 +35,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -42,6 +43,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"golang.org/x/sys/unix"
 
 	"joinery-agent/primitives"
 )
@@ -148,13 +151,13 @@ func victimWebPort(site string) (int, error) {
 // host-side path — the same narrow line regex the agent uses on its own
 // config, over container-controlled bytes.
 func victimConfig(site string) (map[string]string, error) {
-	root, err := dockerRootDir()
+	root, err := engineRootDir()
 	if err != nil {
 		return nil, &primitives.RefusalError{Reason: fmt.Sprintf(
-			"Docker did not say where it keeps the site %s's volumes, so its config cannot be read: %v", site, err)}
+			"the container engine did not say where it keeps the site %s's volumes, so its config cannot be read: %v", site, err)}
 	}
 	path := fmt.Sprintf(victimConfigPattern, root, site)
-	settings, err := parseGlobalvars(path)
+	settings, err := readVictimConfig(path)
 	if err != nil {
 		return nil, &primitives.RefusalError{Reason: fmt.Sprintf(
 			"the site %s's config could not be read from its config volume (%s), so its database cannot "+
@@ -281,34 +284,68 @@ func quoteDSNValue(s string) string {
 	return "'" + s + "'"
 }
 
-// dockerRootDir is where the daemon keeps its data, from the daemon itself.
-// With user-namespace remapping every volume lives one directory deeper
-// (/var/lib/docker/100000.100000/volumes), so the path is never assumed.
-// Only the host's Docker CLI runs; nothing runs inside a container. A var so
-// a test can answer for the daemon.
-var dockerRootDir = func() (string, error) {
-	docker, err := exec.LookPath("docker")
+// victimConfigLimit bounds what is read of a site's config file.
+const victimConfigLimit = 1 << 20
+
+// readVictimConfig reads a site's Globalvars_site.php from its config volume.
+// The folders above it are root's (volumes/<name>/_data), but the file itself
+// is the site's own, writable from inside its container. So it is opened
+// without following a link (a link to another site's config would hand over
+// that site's database password), without blocking (a FIFO would hold the job
+// lock, and so every job, recipe and update, for good), only as a regular
+// file, and read to at most victimConfigLimit, before the same line regex the
+// agent uses on its own config.
+func readVictimConfig(path string) (map[string]string, error) {
+	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
 	if err != nil {
-		return "", errors.New("docker is not on this host's path")
+		if errors.Is(err, unix.ELOOP) {
+			return nil, fmt.Errorf("%s is a link, which is not followed", path)
+		}
+		return nil, err
 	}
+	f := os.NewFile(uintptr(fd), path)
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !st.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s is not a regular file (%v), which is not read", path, st.Mode().Type())
+	}
+	return parseGlobalvarsFrom(io.LimitReader(f, victimConfigLimit), path)
+}
+
+// engineRootDir is where this host's container engine keeps its data, from the
+// engine itself: Docker's root directory (with user-namespace remapping every
+// volume lives one directory deeper, /var/lib/docker/100000.100000/volumes),
+// or the site container engine's storage (its graphroot), whose volumes are
+// laid out the same way (volumes/<name>/_data). The path is never assumed.
+// Only the host's engine CLI runs; nothing runs inside a container. A var so a
+// test can answer for the engine.
+var engineRootDir = func() (string, error) {
+	name, bin, err := siteEngine()
+	if err != nil {
+		return "", err
+	}
+	format := engineStorageFormat(name)
 	ctx, cancel := context.WithTimeout(context.Background(), victimDialTimeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, docker, "info", "-f", "{{.DockerRootDir}}").Output()
+	out, err := exec.CommandContext(ctx, bin, "info", "-f", format).Output()
 	if err != nil {
 		var ee *exec.ExitError
 		if errors.As(err, &ee) && len(ee.Stderr) > 0 {
-			return "", fmt.Errorf("docker info: %v: %s", err, displaySafe(strings.TrimSpace(string(ee.Stderr)), 200))
+			return "", fmt.Errorf("%s info: %v: %s", name, err, displaySafe(strings.TrimSpace(string(ee.Stderr)), 200))
 		}
-		return "", fmt.Errorf("docker info: %v", err)
+		return "", fmt.Errorf("%s info: %v", name, err)
 	}
-	return checkDockerRoot(strings.TrimSpace(string(out)))
+	return checkEngineRoot(strings.TrimSpace(string(out)))
 }
 
-// checkDockerRoot accepts only a clean absolute directory: the answer is
+// checkEngineRoot accepts only a clean absolute directory: the answer is
 // composed into a path, so anything else is refused rather than followed.
-func checkDockerRoot(root string) (string, error) {
+func checkEngineRoot(root string) (string, error) {
 	if root == "" || !filepath.IsAbs(root) || filepath.Clean(root) != root {
-		return "", fmt.Errorf("Docker's root directory came back as %q, which is not a clean absolute path", displaySafe(root, 120))
+		return "", fmt.Errorf("the container engine's root directory came back as %q, which is not a clean absolute path", displaySafe(root, 120))
 	}
 	return root, nil
 }
