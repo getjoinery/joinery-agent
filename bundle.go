@@ -485,9 +485,25 @@ const primitivesSignatureName = "RELEASE_MANIFEST.sig"
 // refused outright — a link is how an extraction writes outside its tree even
 // when every name looks innocent, and a bundle of scripts needs none.
 func unpackBundle(r io.Reader, dest string) error {
+	return unpackTree(r, dest, treeLimits{what: "the bundle", entries: maxBundleEntries, bytes: maxBundleUnpackedBytes})
+}
+
+// treeLimits bounds one signed tree as it is unpacked, and names it in every
+// refusal.
+type treeLimits struct {
+	what    string
+	entries int
+	bytes   int64
+}
+
+// unpackTree unpacks a gzipped tar of plain files and directories into dest:
+// the support bundle, or a release's core archive (release_archive.go). Every
+// path is checked before it is made, modes are masked, and anything but a
+// plain file or a directory refuses the whole tree.
+func unpackTree(r io.Reader, dest string, lim treeLimits) error {
 	gz, err := gzip.NewReader(r)
 	if err != nil {
-		return fmt.Errorf("the bundle is not gzip: %w", err)
+		return fmt.Errorf("%s is not gzip: %w", lim.what, err)
 	}
 	defer gz.Close()
 
@@ -495,7 +511,7 @@ func unpackBundle(r io.Reader, dest string) error {
 		return fmt.Errorf("cannot create %s: %w", dest, err)
 	}
 
-	tr := tar.NewReader(io.LimitReader(gz, maxBundleUnpackedBytes+1))
+	tr := tar.NewReader(io.LimitReader(gz, lim.bytes+1))
 	entries, written := 0, int64(0)
 
 	for {
@@ -504,14 +520,14 @@ func unpackBundle(r io.Reader, dest string) error {
 			break
 		}
 		if err != nil {
-			return fmt.Errorf("the bundle is not a readable tar: %w", err)
+			return fmt.Errorf("%s is not a readable tar: %w", lim.what, err)
 		}
 		entries++
-		if entries > maxBundleEntries {
-			return fmt.Errorf("the bundle holds more than %d entries", maxBundleEntries)
+		if entries > lim.entries {
+			return fmt.Errorf("%s holds more than %d entries", lim.what, lim.entries)
 		}
 
-		name, err := safeBundlePath(header.Name)
+		name, err := safeTreePath(lim.what, header.Name)
 		if err != nil {
 			return err
 		}
@@ -526,7 +542,7 @@ func unpackBundle(r io.Reader, dest string) error {
 		switch header.Typeflag {
 		case tar.TypeDir:
 			if err := os.MkdirAll(target, 0o755); err != nil {
-				return fmt.Errorf("cannot create %s in the bundle: %w", name, err)
+				return fmt.Errorf("cannot create %s in %s: %w", name, lim.what, err)
 			}
 		case tar.TypeReg:
 			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
@@ -538,26 +554,26 @@ func unpackBundle(r io.Reader, dest string) error {
 			// privilege escalation delivered by tar.
 			f, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_EXCL, os.FileMode(header.Mode)&0o755)
 			if err != nil {
-				return fmt.Errorf("cannot write %s from the bundle: %w", name, err)
+				return fmt.Errorf("cannot write %s from %s: %w", name, lim.what, err)
 			}
 			n, err := io.Copy(f, tr)
 			f.Close()
 			if err != nil {
-				return fmt.Errorf("cannot write %s from the bundle: %w", name, err)
+				return fmt.Errorf("cannot write %s from %s: %w", name, lim.what, err)
 			}
 			written += n
-			if written > maxBundleUnpackedBytes {
-				return fmt.Errorf("the bundle unpacks to more than this agent's %d-byte limit", maxBundleUnpackedBytes)
+			if written > lim.bytes {
+				return fmt.Errorf("%s unpacks to more than this agent's %d-byte limit", lim.what, lim.bytes)
 			}
 		default:
 			// Symlinks, hard links, devices, fifos. A bundle carries scripts
 			// and directories; anything else is either an attack or a mistake,
 			// and the two are indistinguishable from here.
-			return fmt.Errorf("the bundle carries %q, which is not a plain file or directory — refused", header.Name)
+			return fmt.Errorf("%s carries %q, which is not a plain file or directory — refused", lim.what, header.Name)
 		}
 	}
 	if entries == 0 {
-		return fmt.Errorf("the bundle is empty")
+		return fmt.Errorf("%s is empty", lim.what)
 	}
 	return nil
 }
@@ -570,19 +586,22 @@ func unpackBundle(r io.Reader, dest string) error {
 // destination itself. Treating it as either (refusing it, or trying to create
 // it) would make a correctly built bundle fail on its first entry, which is a
 // fine way to ship a mechanism that never works.
-func safeBundlePath(name string) (string, error) {
+func safeBundlePath(name string) (string, error) { return safeTreePath("the bundle", name) }
+
+// safeTreePath is safeBundlePath for any signed tree, named in its refusals.
+func safeTreePath(what, name string) (string, error) {
 	clean := filepath.ToSlash(strings.TrimSpace(name))
 	if strings.Contains(clean, `\`) {
-		return "", fmt.Errorf("the bundle carries a backslash in %q — refused", name)
+		return "", fmt.Errorf("%s carries a backslash in %q — refused", what, name)
 	}
 	if strings.HasPrefix(clean, "/") || filepath.IsAbs(clean) {
-		return "", fmt.Errorf("the bundle carries an absolute path %q — refused", name)
+		return "", fmt.Errorf("%s carries an absolute path %q — refused", what, name)
 	}
 	// A climb is refused wherever it appears, not only at the front: a check on
 	// the prefix alone misses "scripts/../../escaped.sh".
 	for _, segment := range strings.Split(clean, "/") {
 		if segment == ".." {
-			return "", fmt.Errorf("the bundle carries a path that climbs out of the tree: %q — refused", name)
+			return "", fmt.Errorf("%s carries a path that climbs out of the tree: %q — refused", what, name)
 		}
 	}
 
@@ -598,7 +617,7 @@ func safeBundlePath(name string) (string, error) {
 	// have produced.
 	final := filepath.Clean(clean)
 	if final == "." || final == ".." || strings.HasPrefix(final, "../") || filepath.IsAbs(final) {
-		return "", fmt.Errorf("the bundle carries an unusable path %q — refused", name)
+		return "", fmt.Errorf("%s carries an unusable path %q — refused", what, name)
 	}
 	return final, nil
 }
@@ -611,29 +630,42 @@ func safeBundlePath(name string) (string, error) {
 // the manifest did not list. Returns the bundle's version: the hash of the
 // manifest body, which identifies the verified content rather than the delivery.
 func verifyBundleTree(root string, pubKey ed25519.PublicKey) (string, error) {
+	body, err := verifySignedTree(root, pubKey, "the bundle", nil)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(body)
+	return hex.EncodeToString(sum[:])[:16], nil
+}
+
+// verifySignedTree checks a tree against the RELEASE_MANIFEST at its root,
+// both ways, and returns the manifest's body. unlisted, when set, names the
+// paths a manifest never lists (a release's, PackageSignature::excluded); the
+// manifest and its signature are never listed.
+func verifySignedTree(root string, pubKey ed25519.PublicKey, what string, unlisted func(rel string) bool) ([]byte, error) {
 	body, err := os.ReadFile(filepath.Join(root, primitivesManifestName))
 	if err != nil {
-		return "", fmt.Errorf("the bundle carries no %s, so nothing in it can be verified", primitivesManifestName)
+		return nil, fmt.Errorf("%s carries no %s, so nothing in it can be verified", what, primitivesManifestName)
 	}
 	sigRaw, err := os.ReadFile(filepath.Join(root, primitivesSignatureName))
 	if err != nil {
-		return "", fmt.Errorf("the bundle's manifest carries no signature")
+		return nil, fmt.Errorf("%s's manifest carries no signature", what)
 	}
 	signature, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(sigRaw)))
 	if err != nil {
-		return "", fmt.Errorf("the bundle's manifest signature is not readable base64")
+		return nil, fmt.Errorf("%s's manifest signature is not readable base64", what)
 	}
 
 	verifier, err := primitives.NewSignedTreeVerifier(root, body, signature, pubKey)
 	if err != nil {
-		return "", fmt.Errorf("the bundle's manifest does not verify: %w", err)
+		return nil, fmt.Errorf("%s's manifest does not verify: %w", what, err)
 	}
 
 	listed := map[string]bool{}
 	for rel := range verifier.Hashes {
 		listed[rel] = true
 		if err := verifier.Verify(filepath.Join(root, filepath.FromSlash(rel))); err != nil {
-			return "", fmt.Errorf("the bundle does not match its own manifest: %w", err)
+			return nil, fmt.Errorf("%s does not match its own manifest: %w", what, err)
 		}
 	}
 
@@ -655,17 +687,15 @@ func verifyBundleTree(root string, pubKey ed25519.PublicKey) (string, error) {
 		if rel == primitivesManifestName || rel == primitivesSignatureName {
 			return nil
 		}
-		if !listed[rel] {
-			return fmt.Errorf("the bundle carries %s, which its own manifest does not list", rel)
+		if !listed[rel] && (unlisted == nil || !unlisted(rel)) {
+			return fmt.Errorf("%s carries %s, which its own manifest does not list", what, rel)
 		}
 		return nil
 	})
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-
-	sum := sha256.Sum256(body)
-	return hex.EncodeToString(sum[:])[:16], nil
+	return body, nil
 }
 
 func removeTree(path string) error {

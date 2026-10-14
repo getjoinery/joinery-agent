@@ -95,6 +95,7 @@ const (
 	artifactKindBundleBody      = "bundle_body"
 	artifactKindReleaseManifest = "release_manifest"
 	artifactKindReleaseFile     = "release_file"
+	artifactKindReleaseArchive  = "release_archive" // a release's whole core archive, for site_install
 	artifactKindAgentStatement  = "agent_statement"
 )
 

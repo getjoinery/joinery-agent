@@ -155,6 +155,21 @@ var pinnedVocabulary = map[string]Class{
 	"suspended_page": ClassOperate,
 	"site_limits":    ClassOperate,
 
+	// A dormant copy removed from its host: only one the host records as a
+	// copy, which holds nothing its source does not (D9). Operate: nothing of
+	// the site is lost.
+	"discard_copy": ClassOperate,
+
+	// One dormant copy of a site installed as a container on this host, from
+	// its source's verified release (specs/site_container_engine.md D9).
+	// Operate: it adds a quiet site, and refuses a name the host already has.
+	"site_install": ClassOperate,
+
+	// The host's half of a site container's quiet state, held from outside
+	// (specs/site_container_engine.md D9). Operate: off puts the network back,
+	// and is refused while the site says it is quiet.
+	"site_quiet_host": ClassOperate,
+
 	// This host's data moved onto its data root (specs/one_data_root.md D5).
 	// Operate: the services stop for one copy, and a move that does not
 	// finish puts everything back; the originals stay until a reboot proves it.
@@ -691,6 +706,18 @@ func TestPrimitiveExecutionEnvIsExplicit(t *testing.T) {
 		// nothing; the word checks them against the signed manifest before
 		// writing, so a hostile plane's answer restores nothing.
 		"FetchReleaseFile": true,
+
+		// site_install's tree (specs/site_container_engine.md D9): the
+		// published core archive of one release, fetched through the
+		// management node and verified, both ways and against the public log
+		// where its keys are held, before anything in it runs. The plane's
+		// bytes earn a refusal unless they are the publisher's.
+		"FetchRelease": true,
+
+		// The management node this machine is enrolled with, from its own
+		// identity: the one site_install tells a new site to join, so no job
+		// names another.
+		"PlaneURL": true,
 	}
 
 	fset := token.NewFileSet()

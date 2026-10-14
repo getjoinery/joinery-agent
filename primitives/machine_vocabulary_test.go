@@ -23,6 +23,7 @@ var pinnedMachineWords = []string{
 	"data_root_rekey",
 	"decommission_moved_site",
 	"decommission_site",
+	"discard_copy",
 	"disk_usage",
 	"file_head",
 	"hold_container",
@@ -42,7 +43,9 @@ var pinnedMachineWords = []string{
 	"restart_container",
 	"restart_unit",
 	"run_installer",
+	"site_install",
 	"site_limits",
+	"site_quiet_host",
 	"suspended_page",
 	"unit_journal",
 }

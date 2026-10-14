@@ -122,6 +122,15 @@ type ScriptSpec struct {
 	// the whole reason it is not in argv is that it must not be visible, and a
 	// log line is as visible as ps.
 	StdinFrom func(params Params) (string, error)
+
+	// Release names the release whose tree this script is run from, instead
+	// of this machine's own site tree or support bundle: the published core
+	// archive of that version, fetched through the management node and
+	// verified before anything in it runs (ExecEnv.FetchRelease), and removed
+	// when the run ends. ScriptPath resolves inside it and is verified against
+	// that release's manifest like any other. Only a word that installs from
+	// a release sets it (site_install).
+	Release func(ctx context.Context, env *ExecEnv, params Params) (version string, err error)
 }
 
 // runScriptPrimitive verifies the script against the signed release manifest,
@@ -140,6 +149,21 @@ func runScriptPrimitive(ctx context.Context, env *ExecEnv, p Primitive, params P
 	// string in both cases, because bundle paths are recorded relative to a
 	// site root too, so no primitive has to know which posture it is running in.
 	root, verifier := env.ScriptTree()
+	if p.Script.Release != nil {
+		if env.FetchRelease == nil {
+			return nil, refusedf("primitive %q cannot run: this agent cannot fetch and verify a release", p.Name)
+		}
+		version, err := p.Script.Release(ctx, env, params)
+		if err != nil {
+			return nil, err
+		}
+		r, v, cleanup, err := env.FetchRelease(ctx, version)
+		if err != nil {
+			return nil, refusedf("primitive %q refused: release %s: %v", p.Name, version, err)
+		}
+		defer cleanup()
+		root, verifier = r, v
+	}
 	if root == "" {
 		return nil, refusedf("primitive %q cannot run: this machine has no site root and no support bundle, so there is no tree to resolve %s in", p.Name, p.Script.ScriptPath)
 	}

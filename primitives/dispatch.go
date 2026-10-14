@@ -91,6 +91,19 @@ type ExecEnv struct {
 	// and the version the installed one: nothing else can be named.
 	FetchReleaseFile func(ctx context.Context, version, rel string) ([]byte, error)
 
+	// FetchRelease asks the management node for the published core archive of
+	// one release and hands back the folder it was unpacked into, verified
+	// before anything in it can run (release_archive.go: the compiled release
+	// key, both ways, and the public log where its keys are held), with the
+	// cleanup that removes it. Nil where this build cannot verify a release.
+	// site_install installs a site from that tree and nothing else.
+	FetchRelease func(ctx context.Context, version string) (root string, verifier ManifestVerifier, cleanup func(), err error)
+
+	// PlaneURL is the address of the management node this machine is enrolled
+	// with, from its own identity: what a site this machine installs is told
+	// to join, so no job can name another.
+	PlaneURL func() (string, error)
+
 	// Approval is how this node asks its OWN operator to authorize a
 	// destructive job. Nil means it cannot ask, and a node that cannot ask
 	// refuses every destructive job — see Execute. It is a field here, rather

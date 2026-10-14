@@ -24,7 +24,7 @@ import (
 // must stay ABOVE 1.1.0 forever - install_agent.sh's downgrade guard sorts
 // with sort -V and refuses to replace a "newer" binary, so anything below
 // 1.1.0 strands those agents permanently.
-var version = "1.77.0"
+var version = "1.78.0"
 
 // How often the idle loop looks at the shipped agent_dist manifest. Update
 // checks never run while a job is executing.
@@ -287,6 +287,12 @@ func execEnvFor(cfg *Config, db *DB) *primitives.ExecEnv {
 		// file when no kept copy verifies. Carries bytes only; the word checks
 		// them against the signed manifest.
 		FetchReleaseFile: releaseFileFetcher(cfg),
+
+		// How site_install gets the release it installs a site from, verified
+		// here before it is handed over (release_archive.go), and the one
+		// management node the new site is told to join: this machine's own.
+		FetchRelease: releaseFetcher(cfg),
+		PlaneURL:     identityPlaneURL,
 
 		// The support bundle, for a machine with no site tree to verify
 		// against. Set unconditionally on a siteless machine, before any bundle
