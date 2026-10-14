@@ -17,11 +17,17 @@ import (
 // the secret and hands it over once, in answer, over TLS; the machine adds it
 // as a key slot and says which. The secret is never in this job, its row or
 // its log.
+//
+// It runs on a quiet site too (QuietAny). It touches the machine's own data
+// root, never the site: a dormant copy is enrolled before a switch-over, whose
+// address swap restarts it and would otherwise leave it waiting for its
+// recovery key.
 func init() {
 	Register(Primitive{
 		Name:        "data_root_enrol",
 		Class:       ClassOperate,
 		Machine:     true,
+		Quiet:       QuietAny,
 		Description: "Enrol the encrypted data root with this management node, which then opens it at boot.",
 		Run: func(ctx context.Context, env *ExecEnv, p Params) (map[string]interface{}, error) {
 			if env.DataRootEnrol == nil {

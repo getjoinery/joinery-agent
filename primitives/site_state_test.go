@@ -66,6 +66,12 @@ func TestAQuietSiteRunsOnlyWhatItsReasonAllows(t *testing.T) {
 		{"quiet copy", "backup_run", false},
 		{"quiet copy", "run_installer", false},
 		{"quiet copy", "restore_chain", false},
+		// The machine's own data root, never the site: a copy is enrolled
+		// before the swap that restarts it (B58).
+		{"quiet copy", "data_root_enrol", true},
+		{"quiet copy", "data_root_recipient", true},
+		{"quiet switchover", "data_root_enrol", true},
+		{"quiet copy", "data_root_encrypt", false},
 		// Anything else in the file is quiet, the strict way.
 		{"garbage", "backup_run", true},
 		{"garbage", "run_installer", false},
