@@ -328,6 +328,21 @@ type escrowEnrolAnswer struct {
 	Reason      string `json:"reason"`
 }
 
+// enrolRefusal is why this data root cannot be enrolled now, or nil. One that
+// is not encrypted has no key to hold. One with an encryption, its undo or a
+// change of volume key under way has a mapping that may hold either key, and
+// a slot made from the wrong one would not open the next boot (B67): it is
+// enrolled once the run is done, when the plane asks again.
+func enrolRefusal(conf dataRootConfig) error {
+	if !conf.encrypted() {
+		return errors.New("this machine's data root is not encrypted")
+	}
+	if conf.Reencrypt != "" {
+		return fmt.Errorf("its %sion is running; it is enrolled once that is done", conf.Reencrypt)
+	}
+	return nil
+}
+
 // escrowEnrol enrols this machine with the holder at holderURL. With its own
 // management node, its node key vouches for the identity and no approval is
 // needed; with any other holder the request waits for a person to approve it
@@ -338,8 +353,8 @@ func escrowEnrol(ctx context.Context, holderURL, name string, wait time.Duration
 	if err != nil {
 		return 0, err
 	}
-	if !conf.encrypted() {
-		return 0, errors.New("this machine's data root is not encrypted")
+	if err := enrolRefusal(conf); err != nil {
+		return 0, err
 	}
 	if !mapperOpen() {
 		return 0, errors.New("the data root is not open, so its key cannot authorise a new slot")

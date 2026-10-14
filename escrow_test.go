@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -138,5 +139,26 @@ func TestEscrowMachineNameSkipsImageHostnames(t *testing.T) {
 	}
 	if n := escrowMachineName(); n == "" || n == "localhost" {
 		t.Errorf("escrowMachineName() = %q", n)
+	}
+}
+
+// A data root is enrolled only when encrypted and with no run under way: a
+// change of key's mapping may hold either key (B67).
+func TestEnrolRefusedWhileARunIsUnderWay(t *testing.T) {
+	plain := dataRootConfig{Backing: "file", Source: "/srv/joinery.img"}
+	if enrolRefusal(plain) == nil {
+		t.Fatal("a plain data root was not refused")
+	}
+	enc := dataRootConfig{Backing: "luks-file", Source: "/srv/joinery.img", Sidecar: "/srv/joinery.img.recovery"}
+	if err := enrolRefusal(enc); err != nil {
+		t.Fatalf("an encrypted data root with no run was refused: %v", err)
+	}
+	for _, mode := range []string{"encrypt", "decrypt", "reencrypt"} {
+		c := enc
+		c.Reencrypt = mode
+		err := enrolRefusal(c)
+		if err == nil || !strings.Contains(err.Error(), mode+"ion is running") {
+			t.Fatalf("%s under way: %v", mode, err)
+		}
 	}
 }
