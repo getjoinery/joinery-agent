@@ -37,7 +37,7 @@ func init() {
 		Name:        "check_status",
 		Class:       ClassObserve,
 		Machine:     true,
-		Description: "The site's web root and domain, disk, memory, load, uptime, PostgreSQL liveness, Joinery version, database list, whether Server Manager is active, the site's recorded plugin checks.",
+		Description: "The site's web root and domain, disk, memory, load, uptime, PostgreSQL liveness, Joinery version, database list, whether Server Manager is active, the site's plugins with their versions, the site's recorded plugin checks.",
 		Params:      nil, // takes none, so any param at all is refused
 		Run:         runCheckStatus,
 	})
@@ -327,6 +327,13 @@ func collectDatabase(ctx context.Context, env *ExecEnv, result map[string]interf
 		}
 	}
 
+	// The site's plugins as its own registry records them: name, version,
+	// switched on or not, and the lifecycle note. Read, not guessed from an
+	// apply's transcript (the running list, 2026-09-17).
+	if plugins, ok := collectPlugins(ctx, db); ok {
+		result["plugins"] = plugins
+	}
+
 	// Whether this site is a management node, as a boolean either way; an
 	// absent key is an agent that predates the fact, and the plane reads that
 	// as "not a management node". The same answer rides every poll as
@@ -334,6 +341,73 @@ func collectDatabase(ctx context.Context, env *ExecEnv, result map[string]interf
 	// actually learns it — nothing runs check_status on a schedule.
 	active, err := serverManagerActive(ctx, db)
 	result["server_manager_active"] = err == nil && active
+}
+
+// pluginListMax caps the plugins check_status carries; a site has fifteen.
+const pluginListMax = 100
+
+// pluginMetadataMax is the largest plg_metadata read for its version; a
+// plugin.json is a few kilobytes, and a row past this is not one the site
+// wrote from one.
+const pluginMetadataMax = 256 * 1024
+
+// collectPlugins reads plg_plugins: each plugin not uninstalled, by name, with
+// the version its recorded plugin.json gives, whether it is switched on (the
+// flag the site's loaders read), and plg_status. Every string is reduced to a
+// safe character set and capped. False when the table cannot be read, which
+// the plane reads as "not measured", never as a site with no plugins.
+func collectPlugins(ctx context.Context, db *sql.DB) ([]map[string]interface{}, bool) {
+	rows, err := db.QueryContext(ctx,
+		"SELECT plg_name, plg_active, plg_status, plg_metadata FROM plg_plugins "+
+			"WHERE plg_status IS DISTINCT FROM 'uninstalled' ORDER BY plg_name LIMIT 100")
+	if err != nil {
+		return nil, false
+	}
+	defer rows.Close()
+	out := []map[string]interface{}{}
+	for rows.Next() && len(out) < pluginListMax {
+		var name string
+		var active sql.NullInt64
+		var status, metadata sql.NullString
+		if err := rows.Scan(&name, &active, &status, &metadata); err != nil {
+			continue
+		}
+		name = safeWord(name, 64)
+		if name == "" {
+			continue
+		}
+		version := ""
+		if metadata.Valid && len(metadata.String) <= pluginMetadataMax {
+			var meta map[string]interface{}
+			if json.Unmarshal([]byte(metadata.String), &meta) == nil {
+				if v, ok := meta["version"].(string); ok {
+					version = safeWord(v, 32)
+				}
+			}
+		}
+		out = append(out, map[string]interface{}{
+			"name":    name,
+			"version": version,
+			"active":  pluginActive(active),
+			"status":  safeWord(status.String, 20),
+		})
+	}
+	return out, rows.Err() == nil
+}
+
+// safeWord keeps a name, version or status word to [A-Za-z0-9._+-], capped.
+func safeWord(s string, max int) string {
+	var b strings.Builder
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') ||
+			r == '.' || r == '_' || r == '+' || r == '-' {
+			b.WriteRune(r)
+			if b.Len() >= max {
+				break
+			}
+		}
+	}
+	return b.String()
 }
 
 // pluginFleetReportMax bounds the recorded report this carries. The site

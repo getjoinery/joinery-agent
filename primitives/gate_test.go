@@ -101,6 +101,26 @@ var pinnedVocabulary = map[string]Class{
 	// Host files).
 	"file_head": ClassObserve,
 
+	// Which addresses and ports the machine listens on, and the program and
+	// unit holding each (the running list, 2026-10-12). Observe, NO
+	// PARAMETERS, listeners only: never a connection or a remote address.
+	"listening_sockets": ClassObserve,
+
+	// Every container on the machine, whether install.sh made it, its image,
+	// state, mounts and run spec (the running list, 2026-10-06). Observe, NO
+	// PARAMETERS: never a container's environment or a bind's source.
+	"container_inventory": ClassObserve,
+
+	// Whether members' spam corrections reach the filter (the running list,
+	// 2026-10-03). Observe, NO PARAMETERS, counts only: never a subject, a
+	// sender or a row.
+	"spam_learning_status": ClassObserve,
+
+	// Reboot the machine twenty seconds out (the running list, 2026-10-10).
+	// Operate, NO PARAMETERS: it loses no data, and it refuses where the boot
+	// would wait for a person to type a recovery key.
+	"reboot_machine": ClassOperate,
+
 	// One table of the site's own database, described by the database: no
 	// SQL from the plane, no row read.
 	"schema_probe": ClassObserve,
