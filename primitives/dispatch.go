@@ -84,12 +84,15 @@ type ExecEnv struct {
 	// same posture when it is absent: no manifest means no script runs.
 	ToolManifest ManifestVerifier
 
-	// FetchReleaseFile asks the management node for one self-update file out of
-	// the published core archive of the installed release (restore_release_file).
-	// The caller checks the bytes against the signed manifest; this only carries
-	// them. Nil where the agent cannot ask. The file is one of SelfUpdateFiles
-	// and the version the installed one: nothing else can be named.
-	FetchReleaseFile func(ctx context.Context, version, rel string) ([]byte, error)
+	// FetchReleaseFile asks the management node for one self-update file whose
+	// sha256 is the one the installed signed manifest lists (restore_release_file,
+	// repair_release_files). The plane finds the published release that carries
+	// those bytes, starting from the version named as a hint (the site's VERSION,
+	// or "" when it cannot be read); the hint is never what decides. The caller
+	// checks the bytes against the manifest; this only carries them. Nil where
+	// the agent cannot ask. The file is one of SelfUpdateFiles: nothing else can
+	// be named.
+	FetchReleaseFile func(ctx context.Context, version, rel, sha256 string) ([]byte, error)
 
 	// FetchRelease asks the management node for the published core archive of
 	// one release and hands back the folder it was unpacked into, verified

@@ -267,9 +267,9 @@ func TestRestoreReleaseFileFromTheKeptCopy(t *testing.T) {
 func TestRestoreReleaseFileFromTheManagementNode(t *testing.T) {
 	s := newRelSite(t)
 	s.stoppedUpgrade() // no snapshot: a node already wedged
-	var asked struct{ version, rel string }
-	s.env.FetchReleaseFile = func(_ context.Context, version, rel string) ([]byte, error) {
-		asked.version, asked.rel = version, rel
+	var asked struct{ version, rel, hash string }
+	s.env.FetchReleaseFile = func(_ context.Context, version, rel, hash string) ([]byte, error) {
+		asked.version, asked.rel, asked.hash = version, rel, hash
 		return []byte(oldUpgrade), nil
 	}
 	p, _ := Lookup("restore_release_file")
@@ -277,8 +277,8 @@ func TestRestoreReleaseFileFromTheManagementNode(t *testing.T) {
 	if err != nil || res["source"] != "management node" {
 		t.Fatalf("restore from the plane: %v err=%v", res, err)
 	}
-	if asked.version != "0.8.475" || asked.rel != "public_html/utils/upgrade.php" {
-		t.Fatalf("the agent asks for the installed version and the named file, got %+v", asked)
+	if asked.version != "0.8.475" || asked.rel != "public_html/utils/upgrade.php" || asked.hash != relSHA([]byte(oldUpgrade)) {
+		t.Fatalf("the agent asks for the named file by the hash the manifest lists, with the installed version as a hint, got %+v", asked)
 	}
 	if s.read("public_html/utils/upgrade.php") != oldUpgrade {
 		t.Fatal("the file should be the signed one")
@@ -288,7 +288,7 @@ func TestRestoreReleaseFileFromTheManagementNode(t *testing.T) {
 func TestARestoreRefusesWrongBytesFromThePlane(t *testing.T) {
 	s := newRelSite(t)
 	s.stoppedUpgrade()
-	s.env.FetchReleaseFile = func(context.Context, string, string) ([]byte, error) {
+	s.env.FetchReleaseFile = func(context.Context, string, string, string) ([]byte, error) {
 		return []byte("<?php // a hostile plane's idea of upgrade.php\n"), nil
 	}
 	p, _ := Lookup("restore_release_file")
@@ -311,7 +311,7 @@ func TestARestoreRefusesWhenThereIsNothingToRepairOrNoSource(t *testing.T) {
 	if _, err := p.Run(context.Background(), s.env, restoreParams(t, "public_html/utils/upgrade.php")); err == nil || !Refused(err) {
 		t.Fatalf("no kept copy and no way to ask is refused, got %v", err)
 	}
-	s.env.FetchReleaseFile = func(context.Context, string, string) ([]byte, error) { return nil, errors.New("no archive") }
+	s.env.FetchReleaseFile = func(context.Context, string, string, string) ([]byte, error) { return nil, errors.New("no archive") }
 	if _, err := p.Run(context.Background(), s.env, restoreParams(t, "public_html/utils/upgrade.php")); err == nil || !Refused(err) {
 		t.Fatalf("a plane with no archive is refused, got %v", err)
 	}
@@ -407,5 +407,180 @@ file_put_contents(dirname(__DIR__) . "/VERSION", "0.8.477\n");
 	}
 	if s.read("public_html/includes/DeploymentHelper.php") != "<?php // 0.8.477\n" {
 		t.Fatal("when the VERSION changed a release went in, and the guard must not undo it")
+	}
+}
+
+// ── Restoring by the hash the manifest lists (specs/release_file_repair_by_hash.md) ──
+
+// The state getjoinery-orgs was left in on 2026-10-14: a deploy failed and
+// rolled the code back, so the VERSION says the old release, while the signed
+// manifest at the site root is the new release's. Asking the plane for the
+// VERSION's file would fetch bytes the manifest refuses; asking by hash does not.
+func (s *relSite) rolledBackUnderTheNewManifest() {
+	s.stoppedUpgrade() // the new release's deployment files are on disk...
+	s.sign()           // ...and the manifest now signed is the new release's
+	s.write("public_html/utils/upgrade.php", oldUpgrade) // the rollback put the old code back
+	s.write("public_html/includes/DeploymentHelper.php", oldHelper)
+	// VERSION still reads 0.8.475: the rollback restored it with the code.
+}
+
+func TestARestoreAsksByHashWhenVersionAndManifestDisagree(t *testing.T) {
+	s := newRelSite(t)
+	s.rolledBackUnderTheNewManifest()
+	newUpgrade := "<?php // upgrade 0.8.477\n"
+	var asked struct{ version, rel, hash string }
+	s.env.FetchReleaseFile = func(_ context.Context, version, rel, hash string) ([]byte, error) {
+		asked.version, asked.rel, asked.hash = version, rel, hash
+		if hash == relSHA([]byte(newUpgrade)) {
+			return []byte(newUpgrade), nil
+		}
+		return []byte(oldUpgrade), nil // what a plane asked for the VERSION's file would send
+	}
+	p, _ := Lookup("restore_release_file")
+	res, err := p.Run(context.Background(), s.env, restoreParams(t, "public_html/utils/upgrade.php"))
+	if err != nil || res["source"] != "management node" {
+		t.Fatalf("restore across a rollback: %v err=%v", res, err)
+	}
+	if asked.hash != relSHA([]byte(newUpgrade)) || asked.version != "0.8.475" {
+		t.Fatalf("the hash the manifest lists is what is asked for, the VERSION only a hint, got %+v", asked)
+	}
+	if s.read("public_html/utils/upgrade.php") != newUpgrade {
+		t.Fatal("the file should be the one the signed manifest lists, not the VERSION's")
+	}
+}
+
+func TestARestoreDoesNotNeedTheVersionFile(t *testing.T) {
+	s := newRelSite(t)
+	s.stoppedUpgrade()
+	if err := os.Remove(filepath.Join(s.root, "public_html", "VERSION")); err != nil {
+		t.Fatal(err)
+	}
+	var askedVersion string
+	s.env.FetchReleaseFile = func(_ context.Context, version, _, _ string) ([]byte, error) {
+		askedVersion = version
+		return []byte(oldUpgrade), nil
+	}
+	p, _ := Lookup("restore_release_file")
+	res, err := p.Run(context.Background(), s.env, restoreParams(t, "public_html/utils/upgrade.php"))
+	if err != nil || res["source"] != "management node" || askedVersion != "" {
+		t.Fatalf("a node whose VERSION cannot be read is still repaired by hash, with no hint: %v err=%v asked=%q", res, err, askedVersion)
+	}
+}
+
+func TestRepairReleaseFilesPutsEveryDifferingFileBack(t *testing.T) {
+	s := newRelSite(t)
+	s.rolledBackUnderTheNewManifest()
+	signed := map[string]string{
+		relSHA([]byte("<?php // upgrade 0.8.477\n")): "<?php // upgrade 0.8.477\n",
+		relSHA([]byte("<?php // helper 0.8.477\n")):  "<?php // helper 0.8.477\n",
+	}
+	var asked []string
+	s.env.FetchReleaseFile = func(_ context.Context, _, rel, hash string) ([]byte, error) {
+		asked = append(asked, rel)
+		body, ok := signed[hash]
+		if !ok {
+			return nil, errors.New("no release carries that hash")
+		}
+		return []byte(body), nil
+	}
+	p, ok := Lookup("repair_release_files")
+	if !ok || p.Class != ClassOperate || len(p.Params) != 0 {
+		t.Fatal("repair_release_files is a parameterless operate word")
+	}
+	res, err := p.Run(context.Background(), s.env, Params{})
+	if err != nil || res["ok"] != true {
+		t.Fatalf("repair: %v err=%v", res, err)
+	}
+	if n := len(res["restored"].([]map[string]interface{})); n != 2 || len(asked) != 2 {
+		t.Fatalf("both differing files are put back, got %d restored, asked %v", n, asked)
+	}
+	if names, _ := DifferingSelfUpdateFiles(s.env); len(names) != 0 {
+		t.Fatalf("after the repair every file matches, still differing: %v", names)
+	}
+	if s.read("public_html/includes/DeploymentHelper.php") != "<?php // helper 0.8.477\n" {
+		t.Fatal("the helper should be the one the signed manifest lists")
+	}
+	// The second run has nothing to do and says so as a refusal, which is how
+	// the recipe's check passes afterwards rather than repairing for ever.
+	if _, err := p.Run(context.Background(), s.env, Params{}); err == nil || !Refused(err) {
+		t.Fatalf("nothing to repair is a refusal, got %v", err)
+	}
+}
+
+func TestRepairReleaseFilesNamesWhatItCouldNotPutBack(t *testing.T) {
+	s := newRelSite(t)
+	s.stoppedUpgrade()
+	s.env.FetchReleaseFile = func(_ context.Context, _, rel, _ string) ([]byte, error) {
+		if rel == "public_html/utils/upgrade.php" {
+			return []byte(oldUpgrade), nil
+		}
+		return nil, errors.New("no release carries that hash")
+	}
+	p, _ := Lookup("repair_release_files")
+	res, err := p.Run(context.Background(), s.env, Params{})
+	if err != nil || res["ok"] != false {
+		t.Fatalf("a partial repair completes and says ok=false: %v err=%v", res, err)
+	}
+	failed := res["failed"].([]map[string]interface{})
+	if len(failed) != 1 || failed[0]["file"] != "public_html/includes/DeploymentHelper.php" {
+		t.Fatalf("the file that remains is named: %v", failed)
+	}
+	// Nothing put back at all is a failure, not a quiet success.
+	s2 := newRelSite(t)
+	s2.stoppedUpgrade()
+	if _, err := p.Run(context.Background(), s2.env, Params{}); err == nil || Refused(err) {
+		t.Fatalf("no source for any file fails the word outright, got %v", err)
+	}
+	// A manifest that cannot be used is the healer's case.
+	s3 := newRelSite(t)
+	s3.stoppedUpgrade()
+	_ = os.Remove(filepath.Join(s3.root, "RELEASE_MANIFEST"))
+	if _, err := p.Run(context.Background(), s3.env, Params{}); err == nil || !Refused(err) {
+		t.Fatalf("an unusable manifest is refused, got %v", err)
+	}
+}
+
+// The publishing site and a developer's box are source checkouts: their
+// deployment files are the developer's, legitimately different from the last
+// published manifest between publishes. Neither word writes release bytes there.
+func TestNoReleaseFileIsWrittenOnASourceCheckout(t *testing.T) {
+	s := newRelSite(t)
+	s.stoppedUpgrade()
+	if IsSourceCheckout(s.root) {
+		t.Fatal("a site with no .git is not a checkout")
+	}
+	if err := os.Mkdir(filepath.Join(s.root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !IsSourceCheckout(s.root) {
+		t.Fatal("a .git at the site root makes a checkout")
+	}
+	fetched := false
+	s.env.FetchReleaseFile = func(context.Context, string, string, string) ([]byte, error) {
+		fetched = true
+		return []byte(oldUpgrade), nil
+	}
+	for _, word := range []string{"restore_release_file", "repair_release_files"} {
+		p, _ := Lookup(word)
+		params := Params{}
+		if word == "restore_release_file" {
+			params = restoreParams(t, "public_html/utils/upgrade.php")
+		}
+		_, err := p.Run(context.Background(), s.env, params)
+		if err == nil || !Refused(err) || !strings.Contains(err.Error(), "source checkout") {
+			t.Fatalf("%s on a checkout is refused naming the checkout, got %v", word, err)
+		}
+	}
+	if fetched || s.read("public_html/utils/upgrade.php") != "<?php // upgrade 0.8.477\n" {
+		t.Fatal("nothing is fetched and nothing is written on a checkout")
+	}
+	// A git worktree leaves a .git FILE at the root; that is a checkout too, and
+	// so is a .git under public_html where the web root is the repository.
+	s2 := newRelSite(t)
+	if err := os.WriteFile(filepath.Join(s2.root, "public_html", ".git"), []byte("gitdir: /elsewhere\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !IsSourceCheckout(s2.root) {
+		t.Fatal("a .git file under the web root makes a checkout")
 	}
 }

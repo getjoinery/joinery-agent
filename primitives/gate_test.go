@@ -181,6 +181,10 @@ var pinnedVocabulary = map[string]Class{
 	// started: no parameters, six facts, no content.
 	"restore_release_file": ClassOperate,
 	"upgrade_preflight":    ClassObserve,
+	// specs/release_file_repair_by_hash.md: every differing deployment file
+	// put back at once, with no parameter, so recipe release_files can run
+	// it on the node's own clock. Operate: writes only bytes the manifest lists.
+	"repair_release_files": ClassOperate,
 
 	// The machine's outbound limits turned on or off, or their figures set,
 	// the machine's or one container site's. Operate: nothing is removed.

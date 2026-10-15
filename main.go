@@ -24,7 +24,7 @@ import (
 // must stay ABOVE 1.1.0 forever - install_agent.sh's downgrade guard sorts
 // with sort -V and refuses to replace a "newer" binary, so anything below
 // 1.1.0 strands those agents permanently.
-var version = "1.78.0"
+var version = "1.79.0"
 
 // How often the idle loop looks at the shipped agent_dist manifest. Update
 // checks never run while a job is executing.
@@ -225,6 +225,7 @@ func startRecipes(cfg *Config, db *DB, jobLock *sync.Mutex) {
 	// A site-scoped recipe needs a site tree to run its installer from; a
 	// siteless machine (the Docker host, a relay) reports it not-applicable.
 	recipes.HasSite = func() bool { return !cfg.Siteless && cfg.SiteRoot != "" }
+	recipes.SourceCheckout = func() bool { return primitives.IsSourceCheckout(cfg.SiteRoot) }
 	loop := recipes.NewLoop(recipes.All(), &recipes.Env{Exec: execEnvFor(cfg, db), Policy: policy}, recipes.Options{
 		Lock:        jobLock,
 		MarkRunning: markRecipeRunning,

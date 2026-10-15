@@ -1,6 +1,7 @@
 package primitives
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -48,6 +49,24 @@ var SelfUpdateFiles = []string{
 	"public_html/includes/DatabaseUpdater.php",
 	"public_html/includes/DeploymentHelper.php",
 	"public_html/includes/PackageSignature.php",
+}
+
+// IsSourceCheckout reports whether the site at siteRoot is a source checkout: a
+// .git (directory, or the file a git worktree leaves) at the site root or the
+// web root. The publishing site and a developer's box are checkouts; a node
+// installed from a release is not. On a checkout a deployment file legitimately
+// differs from the last published manifest between publishes, so no word here
+// writes release bytes over one: the files are the developer's.
+func IsSourceCheckout(siteRoot string) bool {
+	if siteRoot == "" {
+		return false
+	}
+	for _, p := range []string{filepath.Join(siteRoot, ".git"), filepath.Join(siteRoot, "public_html", ".git")} {
+		if _, err := os.Lstat(p); err == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // IsSelfUpdateFile reports whether rel is one of the five.
@@ -285,6 +304,66 @@ func RestoreSelfUpdateFiles(env *ExecEnv) ([]string, error) {
 		restored = append(restored, rel)
 	}
 	return restored, firstErr
+}
+
+// restoreReleaseFile puts one self-update file back to the bytes the installed
+// signed manifest lists for it: the two words restore_release_file and
+// repair_release_files, one file at a time.
+//
+// THE BYTES come from this agent's own kept copy when one verifies against the
+// manifest, and otherwise from the management node, asked for the file BY THE
+// HASH the manifest lists. version is the site's VERSION, or "" when it cannot
+// be read: it selects a kept copy and travels to the plane as a hint of where
+// to look first, and it decides nothing. That is deliberate. A deploy that
+// failed and rolled back can leave the old code, and so the old VERSION, under
+// the new release's manifest; asking for the VERSION's file would fetch bytes
+// the manifest refuses, and the node would stay stuck (getjoinery-orgs,
+// 2026-10-14). The hash is the one thing the node and the plane agree on.
+//
+// REFUSED when the file already matches (nothing to repair) and when no source
+// has a verifying copy. The manifest's own usability is the caller's check.
+func restoreReleaseFile(ctx context.Context, env *ExecEnv, artifacts *ArtifactManifests, version, rel string) (map[string]interface{}, error) {
+	want, err := artifacts.ExpectedHash(rel)
+	if err != nil {
+		return nil, refusedf("cannot restore %s: %v", rel, err)
+	}
+	if b, err := readSelfUpdateFile(env, rel); err == nil && relSHA(b) == want {
+		return nil, refusedf("%s already matches the signed release; nothing to restore", rel)
+	}
+
+	body, source := []byte(nil), ""
+	if b, ok := snapshotBytes(version, rel, want); ok {
+		body, source = b, "kept copy"
+	} else if env.FetchReleaseFile != nil {
+		b, err := env.FetchReleaseFile(ctx, version, rel, want)
+		if err != nil {
+			return nil, refusedf("cannot restore %s: no kept copy, and the management node could not supply it: %v", rel, err)
+		}
+		if relSHA(b) != want {
+			return nil, refusedf("cannot restore %s: the bytes the management node offered are not the file the signed manifest lists", rel)
+		}
+		body, source = b, "management node"
+	} else {
+		return nil, refusedf("cannot restore %s: no kept copy, and this agent has no way to ask for one", rel)
+	}
+
+	replaced, err := WriteReleaseFile(env.SiteRoot, rel, body, want)
+	if err != nil {
+		return nil, err
+	}
+	result := map[string]interface{}{
+		"file":    rel,
+		"version": version,
+		"source":  source,
+		"sha256":  want,
+	}
+	if len(replaced) > 0 {
+		result["replaced_sha256"] = relSHA(replaced)
+		result["replaced_kept"] = true
+	} else {
+		result["replaced_kept"] = false
+	}
+	return result, nil
 }
 
 // SelfUpdateGuard is what an apply_update leaves behind it: nothing when the

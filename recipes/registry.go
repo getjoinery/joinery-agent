@@ -233,6 +233,13 @@ const (
 	ScopeAny  Scope = ""
 	ScopeHost Scope = "host"
 	ScopeSite Scope = "site"
+	// ScopeRelease is a site installed from a release: a site tree whose
+	// files are a signed release's own. A site that is a source checkout
+	// (a .git at its root: the publishing site, a developer's box) has a
+	// tree that is the developer's, legitimately different from the last
+	// published manifest between publishes, and a recipe whose repair writes
+	// release bytes over differing files must never tick there.
+	ScopeRelease Scope = "release"
 )
 
 // HasSite answers whether this agent has a site tree to run installers
@@ -240,6 +247,12 @@ const (
 // root is a machine with no site); a variable so a test can say either. The
 // default is the live answer for the common posture.
 var HasSite = func() bool { return true }
+
+// SourceCheckout answers whether this agent's site tree is a source checkout
+// (primitives.IsSourceCheckout: a .git at the site root or the web root). Set
+// once by the agent's main from its configuration; a variable so a test can
+// say either. The default is the live answer for the common posture.
+var SourceCheckout = func() bool { return false }
 
 // InContainer answers whether this process runs inside a container: either
 // engine's marker file (primitives.RunsInContainer), or no systemd to have
@@ -266,14 +279,22 @@ func applicableWith(r Recipe, inContainer, hasSite func() bool) bool {
 		return !inContainer()
 	case ScopeSite:
 		return hasSite()
+	case ScopeRelease:
+		return hasSite() && !SourceCheckout()
 	}
 	return true
 }
 
 // inapplicableReason says, for a recipe that does not tick here, why not.
 func inapplicableReason(r Recipe) string {
-	if r.Scope == ScopeSite {
+	switch r.Scope {
+	case ScopeSite:
 		return "no site tree here; the recipe's repair is an installer the support bundle does not carry"
+	case ScopeRelease:
+		if !HasSite() {
+			return "no site tree here; the recipe's subject is a release's own files"
+		}
+		return "this site is a source checkout (a .git at its root); its files are the developer's, not a release's, and nothing here writes release bytes over them"
 	}
 	return "in a container; the recipe's subject is the host"
 }

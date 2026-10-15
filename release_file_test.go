@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"joinery-agent/primitives"
@@ -92,6 +93,7 @@ func TestFetchReleaseFileAsksForTheInstalledVersionAndANamedFile(t *testing.T) {
 		Kind    string `json:"kind"`
 		Version string `json:"version"`
 		File    string `json:"file"`
+		SHA256  string `json:"sha256"`
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewDecoder(r.Body).Decode(&got)
@@ -103,15 +105,22 @@ func TestFetchReleaseFileAsksForTheInstalledVersionAndANamedFile(t *testing.T) {
 	defer server.Close()
 	installTestIdentity(t, server.URL)
 
-	body, err := fetchReleaseFile(context.Background(), newPlaneClient(false), "0.8.475", "public_html/utils/upgrade.php")
+	want := strings.Repeat("ab", 32)
+	body, err := fetchReleaseFile(context.Background(), newPlaneClient(false), "0.8.475", "public_html/utils/upgrade.php", want)
 	if err != nil || string(body) != "<?php // signed\n" {
 		t.Fatalf("fetch: %q err=%v", body, err)
 	}
-	if got.Kind != artifactKindReleaseFile || got.Version != "0.8.475" || got.File != "public_html/utils/upgrade.php" {
+	if got.Kind != artifactKindReleaseFile || got.Version != "0.8.475" || got.File != "public_html/utils/upgrade.php" || got.SHA256 != want {
 		t.Fatalf("wrong request: %+v", got)
 	}
-	if _, err := fetchReleaseFile(context.Background(), newPlaneClient(false), "0.8.475", "public_html/index.php"); err == nil {
+	if _, err := fetchReleaseFile(context.Background(), newPlaneClient(false), "0.8.475", "public_html/index.php", want); err == nil {
 		t.Fatal("a file outside the five is never asked for")
+	}
+	// The hash is what the plane resolves; a request without one is not made.
+	for _, bad := range []string{"", "not-a-hash", strings.Repeat("A", 64), strings.Repeat("ab", 31)} {
+		if _, err := fetchReleaseFile(context.Background(), newPlaneClient(false), "0.8.475", "public_html/utils/upgrade.php", bad); err == nil {
+			t.Fatalf("a request without the manifest's sha256 is never made, %q got through", bad)
+		}
 	}
 }
 
@@ -121,7 +130,7 @@ func TestFetchReleaseFileSaysWhenThePlaneHasNoCopy(t *testing.T) {
 	}))
 	defer server.Close()
 	installTestIdentity(t, server.URL)
-	if _, err := fetchReleaseFile(context.Background(), newPlaneClient(false), "0.8.475", "public_html/utils/upgrade.php"); err == nil {
+	if _, err := fetchReleaseFile(context.Background(), newPlaneClient(false), "0.8.475", "public_html/utils/upgrade.php", strings.Repeat("ab", 32)); err == nil {
 		t.Fatal("an absent copy is an error the word can refuse on")
 	}
 }

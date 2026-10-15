@@ -199,6 +199,8 @@ func (l *Loop) noteInapplicable() {
 		reason := inapplicableReason(r)
 		if r.Scope == ScopeSite {
 			l.logf("recipe %s: not applicable on a machine with no site (%s); not checked here", r.Name, reason)
+		} else if r.Scope == ScopeRelease {
+			l.logf("recipe %s: not applicable here (%s); not checked", r.Name, reason)
 		} else {
 			l.logf("recipe %s: not applicable in a container (its subject is the host); not checked here", r.Name)
 		}

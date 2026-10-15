@@ -41,6 +41,11 @@ var pinnedRecipes = map[string][2]string{
 	// specs/mail_apps_plugin.md, Running the gateway: while a site has mail
 	// apps on, the gateway runs and greets; else restart the one unit.
 	"mail_gateway": {"host_report", "restart_unit"},
+	// specs/release_file_repair_by_hash.md: the five deployment files an
+	// upgrade starts from match the signed release (upgrade_preflight's
+	// manifest and files checks), or repair_release_files puts them back from
+	// the kept copy or the management node, asked by hash. Site-scoped.
+	"release_files": {"upgrade_preflight", "repair_release_files"},
 }
 
 // pinnedNodeDerived is the set of recipes whose repair word takes a value the
