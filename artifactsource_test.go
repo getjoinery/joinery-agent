@@ -173,7 +173,7 @@ func channelUpdater(t *testing.T, plane *planeArtifact, pub ed25519.PublicKey, r
 		source:      newChannelSource(false),
 		installPath: install,
 		platform:    "linux-amd64",
-		pubKey:      pub,
+		releaseKeys: releaseKeysOf(pub),
 		running:     running,
 		warned:      map[string]bool{},
 	}, server

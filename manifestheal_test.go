@@ -69,10 +69,10 @@ func writeManifest(t *testing.T, root string, key ed25519.PrivateKey, body strin
 func healerFor(t *testing.T, root string, pub ed25519.PublicKey) *manifestHealer {
 	t.Helper()
 	return &manifestHealer{
-		siteRoot: root,
-		verifier: primitives.NewArtifactManifests(root, pub),
-		pubKey:   pub,
-		warned:   map[string]bool{},
+		siteRoot:    root,
+		verifier:    primitives.NewArtifactManifests(root, pub),
+		releaseKeys: releaseKeysOf(pub),
+		warned:      map[string]bool{},
 	}
 }
 
@@ -647,10 +647,10 @@ func TestInstallRefusesASymlinkedSiteRoot(t *testing.T) {
 	}
 
 	h := &manifestHealer{
-		siteRoot: siteRoot,
-		verifier: primitives.NewArtifactManifests(siteRoot, pub),
-		pubKey:   pub,
-		warned:   map[string]bool{},
+		siteRoot:    siteRoot,
+		verifier:    primitives.NewArtifactManifests(siteRoot, pub),
+		releaseKeys: releaseKeysOf(pub),
+		warned:      map[string]bool{},
 	}
 
 	err := h.install(&manifestPair{manifest: body, signature: ed25519.Sign(priv, body)})

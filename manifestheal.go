@@ -62,8 +62,11 @@ import (
 type manifestHealer struct {
 	siteRoot string
 	verifier *primitives.ArtifactManifests
-	pubKey   ed25519.PublicKey
-	client   *http.Client
+	// releaseKeys is the compiled-in starting set; keyDir's record wins
+	// over it (releasetrust.go).
+	releaseKeys [][]byte
+	keyDir      string
+	client      *http.Client
 
 	// How the manifest is obtained. A field so the recovery decision can be
 	// tested end to end against every answer a plane can give — including the
@@ -91,19 +94,17 @@ func newManifestHealer(cfg *Config, verifier primitives.ManifestVerifier) *manif
 	if !ok || artifacts == nil {
 		return nil
 	}
-	if updatePubKeyB64 == "" {
-		return nil
-	}
-	key, err := base64.StdEncoding.DecodeString(updatePubKeyB64)
-	if err != nil || len(key) != ed25519.PublicKeySize {
+	keys := bakedReleaseKeys()
+	if len(keys) == 0 {
 		return nil
 	}
 	return &manifestHealer{
-		siteRoot: cfg.SiteRoot,
-		verifier: artifacts,
-		pubKey:   ed25519.PublicKey(key),
-		client:   newPlaneClient(cfg.PlaneTLSInsecure),
-		warned:   map[string]bool{},
+		siteRoot:    cfg.SiteRoot,
+		verifier:    artifacts,
+		releaseKeys: keys,
+		keyDir:      agentStateDir(),
+		client:      newPlaneClient(cfg.PlaneTLSInsecure),
+		warned:      map[string]bool{},
 	}
 }
 
@@ -166,12 +167,12 @@ func (h *manifestHealer) CheckAndHeal() bool {
 		return false
 	}
 
-	if !ed25519.Verify(h.pubKey, pair.manifest, pair.signature) {
+	if signerOf(heldReleaseKeys(h.keyDir, h.releaseKeys), pair.manifest, pair.signature) == nil {
 		h.mu.Lock()
 		h.failedSum = digest
 		h.mu.Unlock()
 		log.Printf("=== Manifest recovery === REFUSED the manifest offered for %s", version)
-		log.Printf("  It does not verify against this agent's compiled-in release key.")
+		log.Printf("  It does not verify against a release key this machine trusts%s.", retiredNote(h.keyDir, pair.manifest, pair.signature))
 		log.Printf("  Not retrying until what is offered changes.")
 		return false
 	}

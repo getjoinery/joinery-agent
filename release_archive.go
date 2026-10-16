@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -100,53 +101,74 @@ func statementSubject(body []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// releaseTreeChecks is what verifies a fetched tree: the compiled release key
-// and the release-log keys this machine holds.
+// releaseTreeChecks is what verifies a fetched tree: the trusted set (the
+// compiled-in release keys, or the set keyDir records) and the release-log
+// keys this machine holds.
 type releaseTreeChecks struct {
-	pubKey ed25519.PublicKey
-	held   func() releaseLogKeys
+	releaseKeys [][]byte
+	keyDir      string
+	held        func() releaseLogKeys
 }
 
 // verifyReleaseTree checks an unpacked core release against its own manifest,
 // both ways, that it is the version asked for, and, where the log's keys are
-// held, that its statement records it.
-func (c releaseTreeChecks) verifyReleaseTree(root, version string) error {
+// held, that its statement records it. The statement's key chain is walked
+// first, so the manifest may be signed by a release key it carries
+// (specs/release_key_rotation.md R2), and a release changing the trusted set
+// must be signed by its authority (R1). Nothing is recorded: the release is
+// only run from, never installed here. Returns the key that signed it.
+func (c releaseTreeChecks) verifyReleaseTree(root, version string) (ed25519.PublicKey, error) {
 	what := "release " + version
-	body, err := verifySignedTree(root, c.pubKey, what, releaseUnlisted)
-	if err != nil {
-		return err
-	}
-	got, err := os.ReadFile(filepath.Join(root, "public_html", "VERSION"))
-	if err != nil || strings.TrimSpace(string(got)) != version {
-		return fmt.Errorf("%s's tree says it is version %q", what, strings.TrimSpace(string(got)))
-	}
 	held := releaseLogKeys{}
 	if c.held != nil {
 		held = c.held()
 	}
-	if !held.holds() {
-		return nil
+	trust := heldReleaseTrust(c.keyDir, c.releaseKeys, held.statement)
+	keys := trust.releasePublicKeys()
+	var logged *releaseLogVerdict
+	var subjectOf []byte
+	if held.holds() {
+		statement, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(releaseCoreStatement)))
+		if err != nil {
+			return nil, fmt.Errorf("%s carries no release statement, and this machine holds the release log's keys", what)
+		}
+		subjectOf, _ = os.ReadFile(filepath.Join(root, primitivesManifestName))
+		logged, err = verifyReleaseStatementTrust(statement, "core", statementSubject(subjectOf), held, trust)
+		if err != nil {
+			return nil, fmt.Errorf("%s is not shown to be in the public log: %v", what, err)
+		}
+		keys = logged.releaseKeys()
 	}
-	statement, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(releaseCoreStatement)))
+	body, signer, err := verifySignedTree(root, keys, what, releaseUnlisted)
 	if err != nil {
-		return fmt.Errorf("%s carries no release statement, and this machine holds the release log's keys", what)
+		return nil, fmt.Errorf("%w%s", err, treeRetiredNote(c.keyDir, root))
 	}
-	if _, err := verifyReleaseStatement(statement, "core", statementSubject(body), held); err != nil {
-		return fmt.Errorf("%s is not shown to be in the public log: %v", what, err)
+	if logged != nil && !bytes.Equal(body, subjectOf) {
+		return nil, fmt.Errorf("%s's manifest changed while it was being checked", what)
 	}
-	return nil
+	got, err := os.ReadFile(filepath.Join(root, "public_html", "VERSION"))
+	if err != nil || strings.TrimSpace(string(got)) != version {
+		return nil, fmt.Errorf("%s's tree says it is version %q", what, strings.TrimSpace(string(got)))
+	}
+	if logged != nil {
+		if _, err := logged.settle(signer); err != nil {
+			return nil, fmt.Errorf("%s: %v", what, err)
+		}
+	}
+	return signer, nil
 }
 
 // releaseFetcher is ExecEnv.FetchRelease: nil where this build carries no
 // usable release key, so nothing can be verified and nothing is fetched.
 func releaseFetcher(cfg *Config) func(ctx context.Context, version string) (string, primitives.ManifestVerifier, func(), error) {
-	key, err := base64.StdEncoding.DecodeString(updatePubKeyB64)
-	if cfg == nil || updatePubKeyB64 == "" || err != nil || len(key) != ed25519.PublicKeySize {
+	keys := bakedReleaseKeys()
+	if cfg == nil || len(keys) == 0 {
 		return nil
 	}
 	checks := releaseTreeChecks{
-		pubKey: ed25519.PublicKey(key),
-		held:   func() releaseLogKeys { return heldReleaseLogKeys(bakedReleaseLogKeys(), agentStateDir()) },
+		releaseKeys: keys,
+		keyDir:      agentStateDir(),
+		held:        func() releaseLogKeys { return heldReleaseLogKeys(bakedReleaseLogKeys(), agentStateDir()) },
 	}
 	client := &http.Client{Transport: &http.Transport{
 		TLSClientConfig:     &tls.Config{InsecureSkipVerify: cfg.PlaneTLSInsecure},
@@ -223,7 +245,8 @@ func (c releaseTreeChecks) unpackAndVerify(r io.Reader, dir, version string) (pr
 	if err := unpackTree(r, dir, lim); err != nil {
 		return nil, err
 	}
-	if err := c.verifyReleaseTree(dir, version); err != nil {
+	signer, err := c.verifyReleaseTree(dir, version)
+	if err != nil {
 		return nil, err
 	}
 	body, _ := os.ReadFile(filepath.Join(dir, primitivesManifestName))
@@ -232,7 +255,7 @@ func (c releaseTreeChecks) unpackAndVerify(r io.Reader, dir, version string) (pr
 	if err != nil {
 		return nil, err
 	}
-	return primitives.NewSignedTreeVerifier(dir, body, signature, c.pubKey)
+	return primitives.NewSignedTreeVerifier(dir, body, signature, signer)
 }
 
 // identityPlaneURL is ExecEnv.PlaneURL: the management node this machine is

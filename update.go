@@ -22,11 +22,12 @@ import (
 	"time"
 )
 
-// updatePubKeyB64 is the Ed25519 public key (base64, 32 raw bytes) that agent
-// binaries must be signed with before the agent will install them. Injected
-// at build time:
+// updatePubKeyB64 is the Ed25519 release keys (base64, 32 raw bytes each,
+// comma-separated) that agent binaries must be signed with before the agent
+// will install them: the starting trusted set, which a recorded set replaces
+// (releasetrust.go, specs/release_key_rotation.md R3). Injected at build time:
 //
-//	go build -ldflags "-X main.updatePubKeyB64=<base64>"
+//	go build -ldflags "-X main.updatePubKeyB64=<base64>,<base64>"
 //
 // A build without a key never self-updates. The signature requirement is the
 // security boundary: the site tree the manifest lives in is writable by the
@@ -80,7 +81,9 @@ type Updater struct {
 	distDir     string
 	installPath string
 	platform    string // e.g. linux-amd64
-	pubKey      ed25519.PublicKey
+	// releaseKeys is the release keys compiled into this binary, the
+	// starting trusted set (bakedReleaseKeys); keyDir's record wins over it.
+	releaseKeys [][]byte
 	running     string
 
 	// bakedLogKeys are the release-log keys compiled into this binary, and
@@ -100,8 +103,8 @@ type Updater struct {
 	state             string
 	checked           bool
 	unloggedSince     time.Time // when the verdict on the version on offer became unlogged
-	failedManifestSum string // backoff: a release that failed verification is not retried until it changes
-	failedState       string // the verdict the backoff holds
+	failedManifestSum string    // backoff: a release that failed verification is not retried until it changes
+	failedState       string    // the verdict the backoff holds
 	warned            map[string]bool
 }
 
@@ -131,14 +134,7 @@ func NewUpdater(cfg *Config, runningVersion string) *Updater {
 	} else {
 		log.Printf("self-update disabled: cannot determine own binary path: %v", err)
 	}
-	if updatePubKeyB64 != "" {
-		key, err := base64.StdEncoding.DecodeString(updatePubKeyB64)
-		if err != nil || len(key) != ed25519.PublicKeySize {
-			log.Printf("self-update disabled: embedded update public key is malformed")
-		} else {
-			u.pubKey = ed25519.PublicKey(key)
-		}
-	}
+	u.releaseKeys = bakedReleaseKeys()
 	return u
 }
 
@@ -207,11 +203,16 @@ func (u *Updater) heldLogKeys() releaseLogKeys {
 
 // heldReleaseLogKeys is what this machine checks the public log with: the keys
 // compiled in, and the ones logged releases proved, kept in dir. The binary and
-// the support bundle are judged by the same set.
+// the support bundle are judged by the same set. Once a release has recorded
+// the trusted set (release_trust), the statement keys are that set's alone
+// (specs/release_key_rotation.md R1); log keys only ever grow.
 func heldReleaseLogKeys(baked releaseLogKeys, dir string) releaseLogKeys {
 	held := baked.clone()
 	if dir != "" {
 		held.merge(readReleaseLogKeyFiles(dir))
+		if rec, _ := readReleaseTrust(dir); rec != nil {
+			held.statement = append([][]byte(nil), rec.statement...)
+		}
 	}
 	return held
 }
@@ -366,16 +367,16 @@ func (u *Updater) CheckAndApply() bool {
 		os.Remove(u.rejectedPath())
 	}
 
-	if u.pubKey == nil {
-		u.setState(m.Version, updateStateUnsignedBuild)
-		u.warnOnce("nokey", "self-update: v%s is available but this build carries no update public key — install manually once from a published build", m.Version)
-		return false
-	}
-
 	// A machine that holds the keys to check the public log asks for the
 	// release's statement too; one that does not never asks, and updates on
 	// the signature alone, as before the log existed.
 	held := u.heldLogKeys()
+	trust := heldReleaseTrust(u.keyDir, u.releaseKeys, held.statement)
+	if len(trust.release) == 0 {
+		u.setState(m.Version, updateStateUnsignedBuild)
+		u.warnOnce("nokey", "self-update: v%s is available but this build carries no update public key — install manually once from a published build", m.Version)
+		return false
+	}
 	var statement []byte
 	if held.holds() {
 		statement, err = u.source.Statement()
@@ -412,8 +413,9 @@ func (u *Updater) CheckAndApply() bool {
 	// must record the hash the manifest gives for this platform, and the
 	// binary must then hash to it and carry the release signature.
 	var logged *releaseLogVerdict
+	keys := trust.releasePublicKeys()
 	if held.holds() {
-		logged, err = verifyReleaseStatement(statement, "agent/"+u.platform, entry.Sha256, held)
+		logged, err = verifyReleaseStatementTrust(statement, "agent/"+u.platform, entry.Sha256, held, trust)
 		if err != nil {
 			u.refuse(releaseSum, updateStateUnlogged)
 			u.setState(m.Version, updateStateUnlogged)
@@ -427,9 +429,10 @@ func (u *Updater) CheckAndApply() bool {
 			log.Printf("  Not retrying until the release changes.")
 			return false
 		}
+		keys = logged.releaseKeys()
 	}
 
-	binary, err := u.fetchAndVerify(entry)
+	binary, signer, err := u.fetchAndVerify(entry, keys)
 	if err != nil {
 		if !errors.Is(err, errArtifactRefused) {
 			// Transport, not verdict. The bytes were not all there — a
@@ -451,15 +454,34 @@ func (u *Updater) CheckAndApply() bool {
 		return false
 	}
 
+	// A release that changes the trusted set must be signed by its authority
+	// (specs/release_key_rotation.md R1).
+	var settled releaseTrust
+	if logged != nil {
+		settled, err = logged.settle(signer)
+		if err != nil {
+			u.refuse(releaseSum, updateStateVerifyFailed)
+			u.setState(m.Version, updateStateVerifyFailed)
+			log.Printf("=== Self-update === REFUSED v%s: %v", m.Version, err)
+			log.Printf("  It is not one of our releases. Not retrying until the release changes.")
+			return false
+		}
+	}
+
 	// The keys first, then the swap. They are what holds the next binary to
 	// the log, and the one about to be installed may carry none of its own:
 	// a swap whose keys were not kept would lower the bar it was checked
 	// against. Writing them is idempotent and the chain proved them whether
 	// or not the swap happens; a failure here is retried on the next check.
 	if logged != nil && u.keyDir != "" {
-		keep := held.clone()
-		keep.merge(logged.proven)
+		keep := releaseLogKeys{log: held.clone().log}
+		keep.merge(releaseLogKeys{log: logged.proven.log})
 		added, err := persistReleaseLogKeys(u.keyDir, keep)
+		if err == nil {
+			var set []string
+			set, err = persistReleaseTrust(u.keyDir, settled, u.bakedLogKeys, u.releaseKeys)
+			added = append(added, set...)
+		}
 		if err != nil {
 			u.setState(m.Version, updateStateFetchFailed)
 			log.Printf("=== Self-update === NOT installing v%s: the release-log keys this machine holds could not be recorded in %s: %v — will retry", m.Version, u.keyDir, err)
@@ -507,27 +529,29 @@ var errArtifactRefused = errors.New("artifact refused")
 
 // fetchAndVerify opens the artifact at whichever source this agent uses and
 // hands the bytes to the verification that has never moved.
-func (u *Updater) fetchAndVerify(entry distBinary) ([]byte, error) {
+func (u *Updater) fetchAndVerify(entry distBinary, keys []ed25519.PublicKey) ([]byte, ed25519.PublicKey, error) {
 	r, err := u.source.Open(u.platform, entry)
 	if err != nil {
-		return nil, fmt.Errorf("open artifact: %w", err)
+		return nil, nil, fmt.Errorf("open artifact: %w", err)
 	}
 	defer r.Close()
-	return u.loadAndVerify(entry, r)
+	return u.loadAndVerify(entry, r, keys)
 }
 
 // loadAndVerify reads the gzipped binary, checks its sha256, and verifies the
 // publisher signature over the raw binary bytes.
 //
 // It takes a READER, and that is the only thing about this function the channel
-// changed. The key it verifies against is compiled into this binary, so the
-// answer is the same whether the bytes came off a local disk or off a control
-// plane — and a plane cannot sign an agent, which is what makes it safe for one
-// to serve these bytes at all.
-func (u *Updater) loadAndVerify(entry distBinary, r io.Reader) ([]byte, error) {
+// changed. The keys it verifies against are this machine's trusted set (the
+// compiled-in starting set, or the set its releases recorded), never anything
+// the source sends, so the answer is the same whether the bytes came off a
+// local disk or off a control plane — and a plane cannot sign an agent, which
+// is what makes it safe for one to serve these bytes at all. Returns the key
+// that signed it.
+func (u *Updater) loadAndVerify(entry distBinary, r io.Reader, keys []ed25519.PublicKey) ([]byte, ed25519.PublicKey, error) {
 	gz, err := gzip.NewReader(r)
 	if err != nil {
-		return nil, fmt.Errorf("artifact is not gzip: %w", err)
+		return nil, nil, fmt.Errorf("artifact is not gzip: %w", err)
 	}
 	// One byte past the ceiling, so an artifact that is exactly at it is not
 	// mistaken for one that overran. A gzip bomb from a hostile plane is the
@@ -535,23 +559,24 @@ func (u *Updater) loadAndVerify(entry distBinary, r io.Reader) ([]byte, error) {
 	// is an out-of-memory condition a relay cannot recover from.
 	binary, err := io.ReadAll(io.LimitReader(gz, maxAgentBinaryBytes+1))
 	if err != nil {
-		return nil, fmt.Errorf("decompress artifact: %w", err)
+		return nil, nil, fmt.Errorf("decompress artifact: %w", err)
 	}
 	if len(binary) > maxAgentBinaryBytes {
-		return nil, fmt.Errorf("%w: the artifact decompresses to more than this agent's %d-byte limit", errArtifactRefused, maxAgentBinaryBytes)
+		return nil, nil, fmt.Errorf("%w: the artifact decompresses to more than this agent's %d-byte limit", errArtifactRefused, maxAgentBinaryBytes)
 	}
 
 	sum := sha256.Sum256(binary)
 	expected, err := hex.DecodeString(entry.Sha256)
 	if err != nil || !bytes.Equal(sum[:], expected) {
-		return nil, fmt.Errorf("%w: sha256 mismatch", errArtifactRefused)
+		return nil, nil, fmt.Errorf("%w: sha256 mismatch", errArtifactRefused)
 	}
 
 	sig, err := base64.StdEncoding.DecodeString(entry.Signature)
-	if err != nil || !ed25519.Verify(u.pubKey, binary, sig) {
-		return nil, fmt.Errorf("%w: signature verification failed", errArtifactRefused)
+	signer := signerOf(keys, binary, sig)
+	if err != nil || signer == nil {
+		return nil, nil, fmt.Errorf("%w: signature verification failed%s", errArtifactRefused, retiredNote(u.keyDir, binary, sig))
 	}
-	return binary, nil
+	return binary, signer, nil
 }
 
 // install writes the verified binary next to the current one, keeps the

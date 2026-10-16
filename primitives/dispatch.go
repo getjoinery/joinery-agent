@@ -36,6 +36,11 @@ type ExecEnv struct {
 	// SiteDomain is the site's own domain from its config (webDir), as
 	// check_status reports it. Empty on a machine with no site.
 	SiteDomain string
+	// ReleaseTrust reports the release keys the agent and the site trust and
+	// the authority over them, as check_status carries them
+	// (specs/release_key_rotation.md R6). The trusted set is the agent's own
+	// state, so the agent supplies the reader. Nil reports none.
+	ReleaseTrust func() map[string]interface{}
 	// DB resolves the node's own database, for collectors that read local
 	// state. Nil when the node has no Joinery database at all.
 	//

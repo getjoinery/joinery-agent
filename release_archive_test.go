@@ -45,7 +45,7 @@ func releaseArchive(t *testing.T, priv ed25519.PrivateKey, version string, mangl
 
 func checkRelease(t *testing.T, pub ed25519.PublicKey, raw []byte, version string) error {
 	t.Helper()
-	c := releaseTreeChecks{pubKey: pub}
+	c := releaseTreeChecks{releaseKeys: releaseKeysOf(pub)}
 	_, err := c.unpackAndVerify(bytes.NewReader(raw), t.TempDir(), version)
 	return err
 }
@@ -53,7 +53,7 @@ func checkRelease(t *testing.T, pub ed25519.PublicKey, raw []byte, version strin
 func TestAReleaseThePublisherSignedVerifies(t *testing.T) {
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	raw := releaseArchive(t, priv, "0.8.496", nil, tarEntry{name: "config/default_Globalvars_site.php", body: "<?php\n"})
-	c := releaseTreeChecks{pubKey: pub}
+	c := releaseTreeChecks{releaseKeys: releaseKeysOf(pub)}
 	dir := t.TempDir()
 	v, err := c.unpackAndVerify(bytes.NewReader(raw), dir, "0.8.496")
 	if err != nil {
@@ -136,7 +136,7 @@ func TestAMachineHoldingTheLogsKeysWantsTheStatement(t *testing.T) {
 	held := newReleaseLogKeys()
 	held.addStatement(make([]byte, 91))
 	held.addLog("log.example", make([]byte, 32))
-	c := releaseTreeChecks{pubKey: pub, held: func() releaseLogKeys { return held }}
+	c := releaseTreeChecks{releaseKeys: releaseKeysOf(pub), held: func() releaseLogKeys { return held }}
 	if !held.holds() {
 		t.Skip("the fixture keys are not accepted as held; the refusal is proven on a box instead")
 	}

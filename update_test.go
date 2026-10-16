@@ -41,7 +41,7 @@ func newTestUpdaterEnv(t *testing.T, runningVersion string) *testUpdaterEnv {
 		distDir:     distDir,
 		installPath: install,
 		platform:    "linux-amd64",
-		pubKey:      pub,
+		releaseKeys: releaseKeysOf(pub),
 		running:     runningVersion,
 		warned:      map[string]bool{},
 		// convergeService nil: no systemd in tests
@@ -180,7 +180,7 @@ func TestBadSignatureRefused(t *testing.T) {
 
 func TestNoKeyNeverUpdates(t *testing.T) {
 	e := newTestUpdaterEnv(t, "0.3.0")
-	e.u.pubKey = nil
+	e.u.releaseKeys = nil
 	e.writeDist(t, "0.3.1", []byte("NEW-BINARY"), nil)
 	if e.u.CheckAndApply() {
 		t.Fatal("keyless build applied an update")

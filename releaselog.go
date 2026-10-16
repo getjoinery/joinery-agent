@@ -959,12 +959,63 @@ type releaseLogVerdict struct {
 	// proven is every key the key chain proved that was not already held:
 	// the install step writes these, the check never does.
 	proven releaseLogKeys
+	// walked is the trusted set the key chain left (specs/release_key_rotation.md
+	// R1, R2): its release keys are what the binary or manifest is checked
+	// against.
+	walked releaseTrust
+	// offered is the set the release installs; changes says it is not walked,
+	// and statementAuthorized that its statement is signed by walked's authority.
+	offered             *releaseTrust
+	changes             bool
+	statementAuthorized bool
 }
 
-// verifyReleaseStatement checks a RELEASE_STATEMENT against the keys held and
-// that it records sha256Hex under artifact (agent/<platform>). It reads
-// nothing and writes nothing.
+// releaseKeys is what the release's signature is checked against.
+func (v *releaseLogVerdict) releaseKeys() []ed25519.PublicKey {
+	return v.walked.releasePublicKeys()
+}
+
+// settle is the set the release leaves this machine with, once its binary or
+// manifest is known to be signed by signer: the walked set when it installs
+// that set, the one it installs when it changes it with the authority to, and
+// errUnauthorizedKeys otherwise.
+func (v *releaseLogVerdict) settle(signer ed25519.PublicKey) (releaseTrust, error) {
+	if !v.changes {
+		// The set held, unchanged. Where no release has recorded it yet, the
+		// record this release first writes names it, as the site's does.
+		walked := v.walked
+		if walked.setBy == "" {
+			walked.setBy = v.version
+		}
+		return walked, nil
+	}
+	if !v.statementAuthorized || !containsKey(v.walked.effectiveAuthority().release, signer) {
+		return releaseTrust{}, errUnauthorizedKeys
+	}
+	return *v.offered, nil
+}
+
+// withStatement is k with its statement keys replaced.
+func withStatement(k releaseLogKeys, statement [][]byte) releaseLogKeys {
+	return releaseLogKeys{statement: statement, log: k.log}
+}
+
+// verifyReleaseStatement checks a RELEASE_STATEMENT against the keys held,
+// as verifyReleaseStatementTrust does, for a machine whose trusted set is the
+// statement keys it holds and no release key yet: the chain's first link
+// that verifies gives it one.
 func verifyReleaseStatement(doc []byte, artifact, sha256Hex string, held releaseLogKeys) (*releaseLogVerdict, error) {
+	return verifyReleaseStatementTrust(doc, artifact, sha256Hex, held, releaseTrust{trustKeys: trustKeys{statement: held.statement}})
+}
+
+// verifyReleaseStatementTrust checks a RELEASE_STATEMENT against the log keys
+// held and the trusted set trust, and that it records sha256Hex under
+// artifact (agent/<platform>, support_bundle, core). The key chain is walked
+// first, under the rules releasetrust.go states; the statement then verifies
+// under the set the walk ends with. Whether the release may change the set is
+// decided once its signer is known (settle). It reads nothing and writes
+// nothing.
+func verifyReleaseStatementTrust(doc []byte, artifact, sha256Hex string, held releaseLogKeys, trust releaseTrust) (*releaseLogVerdict, error) {
 	if len(bytes.TrimSpace(doc)) == 0 {
 		return nil, fmt.Errorf("the release carries no %s", releaseStatementName)
 	}
@@ -978,17 +1029,31 @@ func verifyReleaseStatement(doc []byte, artifact, sha256Hex string, held release
 		return nil, errors.New("this machine holds no statement key or no log key to check a statement with")
 	}
 
-	// The chain, forward from what this machine holds: a link that verifies
-	// under the keys held so far adds the keys it installs; one that does not
-	// adds nothing.
+	// The chain, forward from what this machine holds (R1, R2): a link that
+	// does not verify under the statement keys held so far adds nothing; one
+	// that installs the set held adds its log keys; one that installs another
+	// set replaces it, and adds its log keys, only when its statement is
+	// signed by the authority held, and otherwise adds nothing.
 	keys := held.clone()
+	state := trust
 	for _, raw := range chain {
 		chainLink, ok := decodeLink(raw)
-		if !ok || entryVerifies(chainLink.env, chainLink.entry, keys) != "" {
+		if !ok || entryVerifies(chainLink.env, chainLink.entry, withStatement(keys, state.statement)) != "" {
 			continue
 		}
-		keys.merge(payloadKeys(chainLink.env))
+		if installed := payloadTrust(chainLink.env); installed != nil && !sameTrust(*installed, state) {
+			if entryVerifies(chainLink.env, chainLink.entry, withStatement(keys, state.effectiveAuthority().statement)) != "" {
+				continue
+			}
+			state = *installed
+		}
+		for origin, ders := range payloadKeys(chainLink.env).log {
+			for _, der := range ders {
+				keys.addLog(origin, der)
+			}
+		}
 	}
+	keys.statement = state.statement
 
 	if why := entryVerifies(link.env, link.entry, keys); why != "" {
 		return nil, errors.New(why)
@@ -1000,8 +1065,13 @@ func verifyReleaseStatement(doc []byte, artifact, sha256Hex string, held release
 		return nil, fmt.Errorf("the logged statement does not record this binary as %s", artifact)
 	}
 
-	var origin string
-	json.Unmarshal(link.entry["log_origin"], &origin)
-	index, _ := jsonInt(link.entry["log_index"])
-	return &releaseLogVerdict{origin: origin, index: index, version: payload.version(), proven: keys.minus(held)}, nil
+	verdict := &releaseLogVerdict{version: payload.version(), proven: keys.minus(held), walked: state}
+	if offered := payloadTrust(link.env); offered != nil && !sameTrust(*offered, state) {
+		verdict.offered = offered
+		verdict.changes = true
+		verdict.statementAuthorized = entryVerifies(link.env, link.entry, withStatement(keys, state.effectiveAuthority().statement)) == ""
+	}
+	json.Unmarshal(link.entry["log_origin"], &verdict.origin)
+	verdict.index, _ = jsonInt(link.entry["log_index"])
+	return verdict, nil
 }

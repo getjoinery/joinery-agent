@@ -40,6 +40,14 @@ type ArtifactManifests struct {
 	// manifest is trusted for a single hash before its signature verifies
 	// against this, and nothing is fetched to obtain it.
 	PubKey ed25519.PublicKey
+	// Keys, when set, is read at each verification instead of PubKey: the
+	// machine's trusted set, which a release can change while the agent runs
+	// (specs/release_key_rotation.md R1, R3).
+	Keys func() []ed25519.PublicKey
+	// RetiredNote, when set, says which retired release key made a
+	// signature the set refuses ("" when none did), so a release signed
+	// before a rotation is refused with its reason.
+	RetiredNote func(body, signature []byte) string
 
 	mu    sync.Mutex
 	cache map[string]cachedVerifier
@@ -55,6 +63,20 @@ type cachedVerifier struct {
 // NewArtifactManifests builds a verifier over a site root.
 func NewArtifactManifests(root string, pubKey ed25519.PublicKey) *ArtifactManifests {
 	return &ArtifactManifests{Root: root, PubKey: pubKey, cache: map[string]cachedVerifier{}}
+}
+
+// NewArtifactManifestsKeys builds a verifier over a site root that checks each
+// manifest against the release keys keys() returns when it is read.
+func NewArtifactManifestsKeys(root string, keys func() []ed25519.PublicKey) *ArtifactManifests {
+	return &ArtifactManifests{Root: root, Keys: keys, cache: map[string]cachedVerifier{}}
+}
+
+// releaseKeys is the set a manifest is checked against now.
+func (a *ArtifactManifests) releaseKeys() []ed25519.PublicKey {
+	if a.Keys != nil {
+		return a.Keys()
+	}
+	return []ed25519.PublicKey{a.PubKey}
 }
 
 // Verify resolves the file to its owning artifact and checks it there.
@@ -159,9 +181,13 @@ func (a *ArtifactManifests) verifierFor(owner string) (*SignedTreeVerifier, erro
 		return nil, artifactUnverifiable(owner, "its manifest signature is not readable base64")
 	}
 
-	verifier, err := NewSignedTreeVerifier(a.Root, body, signature, a.PubKey)
+	verifier, err := NewSignedTreeVerifierKeys(a.Root, body, signature, a.releaseKeys())
 	if err != nil {
-		return nil, artifactUnverifiable(owner, err.Error())
+		note := ""
+		if a.RetiredNote != nil {
+			note = a.RetiredNote(body, signature)
+		}
+		return nil, artifactUnverifiable(owner, err.Error()+note)
 	}
 
 	a.mu.Lock()

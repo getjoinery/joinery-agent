@@ -119,9 +119,11 @@ func installedBundleVersion() string {
 // scripts under a job that is running one of them is the file-level version of
 // swapping the binary under a running job.
 type BundleSync struct {
-	source   *channelSource
-	pubKey   ed25519.PublicKey
-	siteless bool
+	source *channelSource
+	// releaseKeys is the release keys compiled into this binary, the
+	// starting trusted set; keyDir's record wins over it (releasetrust.go).
+	releaseKeys [][]byte
+	siteless    bool
 	// The release-log keys this machine holds: the ones compiled in and the
 	// ones a logged release proved, kept in keyDir. Holding them, a bundle is
 	// installed only when the release's statement in the public log records
@@ -191,14 +193,14 @@ func NewBundleSync(cfg *Config) *BundleSync {
 	if cfg == nil || !cfg.Siteless {
 		return nil
 	}
-	key, err := base64.StdEncoding.DecodeString(updatePubKeyB64)
-	if updatePubKeyB64 == "" || err != nil || len(key) != ed25519.PublicKeySize {
+	keys := bakedReleaseKeys()
+	if len(keys) == 0 {
 		log.Printf("support bundle unavailable: this build carries no usable release key, so it could not verify one")
 		return nil
 	}
 	return &BundleSync{
 		source:       newChannelSource(cfg.PlaneTLSInsecure),
-		pubKey:       ed25519.PublicKey(key),
+		releaseKeys:  keys,
 		siteless:     true,
 		bakedLogKeys: bakedReleaseLogKeys(),
 		keyDir:       agentStateDir(),
@@ -350,16 +352,30 @@ func (b *BundleSync) installFrom(body io.Reader, wantSha string, fetchStatement 
 		wantSha = got
 	}
 
-	version, err := verifyBundleTree(staging, b.pubKey)
+	// The public log first: its key chain may carry the release keys the
+	// manifest is signed with (specs/release_key_rotation.md R2).
+	held := heldReleaseLogKeys(b.bakedLogKeys, b.keyDir)
+	trust := heldReleaseTrust(b.keyDir, b.releaseKeys, held.statement)
+	logged, err := b.checkLogged(got, fetchStatement, held, trust)
 	if err != nil {
 		removeTree(staging)
 		return "", err
 	}
-
-	// The public log, before the swap.
-	if err := b.checkLogged(got, version, fetchStatement); err != nil {
+	keys := trust.releasePublicKeys()
+	if logged != nil {
+		keys = logged.releaseKeys()
+	}
+	version, signer, err := verifyBundleTree(staging, keys)
+	if err != nil {
+		err = fmt.Errorf("%w%s", err, treeRetiredNote(b.keyDir, staging))
 		removeTree(staging)
 		return "", err
+	}
+	if logged != nil {
+		if err := b.keepLogged(logged, held, signer, version); err != nil {
+			removeTree(staging)
+			return "", err
+		}
 	}
 
 	// Swap. The previous tree is kept only until the new one is in place; there
@@ -405,27 +421,44 @@ func lockBundleInstall(path string) (func(), error) {
 // checkLogged holds a bundle to the public log: a machine that holds the keys
 // to read it installs only a bundle whose release statement records these
 // bytes (artifact support_bundle), the bar the self-update holds the binary
-// to. The keys the statement's chain proves are kept before the swap, as the
-// self-update keeps them before its own. A machine holding no keys installs on
-// the signature alone, as before the log existed, and never asks.
-func (b *BundleSync) checkLogged(sha256Hex, version string, fetchStatement func() ([]byte, error)) error {
-	held := heldReleaseLogKeys(b.bakedLogKeys, b.keyDir)
+// to. It walks the statement's key chain from the trusted set held (trust),
+// and its verdict says which release keys the manifest must be signed with.
+// A machine holding no keys installs on the signature alone, as before the log
+// existed, never asks, and gets nil.
+func (b *BundleSync) checkLogged(sha256Hex string, fetchStatement func() ([]byte, error), held releaseLogKeys, trust releaseTrust) (*releaseLogVerdict, error) {
 	if !held.holds() {
-		return nil
+		return nil, nil
 	}
 	statement, err := fetchStatement()
 	if err != nil {
-		return fmt.Errorf("%w: could not fetch the release statement: %v", errBundleRetry, err)
+		return nil, fmt.Errorf("%w: could not fetch the release statement: %v", errBundleRetry, err)
 	}
 	b.lastStatementSum = statementSum(statement)
-	logged, err := verifyReleaseStatement(statement, "support_bundle", sha256Hex, held)
+	logged, err := verifyReleaseStatementTrust(statement, "support_bundle", sha256Hex, held, trust)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", errBundleUnlogged, err)
+	}
+	return logged, nil
+}
+
+// keepLogged settles a logged bundle's trusted set once its manifest's signer
+// is known, refusing a set change without the authority to
+// (specs/release_key_rotation.md R1), and keeps the keys before the swap, as
+// the self-update keeps them before its own.
+func (b *BundleSync) keepLogged(logged *releaseLogVerdict, held releaseLogKeys, signer ed25519.PublicKey, version string) error {
+	settled, err := logged.settle(signer)
 	if err != nil {
 		return fmt.Errorf("%w: %v", errBundleUnlogged, err)
 	}
 	if b.keyDir != "" {
-		keep := held.clone()
-		keep.merge(logged.proven)
+		keep := releaseLogKeys{log: held.clone().log}
+		keep.merge(releaseLogKeys{log: logged.proven.log})
 		added, err := persistReleaseLogKeys(b.keyDir, keep)
+		if err == nil {
+			var set []string
+			set, err = persistReleaseTrust(b.keyDir, settled, b.bakedLogKeys, b.releaseKeys)
+			added = append(added, set...)
+		}
 		if err != nil {
 			return fmt.Errorf("%w: the release-log keys could not be recorded in %s: %v", errBundleRetry, b.keyDir, err)
 		}
@@ -629,43 +662,44 @@ func safeTreePath(what, name string) (string, error) {
 // every listed file is hashed, and the tree is walked to prove it holds nothing
 // the manifest did not list. Returns the bundle's version: the hash of the
 // manifest body, which identifies the verified content rather than the delivery.
-func verifyBundleTree(root string, pubKey ed25519.PublicKey) (string, error) {
-	body, err := verifySignedTree(root, pubKey, "the bundle", nil)
+func verifyBundleTree(root string, keys []ed25519.PublicKey) (string, ed25519.PublicKey, error) {
+	body, signer, err := verifySignedTree(root, keys, "the bundle", nil)
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
 	sum := sha256.Sum256(body)
-	return hex.EncodeToString(sum[:])[:16], nil
+	return hex.EncodeToString(sum[:])[:16], signer, nil
 }
 
 // verifySignedTree checks a tree against the RELEASE_MANIFEST at its root,
-// both ways, and returns the manifest's body. unlisted, when set, names the
-// paths a manifest never lists (a release's, PackageSignature::excluded); the
-// manifest and its signature are never listed.
-func verifySignedTree(root string, pubKey ed25519.PublicKey, what string, unlisted func(rel string) bool) ([]byte, error) {
+// both ways, and returns the manifest's body and the release key that signed
+// it, one of keys. unlisted, when set, names the paths a manifest never lists
+// (a release's, PackageSignature::excluded); the manifest and its signature
+// are never listed.
+func verifySignedTree(root string, keys []ed25519.PublicKey, what string, unlisted func(rel string) bool) ([]byte, ed25519.PublicKey, error) {
 	body, err := os.ReadFile(filepath.Join(root, primitivesManifestName))
 	if err != nil {
-		return nil, fmt.Errorf("%s carries no %s, so nothing in it can be verified", what, primitivesManifestName)
+		return nil, nil, fmt.Errorf("%s carries no %s, so nothing in it can be verified", what, primitivesManifestName)
 	}
 	sigRaw, err := os.ReadFile(filepath.Join(root, primitivesSignatureName))
 	if err != nil {
-		return nil, fmt.Errorf("%s's manifest carries no signature", what)
+		return nil, nil, fmt.Errorf("%s's manifest carries no signature", what)
 	}
 	signature, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(sigRaw)))
 	if err != nil {
-		return nil, fmt.Errorf("%s's manifest signature is not readable base64", what)
+		return nil, nil, fmt.Errorf("%s's manifest signature is not readable base64", what)
 	}
 
-	verifier, err := primitives.NewSignedTreeVerifier(root, body, signature, pubKey)
+	verifier, err := primitives.NewSignedTreeVerifierKeys(root, body, signature, keys)
 	if err != nil {
-		return nil, fmt.Errorf("%s's manifest does not verify: %w", what, err)
+		return nil, nil, fmt.Errorf("%s's manifest does not verify: %w", what, err)
 	}
 
 	listed := map[string]bool{}
 	for rel := range verifier.Hashes {
 		listed[rel] = true
 		if err := verifier.Verify(filepath.Join(root, filepath.FromSlash(rel))); err != nil {
-			return nil, fmt.Errorf("%s does not match its own manifest: %w", what, err)
+			return nil, nil, fmt.Errorf("%s does not match its own manifest: %w", what, err)
 		}
 	}
 
@@ -693,9 +727,9 @@ func verifySignedTree(root string, pubKey ed25519.PublicKey, what string, unlist
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return body, nil
+	return body, verifier.Key, nil
 }
 
 func removeTree(path string) error {

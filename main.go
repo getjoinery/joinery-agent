@@ -24,7 +24,7 @@ import (
 // must stay ABOVE 1.1.0 forever - install_agent.sh's downgrade guard sorts
 // with sort -V and refuses to replace a "newer" binary, so anything below
 // 1.1.0 strands those agents permanently.
-var version = "1.80.0"
+var version = "1.81.0"
 
 // How often the idle loop looks at the shipped agent_dist manifest. Update
 // checks never run while a job is executing.
@@ -268,6 +268,14 @@ func execEnvFor(cfg *Config, db *DB) *primitives.ExecEnv {
 		// can fill a node record that has no site address.
 		SiteDomain: cfg.SiteDomain,
 		DB:         dbForPrimitives,
+		// The release keys the agent and the site trust, which check_status
+		// reports (specs/release_key_rotation.md R6).
+		ReleaseTrust: func() map[string]interface{} {
+			if cfg.Siteless {
+				return reportReleaseTrust("")
+			}
+			return reportReleaseTrust(cfg.SiteRoot)
+		},
 		// Which database is this machine's own, from this machine's own config.
 		// The plane stores no column for it and so can only guess; see
 		// ExecEnv.DBName.
@@ -446,27 +454,31 @@ func bundleVerifier(cfg *Config) primitives.ManifestVerifier {
 	if root == "" {
 		return nil
 	}
-	if updatePubKeyB64 == "" {
-		return primitives.UnavailableVerifier{}
-	}
-	key, err := base64.StdEncoding.DecodeString(updatePubKeyB64)
-	if err != nil || len(key) != ed25519.PublicKeySize {
-		log.Printf("script primitives unavailable: this build's release key is malformed")
-		return primitives.UnavailableVerifier{}
-	}
-	return primitives.NewArtifactManifests(root, ed25519.PublicKey(key))
+	return trustedSetVerifier(root)
 }
 
 func releaseVerifier(siteRoot string) primitives.ManifestVerifier {
-	if updatePubKeyB64 == "" || siteRoot == "" {
+	if siteRoot == "" {
 		return primitives.UnavailableVerifier{}
 	}
-	key, err := base64.StdEncoding.DecodeString(updatePubKeyB64)
-	if err != nil || len(key) != ed25519.PublicKeySize {
-		log.Printf("script primitives unavailable: this build's release key is malformed")
+	return trustedSetVerifier(siteRoot)
+}
+
+// trustedSetVerifier checks manifests under root against this machine's
+// trusted set, read at each check so a set a release changes takes effect
+// without a restart (specs/release_key_rotation.md R1, R3).
+func trustedSetVerifier(root string) primitives.ManifestVerifier {
+	baked := bakedReleaseKeys()
+	if len(baked) == 0 {
+		if updatePubKeyB64 != "" {
+			log.Printf("script primitives unavailable: this build's release key is malformed")
+		}
 		return primitives.UnavailableVerifier{}
 	}
-	return primitives.NewArtifactManifests(siteRoot, ed25519.PublicKey(key))
+	dir := agentStateDir()
+	verifier := primitives.NewArtifactManifestsKeys(root, func() []ed25519.PublicKey { return heldReleaseKeys(dir, baked) })
+	verifier.RetiredNote = func(body, signature []byte) string { return retiredNote(dir, body, signature) }
+	return verifier
 }
 
 func main() {

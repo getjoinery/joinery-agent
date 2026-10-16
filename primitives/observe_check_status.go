@@ -37,7 +37,7 @@ func init() {
 		Name:        "check_status",
 		Class:       ClassObserve,
 		Machine:     true,
-		Description: "The site's web root and domain, disk, memory, load, uptime, PostgreSQL liveness, Joinery version, database list, whether Server Manager is active, the site's plugins with their versions, the site's recorded plugin checks.",
+		Description: "The site's web root and domain, disk, memory, load, uptime, PostgreSQL liveness, Joinery version, database list, whether Server Manager is active, the site's plugins with their versions, the site's recorded plugin checks, the release keys the agent and the site trust.",
 		Params:      nil, // takes none, so any param at all is refused
 		Run:         runCheckStatus,
 	})
@@ -71,6 +71,13 @@ func runCheckStatus(ctx context.Context, env *ExecEnv, _ Params) (map[string]int
 	collectCertificates(letsEncryptLiveDir, time.Now(), result)
 	if env.DB != nil {
 		collectDatabase(ctx, env, result)
+	}
+	// The release keys this machine's agent and site trust, so each step of a
+	// key rotation is a check on every node (specs/release_key_rotation.md R6).
+	if env.ReleaseTrust != nil {
+		if trust := env.ReleaseTrust(); len(trust) > 0 {
+			result["release_trust"] = trust
+		}
 	}
 
 	if len(result) == 0 {

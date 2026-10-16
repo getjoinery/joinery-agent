@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -25,6 +26,23 @@ func bundleSum(b []byte) string {
 	return hex.EncodeToString(s[:])
 }
 
+// checkAndKeep runs the two halves install runs around the manifest check:
+// the statement against the trusted set held, then, for a manifest signed by
+// the first compiled-in key, keeping what it settled.
+func (b *BundleSync) checkAndKeep(sha256Hex, version string, fetchStatement func() ([]byte, error)) error {
+	held := heldReleaseLogKeys(b.bakedLogKeys, b.keyDir)
+	trust := heldReleaseTrust(b.keyDir, b.releaseKeys, held.statement)
+	logged, err := b.checkLogged(sha256Hex, fetchStatement, held, trust)
+	if err != nil || logged == nil {
+		return err
+	}
+	var signer ed25519.PublicKey
+	if len(b.releaseKeys) > 0 {
+		signer = b.releaseKeys[0]
+	}
+	return b.keepLogged(logged, held, signer, version)
+}
+
 func requiredBundleSync(t *testing.T, sk testStatementKey, l testLog) *BundleSync {
 	return &BundleSync{bakedLogKeys: keysOf(sk, l), keyDir: t.TempDir(), warned: map[string]bool{}}
 }
@@ -34,7 +52,7 @@ func TestALoggedBundleIsAcceptedAndItsKeysAreKept(t *testing.T) {
 	b := requiredBundleSync(t, sk, l)
 	sum := bundleSum([]byte("bundle bytes"))
 	doc := bundleStatement(t, sk, l, map[string]string{"support_bundle": sum, "agent/linux-amd64": bundleSum([]byte("agent"))})
-	if err := b.checkLogged(sum, "v1", func() ([]byte, error) { return doc, nil }); err != nil {
+	if err := b.checkAndKeep(sum, "v1", func() ([]byte, error) { return doc, nil }); err != nil {
 		t.Fatalf("a bundle its logged statement records was refused: %v", err)
 	}
 	entries, _ := os.ReadDir(b.keyDir)
@@ -46,7 +64,7 @@ func TestALoggedBundleIsAcceptedAndItsKeysAreKept(t *testing.T) {
 func TestABundleWithNoStatementIsRefused(t *testing.T) {
 	sk, l := newTestStatementKey(t), newTestLog(t, "log.bundle-test.example")
 	b := requiredBundleSync(t, sk, l)
-	err := b.checkLogged(bundleSum([]byte("bundle bytes")), "v1", func() ([]byte, error) { return nil, nil })
+	err := b.checkAndKeep(bundleSum([]byte("bundle bytes")), "v1", func() ([]byte, error) { return nil, nil })
 	if !errors.Is(err, errBundleUnlogged) || errors.Is(err, errBundleRetry) || !strings.Contains(err.Error(), "unlogged") {
 		t.Fatalf("a stripped statement must be refused as unlogged, not retried; got %v", err)
 	}
@@ -56,11 +74,11 @@ func TestABundleItsStatementDoesNotRecordIsRefused(t *testing.T) {
 	sk, l := newTestStatementKey(t), newTestLog(t, "log.bundle-test.example")
 	b := requiredBundleSync(t, sk, l)
 	other := bundleStatement(t, sk, l, map[string]string{"support_bundle": bundleSum([]byte("other bytes"))})
-	if err := b.checkLogged(bundleSum([]byte("bundle bytes")), "v1", func() ([]byte, error) { return other, nil }); err == nil || errors.Is(err, errBundleRetry) {
+	if err := b.checkAndKeep(bundleSum([]byte("bundle bytes")), "v1", func() ([]byte, error) { return other, nil }); err == nil || errors.Is(err, errBundleRetry) {
 		t.Fatalf("a statement recording other bytes must refuse the bundle; got %v", err)
 	}
 	agentOnly := bundleStatement(t, sk, l, map[string]string{"agent/linux-amd64": bundleSum([]byte("bundle bytes"))})
-	if err := b.checkLogged(bundleSum([]byte("bundle bytes")), "v1", func() ([]byte, error) { return agentOnly, nil }); err == nil {
+	if err := b.checkAndKeep(bundleSum([]byte("bundle bytes")), "v1", func() ([]byte, error) { return agentOnly, nil }); err == nil {
 		t.Fatalf("the same bytes recorded under another artifact name must not pass for the bundle")
 	}
 }
@@ -68,7 +86,7 @@ func TestABundleItsStatementDoesNotRecordIsRefused(t *testing.T) {
 func TestAStatementThatCannotBeFetchedIsRetriedNotRefused(t *testing.T) {
 	sk, l := newTestStatementKey(t), newTestLog(t, "log.bundle-test.example")
 	b := requiredBundleSync(t, sk, l)
-	err := b.checkLogged(bundleSum([]byte("bundle bytes")), "v1", func() ([]byte, error) { return nil, errors.New("connection reset") })
+	err := b.checkAndKeep(bundleSum([]byte("bundle bytes")), "v1", func() ([]byte, error) { return nil, errors.New("connection reset") })
 	if !errors.Is(err, errBundleRetry) {
 		t.Fatalf("a transport failure must be retried, not held against the bytes; got %v", err)
 	}
@@ -83,14 +101,14 @@ func TestAKeyDirThatCannotBeWrittenIsRetriedNotInstalled(t *testing.T) {
 	}
 	sum := bundleSum([]byte("bundle bytes"))
 	doc := bundleStatement(t, sk, l, map[string]string{"support_bundle": sum})
-	if err := b.checkLogged(sum, "v1", func() ([]byte, error) { return doc, nil }); !errors.Is(err, errBundleRetry) {
+	if err := b.checkAndKeep(sum, "v1", func() ([]byte, error) { return doc, nil }); !errors.Is(err, errBundleRetry) {
 		t.Fatalf("keys that cannot be kept must stop the swap and retry; got %v", err)
 	}
 }
 
 func TestAMachineWithNoLogKeysInstallsOnTheSignatureAndNeverAsks(t *testing.T) {
 	b := &BundleSync{bakedLogKeys: releaseLogKeys{}, keyDir: t.TempDir(), warned: map[string]bool{}}
-	if err := b.checkLogged(bundleSum([]byte("bundle bytes")), "v1", func() ([]byte, error) {
+	if err := b.checkAndKeep(bundleSum([]byte("bundle bytes")), "v1", func() ([]byte, error) {
 		t.Fatalf("a machine holding no keys must not ask for a statement")
 		return nil, nil
 	}); err != nil {
@@ -124,7 +142,7 @@ func TestABundleSeenBeforeItsStatementIsRetriedWhenTheStatementArrives(t *testin
 	previous := bundleStatement(t, sk, l, map[string]string{"support_bundle": bundleSum([]byte("old bundle bytes"))})
 	current := bundleStatement(t, sk, l, map[string]string{"support_bundle": sum})
 
-	if err := b.checkLogged(sum, "v2", func() ([]byte, error) { return previous, nil }); !errors.Is(err, errBundleUnlogged) {
+	if err := b.checkAndKeep(sum, "v2", func() ([]byte, error) { return previous, nil }); !errors.Is(err, errBundleUnlogged) {
 		t.Fatalf("the new bundle beside the last release's statement must be refused as unlogged; got %v", err)
 	}
 	b.unloggedSha, b.unloggedStmtSum = sum, b.lastStatementSum // as CheckAndApply records the refusal
@@ -138,7 +156,7 @@ func TestABundleSeenBeforeItsStatementIsRetriedWhenTheStatementArrives(t *testin
 	if b.unloggedHolds(sum, func() ([]byte, error) { return current, nil }) {
 		t.Fatalf("a new statement must let the same bytes be tried again")
 	}
-	if err := b.checkLogged(sum, "v2", func() ([]byte, error) { return current, nil }); err != nil {
+	if err := b.checkAndKeep(sum, "v2", func() ([]byte, error) { return current, nil }); err != nil {
 		t.Fatalf("with the statement that records it, the same bundle must install: %v", err)
 	}
 	if b.unloggedHolds(bundleSum([]byte("other bytes")), func() ([]byte, error) { return previous, nil }) {

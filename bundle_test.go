@@ -276,7 +276,7 @@ func TestAGoodBundleVerifiesAndYieldsAStableVersion(t *testing.T) {
 	if err := unpackBundle(bytes.NewReader(raw), dest); err != nil {
 		t.Fatalf("unpack: %v", err)
 	}
-	version, err := verifyBundleTree(dest, pub)
+	version, err := verifyBundleTreeOne(dest, pub)
 	if err != nil {
 		t.Fatalf("a correctly signed bundle must verify: %v", err)
 	}
@@ -290,7 +290,7 @@ func TestAGoodBundleVerifiesAndYieldsAStableVersion(t *testing.T) {
 	if err := unpackBundle(bytes.NewReader(signedBundle(t, priv, files, nil)), second); err != nil {
 		t.Fatalf("unpack: %v", err)
 	}
-	again, err := verifyBundleTree(second, pub)
+	again, err := verifyBundleTreeOne(second, pub)
 	if err != nil {
 		t.Fatalf("verify: %v", err)
 	}
@@ -309,7 +309,7 @@ func TestABundleSignedByAnotherKeyIsRefused(t *testing.T) {
 		t.Fatalf("unpack: %v", err)
 	}
 
-	if _, err := verifyBundleTree(dest, otherPub); err == nil {
+	if _, err := verifyBundleTreeOne(dest, otherPub); err == nil {
 		t.Fatal("a bundle signed by a key this agent does not carry must be refused")
 	}
 }
@@ -328,7 +328,7 @@ func TestATamperedFileIsRefused(t *testing.T) {
 	if err := unpackBundle(bytes.NewReader(raw), dest); err != nil {
 		t.Fatalf("unpack: %v", err)
 	}
-	if _, err := verifyBundleTree(dest, pub); err == nil {
+	if _, err := verifyBundleTreeOne(dest, pub); err == nil {
 		t.Fatal("a file that does not match its signed hash must be refused")
 	}
 }
@@ -348,7 +348,7 @@ func TestAnUnlistedFileIsRefused(t *testing.T) {
 	if err := unpackBundle(bytes.NewReader(raw), dest); err != nil {
 		t.Fatalf("unpack: %v", err)
 	}
-	_, err := verifyBundleTree(dest, pub)
+	_, err := verifyBundleTreeOne(dest, pub)
 	if err == nil {
 		t.Fatal("a file the manifest does not list must be refused — a bundle can add a file as easily as change one")
 	}
@@ -365,7 +365,7 @@ func TestABundleWithNoManifestIsRefused(t *testing.T) {
 		t.Fatalf("unpack: %v", err)
 	}
 
-	if _, err := verifyBundleTree(dest, pub); err == nil {
+	if _, err := verifyBundleTreeOne(dest, pub); err == nil {
 		t.Fatal("a bundle with no signed manifest must be refused, not run unverified")
 	}
 }
@@ -387,4 +387,10 @@ func TestBundleVersionIsEmptyWithoutAStamp(t *testing.T) {
 	if v := installedBundleVersion(); v != "" {
 		t.Errorf("a machine with no bundle must report no bundle version; got %q", v)
 	}
+}
+
+// verifyBundleTreeOne is verifyBundleTree against one key.
+func verifyBundleTreeOne(root string, pub ed25519.PublicKey) (string, error) {
+	version, _, err := verifyBundleTree(root, []ed25519.PublicKey{pub})
+	return version, err
 }

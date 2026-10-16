@@ -20,7 +20,7 @@ import (
 
 func fileBundleSync(t *testing.T, pub ed25519.PublicKey) *BundleSync {
 	t.Setenv("AGENT_TOOL_ROOT", filepath.Join(t.TempDir(), "tree"))
-	return &BundleSync{pubKey: pub, siteless: true, keyDir: t.TempDir(), warned: map[string]bool{}}
+	return &BundleSync{releaseKeys: releaseKeysOf(pub), siteless: true, keyDir: t.TempDir(), warned: map[string]bool{}}
 }
 
 func writeBundleFile(t *testing.T, raw []byte) string {

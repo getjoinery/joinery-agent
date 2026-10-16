@@ -722,6 +722,11 @@ func TestPrimitiveExecutionEnvIsExplicit(t *testing.T) {
 		// identity: the one site_install tells a new site to join, so no job
 		// names another.
 		"PlaneURL": true,
+
+		// The release keys the agent and the site trust, by fingerprint, for
+		// check_status to report (specs/release_key_rotation.md R6). Names of
+		// public keys, read only: nothing secret, and nothing it can change.
+		"ReleaseTrust": true,
 	}
 
 	fset := token.NewFileSet()

@@ -73,22 +73,49 @@ type SignedTreeVerifier struct {
 	Root string
 	// Hashes maps a tree-relative path to its lowercase hex sha256.
 	Hashes map[string]string
+	// Key is the release key the manifest's signature verified against.
+	Key ed25519.PublicKey
 }
 
 // NewSignedTreeVerifier checks the manifest's own signature before trusting a
 // single hash in it, then returns a verifier over its contents.
 func NewSignedTreeVerifier(root string, manifestBody, signature []byte, pubKey ed25519.PublicKey) (*SignedTreeVerifier, error) {
-	if len(pubKey) != ed25519.PublicKeySize {
+	return NewSignedTreeVerifierKeys(root, manifestBody, signature, []ed25519.PublicKey{pubKey})
+}
+
+// NewSignedTreeVerifierKeys is NewSignedTreeVerifier against a set of release
+// keys, the machine's trusted set (specs/release_key_rotation.md R3): the
+// signature must verify against one of them. Exactly one signature, of
+// ed25519.SignatureSize bytes: anything else is refused, so nobody adds a
+// second signer beside the first.
+func NewSignedTreeVerifierKeys(root string, manifestBody, signature []byte, keys []ed25519.PublicKey) (*SignedTreeVerifier, error) {
+	usable := 0
+	for _, key := range keys {
+		if len(key) == ed25519.PublicKeySize {
+			usable++
+		}
+	}
+	if usable == 0 {
 		return nil, errors.New("release verification key is missing or malformed")
 	}
-	if !ed25519.Verify(pubKey, manifestBody, signature) {
-		return nil, errors.New("tree manifest signature does not verify against the compiled-in release key")
+	if len(signature) != ed25519.SignatureSize {
+		return nil, errors.New("tree manifest signature is not one Ed25519 signature")
+	}
+	var signer ed25519.PublicKey
+	for _, key := range keys {
+		if len(key) == ed25519.PublicKeySize && ed25519.Verify(key, manifestBody, signature) {
+			signer = key
+			break
+		}
+	}
+	if signer == nil {
+		return nil, errors.New("tree manifest signature does not verify against a release key this machine trusts")
 	}
 	hashes, err := parseTreeManifest(manifestBody)
 	if err != nil {
 		return nil, err
 	}
-	return &SignedTreeVerifier{Root: root, Hashes: hashes}, nil
+	return &SignedTreeVerifier{Root: root, Hashes: hashes, Key: signer}, nil
 }
 
 // Verify hashes the file at path and compares it to the manifest entry.
