@@ -78,6 +78,12 @@ type fakeWorld struct {
 	lookupErr map[string]bool
 	remoteErr map[string]bool
 	status    map[string]int
+	addrs     map[string][]string // a name's addresses; default 203.0.113.9
+	foreign   map[string]bool     // answers without Joinery's header (an edge, a parking page)
+	held      bool                // hold_container keeps the container stopped
+	heldErr   error
+	own       []string // this machine's addresses
+	remoteAsk []string
 }
 
 func (w *fakeWorld) prober() movedSiteProber {
@@ -97,26 +103,33 @@ func (w *fakeWorld) prober() movedSiteProber {
 			}
 			return http.StatusOK, w.served, nil
 		},
-		resolve: func(_ context.Context, name string) (bool, error) {
+		resolve: func(_ context.Context, name string) ([]string, error) {
 			if w.lookupErr[name] {
-				return false, errors.New("server misbehaving")
+				return nil, errors.New("server misbehaving")
 			}
-			return !w.missing[name], nil
+			if w.missing[name] {
+				return nil, nil
+			}
+			if a, ok := w.addrs[name]; ok {
+				return a, nil
+			}
+			return []string{"203.0.113.9"}, nil
 		},
-		remote: func(_ context.Context, name, path string) (int, string, error) {
+		remote: func(_ context.Context, name, path string) (int, string, bool, error) {
+			w.remoteAsk = append(w.remoteAsk, name)
 			if !strings.Contains(path, "?moved=") {
-				return 0, "", errors.New("no cache-busting query")
+				return 0, "", false, errors.New("no cache-busting query")
 			}
 			if w.remoteErr[name] {
-				return 0, "", errors.New("timeout")
+				return 0, "", false, errors.New("timeout")
 			}
 			if w.here[name] {
-				return http.StatusOK, w.served, nil
+				return http.StatusOK, w.served, true, nil
 			}
 			if s, ok := w.status[name]; ok {
-				return s, "", nil
+				return s, "", !w.foreign[name], nil
 			}
-			return http.StatusNotFound, "", nil
+			return http.StatusNotFound, "", !w.foreign[name], nil
 		},
 		random: func(int) (string, error) {
 			n++
@@ -126,6 +139,8 @@ func (w *fakeWorld) prober() movedSiteProber {
 			return []byte("<VirtualHost *:443>\n ServerName demo.example.com\n ServerAlias old.example.com\n" +
 				" ProxyPass / http://127.0.0.1:8081/\n</VirtualHost>\n"), nil
 		},
+		held: func(context.Context, string) (bool, error) { return w.held, w.heldErr },
+		own:  func() []string { return w.own },
 	}
 }
 
@@ -182,6 +197,10 @@ func TestMovedProofRefusals(t *testing.T) {
 		"domain does not exist": {&fakeWorld{missing: map[string]bool{"demo.example.com": true}}, "does not resolve at all"},
 		"lookup failed":         {&fakeWorld{lookupErr: map[string]bool{"old.example.com": true}}, "Could not look up old.example.com"},
 		"container silent":      {&fakeWorld{localErr: errors.New("connection refused")}, "did not serve the probe on its own port"},
+		// An edge in front of a live site answers with its own page: no token,
+		// below 500, and no Joinery header (reviewer1 F1).
+		"edge challenge": {&fakeWorld{status: map[string]int{"demo.example.com": 403}, foreign: map[string]bool{"demo.example.com": true}}, "answered 403 without Joinery's header"},
+		"edge archive":   {&fakeWorld{status: map[string]int{"old.example.com": 200}, foreign: map[string]bool{"old.example.com": true}}, "https://old.example.com answered 200 without Joinery's header"},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -219,7 +238,7 @@ func TestMovedCheckReportsTheProof(t *testing.T) {
 		state  string
 		detail string
 	}{
-		"moved":       {&fakeWorld{status: map[string]int{"old.example.com": 301}}, "moved", "old.example.com: answered 301 from another server"},
+		"moved":       {&fakeWorld{status: map[string]int{"old.example.com": 301}}, "moved", "old.example.com: answered 301 from another Joinery server"},
 		"still here":  {&fakeWorld{here: map[string]bool{"demo.example.com": true}}, "here", "still reaches this site"},
 		"unreachable": {&fakeWorld{remoteErr: map[string]bool{"demo.example.com": true}}, "unsure", "did not answer"},
 		"silent":      {&fakeWorld{localErr: errors.New("connection refused")}, "unsure", "did not serve the probe"},
@@ -259,5 +278,83 @@ func TestMovedCheckIsHostPostureOnly(t *testing.T) {
 	}
 	if movedSiteCheckFor(&Config{Siteless: true}) == nil {
 		t.Fatal("a host must get the check")
+	}
+}
+
+// THE HELD CASE: a switch-over's old container, frozen and then stopped and
+// held by hold_container, can serve no token. Its names must answer from
+// another server and none may resolve to this machine; no token is placed.
+func runHeldProof(t *testing.T, w *fakeWorld) error {
+	t.Helper()
+	w.held = true
+	statement, gate, _, err := w.prober().ceremony(context.Background(), "demo")
+	if err != nil {
+		t.Fatalf("ceremony: %v", err)
+	}
+	err = gate.Require(context.Background(), 7, statement)
+	if len(w.copies) != 0 {
+		t.Fatalf("a held container gets no probe file, got %q", w.copies)
+	}
+	return err
+}
+
+func TestMovedProofOfAHeldContainerPassesWhenEveryNameAnswersElsewhere(t *testing.T) {
+	w := &fakeWorld{own: []string{"198.51.100.7", "2001:db8::7"}, status: map[string]int{"old.example.com": 301}}
+	if err := runHeldProof(t, w); err != nil {
+		t.Fatalf("want pass, got %v", err)
+	}
+	if strings.Join(w.remoteAsk, ",") != "demo.example.com,old.example.com" {
+		t.Fatalf("every name is asked: %v", w.remoteAsk)
+	}
+}
+
+func TestMovedProofOfAHeldContainerRefusals(t *testing.T) {
+	own := []string{"198.51.100.7", "2001:db8::7"}
+	cases := map[string]struct {
+		w    *fakeWorld
+		want string
+	}{
+		"domain at this host, IPv4": {&fakeWorld{own: own, addrs: map[string][]string{"demo.example.com": {"198.51.100.7"}}}, "an address of this host"},
+		"domain at this host, IPv6": {&fakeWorld{own: own, addrs: map[string][]string{"demo.example.com": {"203.0.113.9", "2001:db8:0:0::7"}}}, "an address of this host"},
+		"mapped IPv4 of this host":  {&fakeWorld{own: own, addrs: map[string][]string{"old.example.com": {"::ffff:198.51.100.7"}}}, "old.example.com resolves to"},
+		"this host's proxy, a 503":  {&fakeWorld{own: own, status: map[string]int{"demo.example.com": 503}}, "answered 503"},
+		"an edge's origin error":    {&fakeWorld{own: own, status: map[string]int{"old.example.com": 521}}, "answered 521"},
+		"domain unreachable":        {&fakeWorld{own: own, remoteErr: map[string]bool{"demo.example.com": true}}, "did not answer"},
+		"domain does not exist":     {&fakeWorld{own: own, missing: map[string]bool{"demo.example.com": true}}, "does not resolve at all"},
+		"lookup failed":             {&fakeWorld{own: own, lookupErr: map[string]bool{"old.example.com": true}}, "Could not look up old.example.com"},
+		// The plane can hold a LIVE site behind a CDN: its names resolve to the
+		// edge and the edge answers with its own page (reviewer1 F1).
+		"edge challenge, live site": {&fakeWorld{own: own, status: map[string]int{"demo.example.com": 403}, foreign: map[string]bool{"demo.example.com": true}}, "answered 403 without Joinery's header"},
+		"edge archive, live site":   {&fakeWorld{own: own, status: map[string]int{"demo.example.com": 200}, foreign: map[string]bool{"demo.example.com": true}}, "answered 200 without Joinery's header"},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			refusedWith(t, runHeldProof(t, c.w), c.want)
+		})
+	}
+}
+
+func TestMovedProofRefusesWhenTheHoldCannotBeRead(t *testing.T) {
+	w := &fakeWorld{heldErr: errors.New("permission denied")}
+	statement, gate, _, err := w.prober().ceremony(context.Background(), "demo")
+	if err != nil {
+		t.Fatalf("ceremony: %v", err)
+	}
+	refusedWith(t, gate.Require(context.Background(), 7, statement), "Could not tell whether the container demo is held stopped")
+	if len(w.copies) != 0 || len(w.remoteAsk) != 0 {
+		t.Fatalf("nothing is placed or asked when the hold cannot be read: %q %v", w.copies, w.remoteAsk)
+	}
+}
+
+func TestMovedCheckOfAHeldContainer(t *testing.T) {
+	w := &fakeWorld{held: true, own: []string{"198.51.100.7"}}
+	out, err := w.prober().check(context.Background(), "demo")
+	if err != nil || out["state"] != "moved" || !strings.Contains(out["detail"].(string), "held stopped on this host") {
+		t.Fatalf("got %v %v", out, err)
+	}
+	w = &fakeWorld{held: true, own: []string{"198.51.100.7"}, addrs: map[string][]string{"demo.example.com": {"198.51.100.7"}}}
+	out, err = w.prober().check(context.Background(), "demo")
+	if err != nil || out["state"] != "here" {
+		t.Fatalf("a name at this host's address is here: %v %v", out, err)
 	}
 }

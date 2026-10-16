@@ -27,11 +27,38 @@ package main
 //     test can tell nothing and refuses.
 //  4. Each name over https — certificate checked, no redirect followed, a
 //     fresh query string so no cache answers. The token coming back refuses;
-//     no answer, a certificate error or a 5xx refuses; any other answer is
-//     another server holding the name. An alias that does not resolve at all
-//     reaches nothing and passes; the ServerName itself must answer.
+//     no answer, a certificate error or a 5xx refuses; an answer without
+//     Joinery's X-Joinery-Version header refuses, since it is not a Joinery
+//     server's (a CDN edge's challenge page or its cached copy of a site, a
+//     parking page); any other answer is another Joinery server holding the
+//     name. serve.php sets the header on every answer it routes, the probe
+//     view's 404 included, and an edge passes it through on a real answer, so
+//     a site that moved behind a CDN still proves. An alias that does not
+//     resolve at all reaches nothing and passes; the ServerName itself must
+//     answer. The header is no secret: the proof trusts DNS and the
+//     certificate authorities, as it always has, so whoever controls a name's
+//     DNS and can get a certificate for it can answer as Joinery there, and a
+//     domain taken that way has in fact left this host.
 //  5. The token file is emptied afterwards (the probe view answers an empty
 //     file with a 404), whatever the outcome.
+//
+// THE HELD CASE. A switch-over's old container is frozen, kept off the network
+// by its host, then stopped and held there by hold_container
+// (/etc/joinery/sites/{site}/held), so it can serve no token and step 3 can
+// never pass. When the hold is on this host AND the engine says the container
+// is not running, nothing here can answer for its names but this host's own
+// proxy, and every https answer that proxy gives for them is a 503 (the
+// container down, or the site suspended). So instead of steps 2, 3 and 5:
+// every name answers over https, certificate checked, with less than a 5xx
+// and Joinery's header, as in step 4 (an alias that does not resolve passes),
+// and none resolves to an address of this machine. A hold is no evidence that
+// the site moved: a management node can stop and hold any site container. It
+// only says this container cannot answer; the names must still be answered by
+// another Joinery server. The address rule reads this machine's interfaces, so
+// on a host whose public address is NATed to it by its provider (not Linode)
+// it never fires and the header and the proxy's 503 carry the proof alone. A
+// copy onto the same host never passes: its names resolve here, and its old
+// container is removed with the site's own approval instead.
 
 import (
 	"archive/tar"
@@ -64,6 +91,10 @@ const (
 	// inside its container. %s is the validated site name.
 	movedContainerWebRoot = "/var/www/html/%s/public_html"
 
+	// movedHeldPattern is hold_container.sh's record of a held container.
+	// %s is the validated site name.
+	movedHeldPattern = "/etc/joinery/sites/%s/held"
+
 	movedFetchTimeout = 20 * time.Second
 	movedCopyTimeout  = 30 * time.Second
 	movedBodyCap      = 4096
@@ -81,14 +112,20 @@ type movedSiteProber struct {
 	// local fetches a path from the container's own published port, as the
 	// host's proxy would ask it for host.
 	local func(ctx context.Context, port int, host, path string) (int, string, error)
-	// resolve says whether a name exists in DNS at all.
-	resolve func(ctx context.Context, name string) (bool, error)
-	// remote fetches https://name + path from the public internet.
-	remote func(ctx context.Context, name, path string) (int, string, error)
+	// resolve returns a name's addresses; none means it is not in DNS at all.
+	resolve func(ctx context.Context, name string) ([]string, error)
+	// remote fetches https://name + path from the public internet: the status,
+	// the body, and whether the answer carries Joinery's X-Joinery-Version.
+	remote func(ctx context.Context, name, path string) (int, string, bool, error)
 	// random returns n random bytes as hex.
 	random func(n int) (string, error)
 	// vhost reads the host-owned vhost for a site.
 	vhost func(site string) ([]byte, error)
+	// held says whether hold_container keeps the site's container stopped:
+	// its hold on this host, and the engine reporting it not running.
+	held func(ctx context.Context, site string) (bool, error)
+	// own is every address of this machine's own interfaces.
+	own func() []string
 }
 
 // movedSiteProofFor gates the proof on posture, as victimCeremonyFor does.
@@ -117,6 +154,8 @@ func defaultMovedSiteProber() movedSiteProber {
 		vhost: func(site string) ([]byte, error) {
 			return os.ReadFile(fmt.Sprintf(victimVhostPattern, site))
 		},
+		held: heldStopped,
+		own:  machineAddresses,
 	}
 }
 
@@ -304,10 +343,19 @@ type movedVerdict struct {
 
 // prove runs the proof. It answers moved only when the container served the
 // token on its own port and no name this host serves it under brought the
-// token back.
+// token back, or, for a container held stopped, when every name answers from
+// another server.
 func (m movedSiteProber) prove(ctx context.Context, t movedSiteTarget) movedVerdict {
 	not := func(format string, args ...interface{}) movedVerdict {
 		return movedVerdict{reason: fmt.Sprintf(format, args...)}
+	}
+
+	held, err := m.held(ctx, t.site)
+	if err != nil {
+		return not("Could not tell whether the container %s is held stopped (%v).", t.site, err)
+	}
+	if held {
+		return m.proveHeld(ctx, t)
 	}
 
 	tokenHex, err := m.random(12)
@@ -344,18 +392,18 @@ func (m movedSiteProber) prove(ctx context.Context, t movedSiteTarget) movedVerd
 
 	var evidence []string
 	for i, name := range t.names() {
-		found, err := m.resolve(ctx, name)
+		addrs, err := m.resolve(ctx, name)
 		if err != nil {
 			return not("Could not look up %s (%v). A name that cannot be looked up is not proof it moved.", name, err)
 		}
-		if !found {
+		if len(addrs) == 0 {
 			if i == 0 {
 				return not("%s does not resolve at all. That is not proof another server holds the site.", name)
 			}
 			evidence = append(evidence, name+": does not resolve")
 			continue
 		}
-		status, body, err := m.remote(ctx, name, path)
+		status, body, joinery, err := m.remote(ctx, name, path)
 		if err != nil {
 			return not("https://%s did not answer (%v). A domain that cannot be reached is not proof it moved.", name, err)
 		}
@@ -367,9 +415,93 @@ func (m movedSiteProber) prove(ctx context.Context, t movedSiteTarget) movedVerd
 		if status >= 500 {
 			return not("https://%s answered %d, which may be this site failing rather than another server.", name, status)
 		}
-		evidence = append(evidence, fmt.Sprintf("%s: answered %d from another server", name, status))
+		if !joinery {
+			return not("https://%s answered %d without Joinery's header, so it is not a Joinery server: no proof another one holds the site.", name, status)
+		}
+		evidence = append(evidence, fmt.Sprintf("%s: answered %d from another Joinery server", name, status))
 	}
 	return movedVerdict{moved: true, evidence: evidence}
+}
+
+// proveHeld is the proof for a container held stopped (THE HELD CASE above):
+// no token, since nothing here can serve one, and no answer this host's own
+// proxy could give.
+func (m movedSiteProber) proveHeld(ctx context.Context, t movedSiteTarget) movedVerdict {
+	not := func(format string, args ...interface{}) movedVerdict {
+		return movedVerdict{reason: fmt.Sprintf(format, args...)}
+	}
+	bust, err := m.random(8)
+	if err != nil {
+		return not("Could not make a probe query: %v.", err)
+	}
+	path := "/" + movedProbeFile + "?moved=" + bust
+	mine := map[string]bool{}
+	for _, a := range m.own() {
+		if ip := net.ParseIP(a); ip != nil {
+			mine[ip.String()] = true
+		}
+	}
+	evidence := []string{"the container " + t.site + " is held stopped on this host"}
+	for i, name := range t.names() {
+		addrs, err := m.resolve(ctx, name)
+		if err != nil {
+			return not("Could not look up %s (%v). A name that cannot be looked up is not proof it moved.", name, err)
+		}
+		if len(addrs) == 0 {
+			if i == 0 {
+				return not("%s does not resolve at all. That is not proof another server holds the site.", name)
+			}
+			evidence = append(evidence, name+": does not resolve")
+			continue
+		}
+		for _, a := range addrs {
+			// Compared as addresses: an IPv4-mapped IPv6 answer is its IPv4.
+			if ip := net.ParseIP(a); ip != nil && mine[ip.String()] {
+				v := not("%s resolves to %s, an address of this host: the domain has not left it.", name, a)
+				v.here = true
+				return v
+			}
+		}
+		status, _, joinery, err := m.remote(ctx, name, path)
+		if err != nil {
+			return not("https://%s did not answer (%v). A domain that cannot be reached is not proof it moved.", name, err)
+		}
+		if status >= 500 {
+			return not("https://%s answered %d, which may be this host's own proxy for the stopped container rather than another server.", name, status)
+		}
+		if !joinery {
+			return not("https://%s answered %d without Joinery's header, so it is not a Joinery server: no proof another one holds the site.", name, status)
+		}
+		evidence = append(evidence, fmt.Sprintf("%s: answered %d from another Joinery server", name, status))
+	}
+	return movedVerdict{moved: true, evidence: evidence}
+}
+
+// heldStopped is the held case's test: hold_container.sh's record of the
+// site on this host, and the engine saying its container is not running. A
+// state it does not know (running, paused, restarting) is not stopped.
+func heldStopped(ctx context.Context, site string) (bool, error) {
+	if _, err := os.Stat(fmt.Sprintf(movedHeldPattern, site)); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	_, engine, err := siteEngine()
+	if err != nil {
+		return false, err
+	}
+	cctx, cancel := context.WithTimeout(ctx, movedCopyTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(cctx, engine, "inspect", "-f", "{{.State.Status}}", site).Output()
+	if err != nil {
+		return false, fmt.Errorf("its state could not be read: %v", err)
+	}
+	switch strings.TrimSpace(string(out)) {
+	case "exited", "created", "stopped", "configured", "dead":
+		return true, nil
+	}
+	return false, nil
 }
 
 // engineCopyIn writes one file into the container's web root through the
@@ -439,34 +571,34 @@ func fetchLocal(ctx context.Context, port int, host, path string) (int, string, 
 }
 
 // fetchRemote asks the public internet, certificate checked.
-func fetchRemote(ctx context.Context, name, path string) (int, string, error) {
+func fetchRemote(ctx context.Context, name, path string) (int, string, bool, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+name+path, nil)
 	if err != nil {
-		return 0, "", err
+		return 0, "", false, err
 	}
 	req.Header.Set("Cache-Control", "no-cache")
 	transport := &http.Transport{Proxy: nil, TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12}}
 	resp, err := noRedirectClient(transport).Do(req)
 	if err != nil {
-		return 0, "", err
+		return 0, "", false, err
 	}
 	defer resp.Body.Close()
-	return resp.StatusCode, readCapped(resp), nil
+	return resp.StatusCode, readCapped(resp), strings.TrimSpace(resp.Header.Get("X-Joinery-Version")) != "", nil
 }
 
-// resolveName separates "no such name" from "could not ask".
-func resolveName(ctx context.Context, name string) (bool, error) {
+// resolveName separates "no such name" (no addresses) from "could not ask".
+func resolveName(ctx context.Context, name string) ([]string, error) {
 	lctx, cancel := context.WithTimeout(ctx, movedFetchTimeout)
 	defer cancel()
 	addrs, err := net.DefaultResolver.LookupHost(lctx, name)
 	if err != nil {
 		var dnsErr *net.DNSError
 		if errors.As(err, &dnsErr) && dnsErr.IsNotFound {
-			return false, nil
+			return nil, nil
 		}
-		return false, err
+		return nil, err
 	}
-	return len(addrs) > 0, nil
+	return addrs, nil
 }
 
 func randomHex(n int) (string, error) {
