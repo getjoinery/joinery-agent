@@ -32,6 +32,11 @@ import (
 // Two recipes rather than one because a recipe is one check word and one
 // repair word (registry_test.go pins both), and a container is not a unit.
 //
+// Neither repairs while the data root is stopped by hand (host_report's
+// data_root_stopped, joinery_data_root.sh stop): the services on it are down
+// on purpose, and restarting one would start the data root again under the
+// operator who stopped it.
+//
 // Both are NodeDerived (rule 10): the unit is a name from host_report's own
 // expected-units keys and the container a name from its own container list,
 // both read out of the check word's answer on this machine. restart_unit and
@@ -97,6 +102,23 @@ type hostReportHealth struct {
 	Containers    json.RawMessage        `json:"containers"`
 	Served        json.RawMessage        `json:"served_certificates"`
 	MailGateway   json.RawMessage        `json:"mail_gateway"`
+	Stopped       json.RawMessage        `json:"data_root_stopped"`
+}
+
+// stoppedByHand is when the data root was stopped by hand, from host_report's
+// data_root_stopped ({at, services}, null while it is not stopped).
+func stoppedByHand(r hostReportHealth) (string, bool) {
+	var s struct {
+		At string `json:"at"`
+	}
+	if len(r.Stopped) == 0 || json.Unmarshal(r.Stopped, &s) != nil || s.At == "" {
+		return "", false
+	}
+	return s.At, true
+}
+
+func stoppedVerdict(at string) Verdict {
+	return Verdict{Pass, "the data root was stopped by hand at " + at + "; what is on it is down on purpose until joinery_data_root.sh start"}
 }
 
 func readHostReport(result map[string]interface{}, err error) (hostReportHealth, *Verdict) {
@@ -123,6 +145,9 @@ func serviceHealthVerdict(result map[string]interface{}, err error) (Verdict, st
 	r, bad := readHostReport(result, err)
 	if bad != nil {
 		return *bad, ""
+	}
+	if at, ok := stoppedByHand(r); ok {
+		return stoppedVerdict(at), ""
 	}
 	var answers map[string]string
 	if len(r.Answers) == 0 || json.Unmarshal(r.Answers, &answers) != nil {
@@ -164,6 +189,9 @@ func containerHealthVerdict(result map[string]interface{}, err error) (Verdict, 
 	r, bad := readHostReport(result, err)
 	if bad != nil {
 		return *bad, ""
+	}
+	if at, ok := stoppedByHand(r); ok {
+		return stoppedVerdict(at), ""
 	}
 	var none string
 	if len(r.Containers) == 0 {

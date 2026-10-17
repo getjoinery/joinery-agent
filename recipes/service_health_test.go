@@ -40,6 +40,12 @@ func TestServiceHealthVerdicts(t *testing.T) {
 			`{"expected_units":{},"answers":{"apache2":"unknown","php-fpm":"unknown","postgresql":"unknown"}}`,
 			Unknown, ""},
 		{"not JSON", `garbage`, Unknown, ""},
+		{"the data root stopped by hand: everything on it is down on purpose, nothing restarted (drs1, 2026-10-17)",
+			`{"expected_units":{"apache2":"inactive","php-fpm":"inactive","postgresql":"inactive"},"answers":{"apache2":"no","php-fpm":"no","postgresql":"no"},"data_root_stopped":{"at":"2026-10-17T14:11:19Z","services":["postgresql.service"]}}`,
+			Pass, ""},
+		{"not stopped (null): a service that does not answer is restarted as before",
+			`{"expected_units":{"apache2":"active","php-fpm":"active","postgresql":"active"},"answers":{"apache2":"yes","php-fpm":"yes","postgresql":"no"},"data_root_stopped":null}`,
+			Fail, "postgresql"},
 	}
 	for _, c := range cases {
 		v, unit := serviceHealthVerdict(rawReport(c.json), nil)
@@ -69,6 +75,7 @@ func TestContainerHealthVerdicts(t *testing.T) {
 		{"held stopped is left alone", `{"containers":[{"name":"a","state":"running","answers":"yes"},{"name":"b","state":"exited","answers":"no","held":true}]}`, Pass, ""},
 		{"held does not hide another", `{"containers":[{"name":"b","state":"exited","answers":"no","held":true},{"name":"c","state":"exited","answers":"no","held":false}]}`, Fail, "c"},
 		{"older report, no held key", `{"containers":[{"name":"b","state":"exited","answers":"no"}]}`, Fail, "b"},
+		{"the data root stopped by hand: its containers are left down", `{"containers":[{"name":"b","state":"exited","answers":"no"}],"data_root_stopped":{"at":"2026-10-17T14:11:19Z","services":[]}}`, Pass, ""},
 	}
 	for _, c := range cases {
 		v, name := containerHealthVerdict(rawReport(c.json), nil)
