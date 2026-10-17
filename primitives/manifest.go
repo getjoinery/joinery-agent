@@ -21,26 +21,47 @@ import (
 type ManifestVerifier interface {
 	// Verify returns nil only when path is present in the signed manifest and
 	// its contents hash to the recorded value. Every other outcome is an error,
-	// including "there is no manifest" — see UnavailableVerifier.
+	// including "nothing can be verified here" — see UnavailableVerifier.
 	Verify(path string) error
 }
 
-// ErrNoManifest is the honest state of the platform today: the release pipeline
-// signs the agent bundle, but there is no signed per-file tree manifest yet.
-// That is component G of the migration, new publish-time work.
+// ErrNoReleaseKey is the refusal of an agent built without the release key
+// (a hand build that skipped -ldflags "-X main.updatePubKeyB64=..."). With no
+// key there is nothing to check a manifest's signature against, so every
+// script-invoking primitive is unavailable rather than unverified. It names
+// the build, not the release: the remedy is to rebuild the agent, and a
+// manifest delivered to that node would change nothing.
 //
-// Until it exists, this verifier refuses everything, which makes every
-// script-invoking primitive unavailable rather than unverified. The gate is
-// built and enforced now precisely so component G plugs into a boundary that
-// is already closed, instead of one that has to be remembered.
-var ErrNoManifest = errors.New(
-	"this release carries no signed per-file tree manifest, so no script can be verified before running as root")
+// The wording is the plane's contract: NodeMonitorHealth::classify_script_trust
+// matches "can be verified before running as root" and must keep doing so.
+var ErrNoReleaseKey = errors.New(
+	"this agent build has no release key, so no script can be verified before running as root; rebuild the agent with the release key")
 
-// UnavailableVerifier is the Phase 1 production verifier.
-type UnavailableVerifier struct{}
+// ErrBadReleaseKey is the same refusal for a build whose baked release key
+// does not decode as an Ed25519 public key.
+var ErrBadReleaseKey = errors.New(
+	"this agent build's release key is malformed, so no script can be verified before running as root; rebuild the agent with the release key")
+
+// ErrNoSiteTree is the refusal of an agent with no site tree configured:
+// there is no manifest to read, because there is no tree for one to describe.
+var ErrNoSiteTree = errors.New(
+	"this agent has no site tree configured, so no script can be verified before running as root")
+
+// UnavailableVerifier refuses every file, with the reason it was built for.
+// It is what an agent runs with when it cannot verify anything at all; a
+// missing or unverifiable manifest on a configured tree is ArtifactManifests'
+// refusal, not this one. The zero value refuses with ErrNoSiteTree.
+type UnavailableVerifier struct {
+	Reason error
+}
 
 // Verify always refuses.
-func (UnavailableVerifier) Verify(path string) error { return ErrNoManifest }
+func (u UnavailableVerifier) Verify(path string) error {
+	if u.Reason != nil {
+		return u.Reason
+	}
+	return ErrNoSiteTree
+}
 
 // NotInManifestError is the one refusal a verifier makes about a file it was
 // never told about: absent from the signed manifest, as opposed to listed and

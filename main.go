@@ -427,12 +427,6 @@ func attemptUpdate(jobLock *sync.Mutex, check func() bool) bool {
 	return check()
 }
 
-// releaseVerifier builds the manifest verifier for this node's site tree.
-//
-// A build with no release key baked in cannot verify anything, and must not
-// pretend otherwise: it refuses every script, exactly as a missing manifest
-// does. A hand-built agent is a legitimate thing to have and an illegitimate
-// thing to trust with root-exec of files it cannot check.
 // toolRoot is the support bundle's tree on a machine that has no site, and
 // empty everywhere else.
 func toolRoot(cfg *Config) string {
@@ -457,12 +451,22 @@ func bundleVerifier(cfg *Config) primitives.ManifestVerifier {
 	return trustedSetVerifier(root)
 }
 
+// releaseVerifier builds the manifest verifier for this node's site tree.
+//
+// A build with no release key baked in cannot verify anything, and must not
+// pretend otherwise: it refuses every script, saying the build is the reason.
+// A hand-built agent is a legitimate thing to have and an illegitimate thing
+// to trust with root-exec of files it cannot check.
 func releaseVerifier(siteRoot string) primitives.ManifestVerifier {
 	if siteRoot == "" {
-		return primitives.UnavailableVerifier{}
+		return primitives.UnavailableVerifier{Reason: primitives.ErrNoSiteTree}
 	}
 	return trustedSetVerifier(siteRoot)
 }
+
+// noKeyLogOnce keeps the "this build cannot verify scripts" line to one per
+// start; the verifiers are built more than once while the agent starts.
+var noKeyLogOnce sync.Once
 
 // trustedSetVerifier checks manifests under root against this machine's
 // trusted set, read at each check so a set a release changes takes effect
@@ -470,10 +474,12 @@ func releaseVerifier(siteRoot string) primitives.ManifestVerifier {
 func trustedSetVerifier(root string) primitives.ManifestVerifier {
 	baked := bakedReleaseKeys()
 	if len(baked) == 0 {
+		reason := primitives.ErrNoReleaseKey
 		if updatePubKeyB64 != "" {
-			log.Printf("script primitives unavailable: this build's release key is malformed")
+			reason = primitives.ErrBadReleaseKey
 		}
-		return primitives.UnavailableVerifier{}
+		noKeyLogOnce.Do(func() { log.Printf("script primitives unavailable: %v", reason) })
+		return primitives.UnavailableVerifier{Reason: reason}
 	}
 	dir := agentStateDir()
 	verifier := primitives.NewArtifactManifestsKeys(root, func() []ed25519.PublicKey { return heldReleaseKeys(dir, baked) })

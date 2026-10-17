@@ -129,8 +129,9 @@ func TestScriptPrimitiveRefusesWithoutAVerifiedManifest(t *testing.T) {
 	if !Refused(err) {
 		t.Fatalf("a script that cannot be verified must be refused, not run; got %v", err)
 	}
-	if !strings.Contains(err.Error(), "manifest") {
-		t.Errorf("the refusal should name the missing manifest; got %q", err)
+	// The plane's contract (NodeMonitorHealth::classify_script_trust).
+	if !strings.Contains(err.Error(), "can be verified before running as root") {
+		t.Errorf("the refusal should say no script can be verified; got %q", err)
 	}
 }
 
