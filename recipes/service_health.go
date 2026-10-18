@@ -209,16 +209,25 @@ func containerHealthVerdict(result map[string]interface{}, err error) (Verdict, 
 		Health  string `json:"health"`
 		Answers string `json:"answers"`
 		Held    bool   `json:"held"`
+		// Being replaced by recreate_site (host_report 1.31): down on
+		// purpose until its new container answers.
+		Replacing bool `json:"replacing"`
 	}
 	if json.Unmarshal(r.Containers, &list) != nil {
 		return Verdict{Unknown, "the container list is not what it should be"}, ""
 	}
-	held := 0
+	held, replacing := 0, 0
 	for _, c := range list {
 		// Held stopped by hold_container: a switch-over's old container,
 		// stopped on purpose until it is removed. Not this recipe's to start.
 		if c.Held {
 			held++
+			continue
+		}
+		// Being replaced (recreate_site): a restart now would start the old
+		// container in the middle of the swap, and the script refuses it.
+		if c.Replacing {
+			replacing++
 			continue
 		}
 		if c.State != "running" {
@@ -231,8 +240,15 @@ func containerHealthVerdict(result map[string]interface{}, err error) (Verdict, 
 			return Verdict{Fail, "container " + c.Name + " runs and its site does not answer"}, c.Name
 		}
 	}
-	if held > 0 {
-		return Verdict{Pass, fmt.Sprintf("%d site container(s) running and answering, %d held stopped", len(list)-held, held)}, ""
+	if held > 0 || replacing > 0 {
+		msg := fmt.Sprintf("%d site container(s) running and answering", len(list)-held-replacing)
+		if held > 0 {
+			msg += fmt.Sprintf(", %d held stopped", held)
+		}
+		if replacing > 0 {
+			msg += fmt.Sprintf(", %d being replaced", replacing)
+		}
+		return Verdict{Pass, msg}, ""
 	}
 	return Verdict{Pass, fmt.Sprintf("%d site container(s) running and answering", len(list))}, ""
 }

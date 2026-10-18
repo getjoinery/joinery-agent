@@ -74,6 +74,9 @@ func TestContainerHealthVerdicts(t *testing.T) {
 		{"no check, starting", `{"containers":[{"name":"a","state":"running","health":"none","answers":"yes"},{"name":"b","state":"running","health":"starting","answers":"yes"}]}`, Pass, ""},
 		{"held stopped is left alone", `{"containers":[{"name":"a","state":"running","answers":"yes"},{"name":"b","state":"exited","answers":"no","held":true}]}`, Pass, ""},
 		{"held does not hide another", `{"containers":[{"name":"b","state":"exited","answers":"no","held":true},{"name":"c","state":"exited","answers":"no","held":false}]}`, Fail, "c"},
+		{"being replaced is left alone", `{"containers":[{"name":"a","state":"running","answers":"yes"},{"name":"b","state":"exited","answers":"no","replacing":true}]}`, Pass, ""},
+		{"being replaced, starting, does not answer yet", `{"containers":[{"name":"b","state":"running","health":"starting","answers":"no","replacing":true}]}`, Pass, ""},
+		{"replacing does not hide another", `{"containers":[{"name":"b","state":"exited","answers":"no","replacing":true},{"name":"c","state":"running","answers":"no"}]}`, Fail, "c"},
 		{"older report, no held key", `{"containers":[{"name":"b","state":"exited","answers":"no"}]}`, Fail, "b"},
 		{"the data root stopped by hand: its containers are left down", `{"containers":[{"name":"b","state":"exited","answers":"no"}],"data_root_stopped":{"at":"2026-10-17T14:11:19Z","services":[]}}`, Pass, ""},
 	}

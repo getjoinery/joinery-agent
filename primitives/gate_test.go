@@ -150,6 +150,11 @@ var pinnedVocabulary = map[string]Class{
 	// removed, or started again. Operate: the container and its volumes stay.
 	"hold_container": ClassOperate,
 
+	// A site's container replaced on a fresh image of its host's base, the
+	// previous image put back when the new one does not come up. Operate:
+	// the site's volumes, run spec and code stay.
+	"recreate_site": ClassOperate,
+
 	// A site's suspended page on its host's proxy, shown or taken down.
 	// Operate: the site and its container are untouched.
 	"suspended_page": ClassOperate,

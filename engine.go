@@ -18,7 +18,10 @@ import (
 //
 // siteEngineRule is the helper's Version this rule matches; the plane's
 // agent_engine_rule_test fails when the helper moves on and this does not.
-const siteEngineRule = "1.3"
+// 1.4 changed no rule: the helper drops INVOCATION_ID so a container a unit
+// starts outlives the unit, and the agent itself starts no container (it
+// only copies into one, podman cp).
+const siteEngineRule = "1.4"
 
 var (
 	siteEngineCurrent = "/usr/local/lib/joinery-site-engine/current"
