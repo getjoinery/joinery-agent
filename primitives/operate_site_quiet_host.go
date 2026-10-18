@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// site_quiet_host {action: on|off, name, reason}: the host's half of one of
+// site_quiet_host {action: on|off|forward, name, reason, to}: the host's half of one of
 // its site containers' quiet state (specs/site_container_engine.md D9).
 //
 // A quiet site sends nothing: a dormant copy waiting to take over its source,
@@ -22,6 +22,10 @@ import (
 //     at its install: this word never makes one, so it can never make a site
 //     removable by discard_copy, and the script refuses to turn a copy's
 //     record into a switch-over.
+//   - forward, on a site the host holds frozen for a switch-over, lets its
+//     table reach the copy at `to` on 80 and 443 and nothing else, so the
+//     site can forward its visitors there while its address moves by DNS
+//     (specs/site_copy_anything_to_anything.md D1). off removes it too.
 //   - off lifts it, and only once the site itself has left its quiet state:
 //     the script asks inside the container for the site's own state file and
 //     refuses while it is there. A copy leaves that state only once it holds
@@ -56,9 +60,10 @@ func init() {
 		Machine:     true,
 		Description: "Hold one of this host's site containers quiet from outside for a switch-over (on: only its root reaches past loopback), or lift it, a dormant copy's included, once the site has left its own quiet state (off).",
 		Params: []ParamSpec{
-			{Name: "action", Type: ParamEnum, Required: true, Values: []string{"on", "off"}},
+			{Name: "action", Type: ParamEnum, Required: true, Values: []string{"on", "off", "forward"}},
 			{Name: "name", Type: ParamString, Required: true, MaxLen: 50, Pattern: holdContainerName},
 			{Name: "reason", Type: ParamEnum, Values: []string{"switchover"}},
+			{Name: "to", Type: ParamString, MaxLen: 39, Pattern: forwardAddressPattern},
 		},
 		Script: &ScriptSpec{
 			Interpreter: "/bin/bash",
@@ -74,6 +79,19 @@ const siteQuietHostScript = "maintenance_scripts/sysadmin_tools/site_quiet_host.
 
 func siteQuietHostArgv(_ context.Context, _ *ExecEnv, p Params) ([]string, error) {
 	name := p.String("name")
+	if p.String("action") == "forward" {
+		if p.String("reason") != "" {
+			return nil, refusedf("site_quiet_host: forward takes no reason")
+		}
+		to, err := forwardAddress(p.String("to"))
+		if err != nil {
+			return nil, refusedf("site_quiet_host: %v", err)
+		}
+		return []string{"forward", name, to}, nil
+	}
+	if p.String("to") != "" {
+		return nil, refusedf("site_quiet_host: only forward takes an address")
+	}
 	if p.String("action") == "off" {
 		if p.String("reason") != "" {
 			return nil, refusedf("site_quiet_host: off takes no reason")

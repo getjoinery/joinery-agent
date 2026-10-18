@@ -174,6 +174,8 @@ var pinnedVocabulary = map[string]Class{
 	// (specs/site_container_engine.md D9). Operate: off puts the network back,
 	// and is refused while the site says it is quiet.
 	"site_quiet_host": ClassOperate,
+	// A site's old server forwarding while its DNS moves: believe X-Forwarded-For from it, for at most a week.
+	"trust_forwarder": ClassOperate,
 
 	// This host's data moved onto its data root (specs/one_data_root.md D5).
 	// Operate: the services stop for one copy, and a move that does not

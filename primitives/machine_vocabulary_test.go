@@ -48,6 +48,7 @@ var pinnedMachineWords = []string{
 	"site_limits",
 	"site_quiet_host",
 	"suspended_page",
+	"trust_forwarder",
 	"unit_journal",
 }
 
