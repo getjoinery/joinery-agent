@@ -2,6 +2,7 @@ package primitives
 
 import (
 	"encoding/json"
+	"math"
 	"regexp"
 	"time"
 )
@@ -82,6 +83,18 @@ func init() {
 				MaxEntries: 64, MaxKeyLen: 32, MaxLen: 2048,
 				KeyPattern: epochIDPattern,
 				Pattern:    signedURLPattern},
+
+			// What the management node's listing of the backup storage proved
+			// absent (the storage check): the objects, as epoch/name, that this
+			// run stores again from the site's copy, and the storage space the
+			// listing was of, so the engine applies it only to a run that
+			// writes there. Names only; the engine re-checks each against its
+			// own layout and ignores the whole when either part is unreadable.
+			// The two arrive together or not at all.
+			{Name: "objects_missing_space", Type: ParamInt, Min: 1, Max: math.MaxInt32},
+			{Name: "objects_missing", Type: ParamList,
+				MaxEntries: objectsMissingMax, MaxLen: 300,
+				Pattern: objectLocationPattern},
 		},
 		Script: &ScriptSpec{
 			Interpreter: "/usr/bin/php",
@@ -97,6 +110,15 @@ func init() {
 		Timeout: 4*time.Hour + 20*time.Minute,
 	})
 }
+
+// objectLocationPattern: one stored object, epoch/name or epoch/namespace/name,
+// as the engine's layout names it (BackupObjects::location_of).
+var objectLocationPattern = regexp.MustCompile(`^epoch-[0-9]{8}_[0-9]{6}/[^/\x00-\x1f]+(/[^/\x00-\x1f]+)?$`)
+
+// objectsMissingMax: the most missing objects one run is told of. The
+// management node sends at most a page that fits in a job; the rest ride later
+// runs, after the next storage check.
+const objectsMissingMax = 2000
 
 // epochIDPattern: an object-store epoch, epoch-YYYYMMDD_HHMMSS, the only key
 // the envelope-link map may carry.
@@ -137,6 +159,15 @@ func backupRunConfig(params Params) (string, error) {
 	}
 	if params.Has("epoch_envelope_urls") {
 		config["epoch_envelope_urls"] = params.Map("epoch_envelope_urls")
+	}
+	if params.Has("objects_missing") != params.Has("objects_missing_space") {
+		return "", refusedf("objects_missing and objects_missing_space arrive together or not at all")
+	}
+	if params.Has("objects_missing") {
+		config["objects_missing"] = map[string]interface{}{
+			"space":     params.Int("objects_missing_space"),
+			"locations": params.List("objects_missing"),
+		}
 	}
 
 	body, err := json.Marshal(config)

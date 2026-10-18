@@ -158,10 +158,11 @@ func TestBackupRunIsOperateAndInvokesTheShippedEngine(t *testing.T) {
 	}
 }
 
-// The object store rides on backup_run as three optional parameters
+// The object store rides on backup_run as optional parameters
 // (specs/implemented/backup_offloaded_files.md § Rollout). What matters is the shape of
-// what can arrive: a flag, one signed link, and a map of signed links keyed by
-// epoch — never a credential that could read the shelf.
+// what can arrive: a flag, one signed link, a map of signed links keyed by
+// epoch, and the names of objects the storage check proved missing — never a
+// credential that could read the shelf.
 
 func TestObjectStoreFieldsAreComposedWhenPresent(t *testing.T) {
 	params := validBackupParams()
@@ -206,7 +207,7 @@ func TestObjectStoreFieldsAreAbsentUnlessSent(t *testing.T) {
 		t.Fatalf("validate: %v", err)
 	}
 	body, _ := backupRunConfig(validated)
-	for _, key := range []string{"objects", "objects_index_url", "epoch_envelope_urls"} {
+	for _, key := range []string{"objects", "objects_index_url", "epoch_envelope_urls", "objects_missing"} {
 		if strings.Contains(body, `"`+key+`"`) {
 			t.Errorf("%q must not appear in a config for a job that did not send it", key)
 		}
@@ -253,6 +254,64 @@ func TestNoReadCredentialCanReachTheNode(t *testing.T) {
 		params[field] = "QUtJQVNFQ1JFVA=="
 		if _, err := backupRunParams(t, params); err == nil {
 			t.Errorf("a job carrying %q must be refused as out-of-vocabulary", field)
+		}
+	}
+}
+
+// The storage check's missing objects reach the engine as the one object it
+// reads, {space, locations}, composed here from two flat parameters.
+func TestMissingObjectsAreComposedForTheEngine(t *testing.T) {
+	params := validBackupParams()
+	params["objects"] = true
+	params["objects_missing_space"] = float64(13)
+	params["objects_missing"] = []interface{}{"epoch-20260922_183302/blob_21t4cgix.bin", "epoch-20260801_000000/mailbox/12.eml"}
+	validated, err := backupRunParams(t, params)
+	if err != nil {
+		t.Fatalf("a job naming missing objects should validate: %v", err)
+	}
+	body, err := backupRunConfig(validated)
+	if err != nil {
+		t.Fatalf("compose: %v", err)
+	}
+	var config struct {
+		Missing struct {
+			Space     int64    `json:"space"`
+			Locations []string `json:"locations"`
+		} `json:"objects_missing"`
+	}
+	if err := json.Unmarshal([]byte(body), &config); err != nil {
+		t.Fatalf("the composed config should be JSON: %v", err)
+	}
+	if config.Missing.Space != 13 || len(config.Missing.Locations) != 2 ||
+		config.Missing.Locations[1] != "epoch-20260801_000000/mailbox/12.eml" {
+		t.Errorf("the engine should get {space, locations}, got %s", body)
+	}
+}
+
+func TestMissingObjectsArriveWithTheirSpaceOrNotAtAll(t *testing.T) {
+	for _, drop := range []string{"objects_missing", "objects_missing_space"} {
+		params := validBackupParams()
+		params["objects_missing_space"] = float64(13)
+		params["objects_missing"] = []interface{}{"epoch-20260922_183302/blob_21t4cgix.bin"}
+		delete(params, drop)
+		validated, err := backupRunParams(t, params)
+		if err != nil {
+			t.Fatalf("validate: %v", err)
+		}
+		if _, err := backupRunConfig(validated); !Refused(err) {
+			t.Errorf("a job without %s must be refused, not run without it; got %v", drop, err)
+		}
+	}
+}
+
+func TestAMissingObjectMustBeALocationInTheStore(t *testing.T) {
+	for _, loc := range []string{"../etc/passwd", "epoch-x/y", "/epoch-20260922_183302/a", "epoch-20260922_183302/a/b/c",
+		"epoch-20260922_183302/", "epoch-20260922_183302/a\nb"} {
+		params := validBackupParams()
+		params["objects_missing_space"] = float64(13)
+		params["objects_missing"] = []interface{}{loc}
+		if _, err := backupRunParams(t, params); !Refused(err) {
+			t.Errorf("a missing object named %q must be refused; got %v", loc, err)
 		}
 	}
 }

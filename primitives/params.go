@@ -34,11 +34,14 @@ const ChainParamsBytes = 1024*1024 - 4*1024
 // "any" and no "raw" — every value that reaches a primitive has been through a
 // declared type. Notably absent: anything that could carry a command.
 //
-// ParamMap is the one composite, added for stage_chain, and it is bounded in
-// four directions rather than one: the number of entries, the length of each
-// key, the length of each value, and the encoded size of the whole. Its values
-// are strings and only strings — there is no nesting, so "a map" cannot become
-// "an object with a field somebody later reads as a path".
+// ParamMap and ParamList are the two composites. A map (added for stage_chain)
+// is bounded in four directions rather than one: the number of entries, the
+// length of each key, the length of each value, and the encoded size of the
+// whole. A list (added for backup_run's objects_missing) is a map without the
+// keys: the number of entries, the length and form of each, and the encoded
+// size. The values of both are strings and only strings — there is no
+// nesting, so "a map" cannot become "an object with a field somebody later
+// reads as a path".
 type ParamType string
 
 const (
@@ -47,6 +50,7 @@ const (
 	ParamBool   ParamType = "bool"
 	ParamEnum   ParamType = "enum"
 	ParamMap    ParamType = "map"
+	ParamList   ParamType = "list"
 )
 
 var paramTypeAllowed = map[ParamType]bool{
@@ -55,6 +59,7 @@ var paramTypeAllowed = map[ParamType]bool{
 	ParamBool:   true,
 	ParamEnum:   true,
 	ParamMap:    true,
+	ParamList:   true,
 }
 
 // ParamSpec declares one parameter and its bounds. A spec with no bounds is
@@ -65,7 +70,8 @@ type ParamSpec struct {
 	Type     ParamType
 	Required bool
 
-	// MaxLen bounds a string. Zero means DefaultMaxLen.
+	// MaxLen bounds a string, or each value of a map or list. Zero means
+	// DefaultMaxLen.
 	MaxLen int
 	// Pattern, when set, a string must match it entirely.
 	Pattern *regexp.Regexp
@@ -78,8 +84,8 @@ type ParamSpec struct {
 	// required on a map, so a map parameter cannot be declared without saying
 	// what may be in it.
 	KeyPattern *regexp.Regexp
-	// MaxEntries caps a ParamMap's size in entries. Required on a map: the
-	// byte ceiling alone would allow thousands of tiny entries.
+	// MaxEntries caps a ParamMap's or ParamList's size in entries. Required on
+	// both: the byte ceiling alone would allow thousands of tiny entries.
 	MaxEntries int
 	// MaxKeyLen bounds one key of a ParamMap. Zero means DefaultMaxLen.
 	MaxKeyLen int
@@ -127,6 +133,15 @@ func (p Params) Map(name string) map[string]string {
 	return nil
 }
 
+// List returns a validated list parameter (nil when absent). The returned
+// slice is the validated copy, not the wire array.
+func (p Params) List(name string) []string {
+	if v, ok := p.values[name].([]string); ok {
+		return v
+	}
+	return nil
+}
+
 // Has reports whether the job supplied this parameter at all.
 func (p Params) Has(name string) bool {
 	_, ok := p.values[name]
@@ -166,8 +181,19 @@ func validateSpecs(specs []ParamSpec) error {
 				return fmt.Errorf("map parameter %q declares no entry limit", s.Name)
 			}
 		}
-		if s.Type != ParamMap && (s.KeyPattern != nil || s.MaxEntries != 0 || s.MaxKeyLen != 0) {
+		if s.Type == ParamList {
+			if s.Pattern == nil {
+				return fmt.Errorf("list parameter %q must bound its entries", s.Name)
+			}
+			if s.MaxEntries <= 0 {
+				return fmt.Errorf("list parameter %q declares no entry limit", s.Name)
+			}
+		}
+		if s.Type != ParamMap && (s.KeyPattern != nil || s.MaxKeyLen != 0) {
 			return fmt.Errorf("parameter %q declares map bounds but is not a map", s.Name)
+		}
+		if s.Type != ParamMap && s.Type != ParamList && s.MaxEntries != 0 {
+			return fmt.Errorf("parameter %q declares an entry limit but is not a map or a list", s.Name)
 		}
 	}
 	return nil
@@ -336,6 +362,36 @@ func coerce(s ParamSpec, value interface{}) (interface{}, error) {
 				return nil, refusedf("param %q entry %q does not match its accepted form", s.Name, k)
 			}
 			out[k] = str
+		}
+		return out, nil
+
+	case ParamList:
+		raw, ok := value.([]interface{})
+		if !ok {
+			return nil, refusedf("param %q must be a list", s.Name)
+		}
+		if len(raw) > s.MaxEntries {
+			return nil, refusedf("param %q has %d entries, over its limit of %d",
+				s.Name, len(raw), s.MaxEntries)
+		}
+		maxVal := s.MaxLen
+		if maxVal <= 0 {
+			maxVal = DefaultMaxLen
+		}
+		out := make([]string, 0, len(raw))
+		for i, v := range raw {
+			str, ok := v.(string)
+			if !ok {
+				return nil, refusedf("param %q entry %d must be a string", s.Name, i)
+			}
+			if len(str) > maxVal {
+				return nil, refusedf("param %q entry %d is %d bytes, over its %d-byte limit",
+					s.Name, i, len(str), maxVal)
+			}
+			if !s.Pattern.MatchString(str) {
+				return nil, refusedf("param %q entry %d does not match its accepted form", s.Name, i)
+			}
+			out = append(out, str)
 		}
 		return out, nil
 	}

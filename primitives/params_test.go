@@ -114,6 +114,12 @@ func TestRegistrationRefusesABadVocabulary(t *testing.T) {
 		{"a duplicate name", Primitive{Name: "check_status", Class: ClassObserve, Run: noopRun}},
 		{"a parameter with an unknown type", Primitive{Name: "bad_param", Class: ClassObserve, Run: noopRun,
 			Params: []ParamSpec{{Name: "x", Type: ParamType("raw")}}}},
+		{"a list with no entry form", Primitive{Name: "bad_list_form", Class: ClassObserve, Run: noopRun,
+			Params: []ParamSpec{{Name: "x", Type: ParamList, MaxEntries: 4}}}},
+		{"a list with no entry limit", Primitive{Name: "bad_list_limit", Class: ClassObserve, Run: noopRun,
+			Params: []ParamSpec{{Name: "x", Type: ParamList, Pattern: regexp.MustCompile(`^a$`)}}}},
+		{"an entry limit on a string", Primitive{Name: "bad_string_limit", Class: ClassObserve, Run: noopRun,
+			Params: []ParamSpec{{Name: "x", Type: ParamString, MaxEntries: 4}}}},
 	}
 	for _, c := range cases {
 		func() {
@@ -124,5 +130,39 @@ func TestRegistrationRefusesABadVocabulary(t *testing.T) {
 			}()
 			Register(c.p)
 		}()
+	}
+}
+
+// A list is a map without the keys: bounded in entries, in each entry's length
+// and form, and strings only.
+func TestListParamsAreBoundedEntryByEntry(t *testing.T) {
+	specs := []ParamSpec{{Name: "names", Type: ParamList, MaxEntries: 3, MaxLen: 8,
+		Pattern: regexp.MustCompile(`^[a-z]+$`)}}
+	p, err := Validate(specs, map[string]interface{}{"names": []interface{}{"one", "two"}})
+	if err != nil {
+		t.Fatalf("a list within its bounds should validate: %v", err)
+	}
+	if got := p.List("names"); len(got) != 2 || got[0] != "one" || got[1] != "two" {
+		t.Errorf("the list should come back in order, got %v", got)
+	}
+	if p.List("absent") != nil {
+		t.Error("an absent list should read as nil")
+	}
+	refused := []struct {
+		what  string
+		value interface{}
+	}{
+		{"too many entries", []interface{}{"a", "b", "c", "d"}},
+		{"an entry over its length", []interface{}{"abcdefghi"}},
+		{"an entry outside its form", []interface{}{"../etc"}},
+		{"an entry that is not a string", []interface{}{float64(1)}},
+		{"a nested list", []interface{}{[]interface{}{"a"}}},
+		{"a string where a list belongs", "one"},
+		{"an object where a list belongs", map[string]interface{}{"a": "b"}},
+	}
+	for _, c := range refused {
+		if _, err := Validate(specs, map[string]interface{}{"names": c.value}); !Refused(err) {
+			t.Errorf("a list with %s must be refused, got %v", c.what, err)
+		}
 	}
 }
