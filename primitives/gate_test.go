@@ -176,6 +176,8 @@ var pinnedVocabulary = map[string]Class{
 	"site_quiet_host": ClassOperate,
 	// A site's old server forwarding while its DNS moves: believe X-Forwarded-For from it, for at most a week.
 	"trust_forwarder": ClassOperate,
+	// A copy's walls proven by acting as its site (site_copy_final_test.md, the rig). Operate: it acts as the site's web user.
+	"copy_probes": ClassOperate,
 
 	// This host's data moved onto its data root (specs/one_data_root.md D5).
 	// Operate: the services stop for one copy, and a move that does not

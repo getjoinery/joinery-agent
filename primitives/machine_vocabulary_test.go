@@ -15,6 +15,7 @@ var pinnedMachineWords = []string{
 	"agent_report",
 	"check_status",
 	"container_inventory",
+	"copy_probes",
 	"data_root_decrypt",
 	"data_root_encrypt",
 	"data_root_enrol",
