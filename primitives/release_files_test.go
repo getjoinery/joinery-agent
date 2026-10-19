@@ -417,8 +417,8 @@ file_put_contents(dirname(__DIR__) . "/VERSION", "0.8.477\n");
 // manifest at the site root is the new release's. Asking the plane for the
 // VERSION's file would fetch bytes the manifest refuses; asking by hash does not.
 func (s *relSite) rolledBackUnderTheNewManifest() {
-	s.stoppedUpgrade() // the new release's deployment files are on disk...
-	s.sign()           // ...and the manifest now signed is the new release's
+	s.stoppedUpgrade()                                   // the new release's deployment files are on disk...
+	s.sign()                                             // ...and the manifest now signed is the new release's
 	s.write("public_html/utils/upgrade.php", oldUpgrade) // the rollback put the old code back
 	s.write("public_html/includes/DeploymentHelper.php", oldHelper)
 	// VERSION still reads 0.8.475: the rollback restored it with the code.

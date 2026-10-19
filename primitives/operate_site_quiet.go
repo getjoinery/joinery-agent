@@ -27,11 +27,16 @@ package primitives
 // quiet changed are put back by off. An operator with this word can already
 // do as much with restart_unit apache2 in a loop. Accepted.
 //
-// With forward it can send a frozen site's visitors to another address. The
-// machine forwards over https only, checking that address's certificate
-// against the site's own name, so a visitor's request and its cookies reach
-// only a server holding the site's certificate; `to` must be a public unicast
-// address, so nothing on the machine's own networks is reached. Accepted.
+// With forward it can send a frozen site's visitors to another address: the
+// one address the management node named, and nothing else. The machine
+// forwards over https, checking that address's certificate against the
+// site's own name, but it also forwards the ACME challenge path there over
+// http, so whoever answers at that address can be issued the site's
+// certificate through the forward: the check is no stronger than the
+// address. That is no new power, since a management node that names an
+// address can already point the site's DNS at it. `to` must be a public
+// unicast address, so nothing on the machine's own networks, nor in shared
+// address space (a tailnet), is reached. Accepted.
 //
 // What it cannot do:
 //
@@ -115,10 +120,21 @@ func siteQuietArgv(_ context.Context, env *ExecEnv, p Params) ([]string, error) 
 // forwardAddressPattern bounds the characters of an address before it is parsed.
 var forwardAddressPattern = regexp.MustCompile(`^[0-9a-fA-F:.]{2,39}$`)
 
+// notPublicV4 are IPv4 ranges netip calls global unicast that are nobody's
+// public address: shared address space (100.64.0.0/10, where a tailnet
+// lives), IETF protocol assignments, benchmarking, and the reserved block.
+// The management node refuses the same list (JobCommandBuilder::NOT_PUBLIC_V4).
+var notPublicV4 = []netip.Prefix{
+	netip.MustParsePrefix("100.64.0.0/10"),
+	netip.MustParsePrefix("192.0.0.0/24"),
+	netip.MustParsePrefix("198.18.0.0/15"),
+	netip.MustParsePrefix("240.0.0.0/4"),
+}
+
 // forwardAddress: a copy's public unicast address, in its canonical spelling.
-// Loopback, private, link-local, multicast and unspecified addresses are
-// refused, so a forward or a trust never names something on the machine's own
-// networks.
+// Loopback, private, link-local, multicast, unspecified and notPublicV4
+// addresses are refused, so a forward or a trust never names something on the
+// machine's own networks.
 func forwardAddress(s string) (string, error) {
 	a, err := netip.ParseAddr(s)
 	if err != nil || a.Zone() != "" {
@@ -127,6 +143,11 @@ func forwardAddress(s string) (string, error) {
 	a = a.Unmap()
 	if !a.IsGlobalUnicast() || a.IsPrivate() || a.IsLoopback() || a.IsLinkLocalUnicast() || a.IsMulticast() || a.IsUnspecified() {
 		return "", fmt.Errorf("%s is not a public address", a)
+	}
+	for _, p := range notPublicV4 {
+		if p.Contains(a) {
+			return "", fmt.Errorf("%s is not a public address", a)
+		}
 	}
 	return a.String(), nil
 }
