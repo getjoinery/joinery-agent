@@ -89,6 +89,29 @@ type ApprovalStatement struct {
 	Summary string `json:"summary"`
 	// Facts are the specifics, in reading order.
 	Facts []ApprovalFact `json:"facts"`
+	// KeyBox, when set, is a backup's key the operator opens in the same
+	// step: part of the statement, so the challenge is bound to it too.
+	KeyBox *ApprovalKeyBox `json:"key_box,omitempty"`
+}
+
+// ApprovalKeyBox is the key of a backup this machine did not make, opened
+// as the restore is approved. Such a chain is sealed to the key of the
+// server that made it, which never left that server, and to the site's
+// recovery key, which the operator is pasting to approve anyway. Their
+// browser works out the X25519 of the recovery key with the box's ephemeral
+// key, the one value that opens this box (copy_take_key's construction), and
+// sends it with the approval. The recovery key itself stays in the browser.
+type ApprovalKeyBox struct {
+	// EphemeralPublic is the sealed box's ephemeral X25519 public key, base64.
+	EphemeralPublic string `json:"ephemeral_public"`
+	// RecoveryFingerprint is the SHA-256, hex, of the recovery public key the
+	// box is sealed to: the key the operator must paste.
+	RecoveryFingerprint string `json:"recovery_fingerprint"`
+	// Open takes the value the browser worked out and the public half of the
+	// key it used, opens the box and keeps the key where the restore reads
+	// it. The gate calls it once the approval's answer is right; its refusal
+	// is the job's.
+	Open func(shared, recoveryPublic []byte) error `json:"-"`
 }
 
 // ApprovalGate blocks a destructive job until the machine's own operator

@@ -8,8 +8,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // The node's own record of what it uploaded, read here so that a DESTRUCTIVE
@@ -43,6 +46,7 @@ import (
 // setting, no flag and no wire value that moves it — a ledger path something
 // else can choose is a ledger something else can replace with one it wrote.
 // This side only reads it; BackupLedger on the PHP side is the only writer.
+// copy_export reads it whole for the site's history (ledgerHistory).
 
 // ledgerDirName is BackupLedger::DIR_NAME, under the site's config/.
 const ledgerDirName = "backup-ledger"
@@ -53,6 +57,10 @@ type ledgerEntry struct {
 	Bytes        int64  `json:"bytes"`
 	UploadedTime string `json:"uploaded_time"`
 	ObjectKey    string `json:"object_key"`
+	// Source is how a line came in when this machine did not upload it:
+	// "handed_over" by the site's previous server, or "manifest", from a
+	// manifest the ledger matched (BackupLedger::SOURCE_*). Empty for its own.
+	Source string `json:"source,omitempty"`
 
 	// Previous holds the versions this NAME used to have, newest first.
 	//
@@ -298,6 +306,44 @@ func ledgerFact(env *ExecEnv, profile BackupProfile, relname string) (ledgerEntr
 	}
 	entry, ok := entries[relname]
 	return entry, ok
+}
+
+// ledgerManifestName is a chain manifest's line in the ledger.
+var ledgerManifestName = regexp.MustCompile(`^(chain-[0-9_]+)/manifest\.json$`)
+
+// ledgerHistory is the newest manifest of each chain this machine's ledger
+// holds for a profile, newest first and at most max: what copy_export hands a
+// copy so the site's backups from before a switch restore there. A ledger it
+// cannot trust is an error, as it is for a restore; none at all is no history.
+func ledgerHistory(env *ExecEnv, profile BackupProfile, max int) ([]copyHistoryChain, error) {
+	entries, present, err := readLedger(env, profile)
+	if err != nil {
+		return nil, err
+	}
+	if !present {
+		return nil, nil
+	}
+	var out []copyHistoryChain
+	for relname, e := range entries {
+		m := ledgerManifestName.FindStringSubmatch(relname)
+		if m == nil || !sha256Hex.MatchString(e.SHA256) || e.Bytes < 0 {
+			continue
+		}
+		if _, err := time.Parse("2006-01-02 15:04:05", e.UploadedTime); err != nil {
+			continue
+		}
+		out = append(out, copyHistoryChain{ChainID: m[1], SHA256: e.SHA256, Bytes: e.Bytes, Uploaded: e.UploadedTime})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Uploaded != out[j].Uploaded {
+			return out[i].Uploaded > out[j].Uploaded
+		}
+		return out[i].ChainID > out[j].ChainID
+	})
+	if len(out) > max {
+		out = out[:max]
+	}
+	return out, nil
 }
 
 func short(hexSum string) string {

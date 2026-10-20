@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,6 +28,12 @@ import (
 // the signed list, and a run missing from the source's ledger.
 
 const exportChainID = "chain-20260930_010203"
+
+// historyChainID is the source's chain of the week before, in its ledger only.
+const historyChainID = "chain-20260923_010203"
+
+// historySum is that chain's newest manifest hash, as the ledger records it.
+var historySum = strings.Repeat("ab", 32)
 
 // testKey is a NodeKey over a key the test holds, as the agent's identity is
 // over the key in its identity file.
@@ -133,8 +140,12 @@ func newExportFixture(t *testing.T) *exportFixture {
 	mustWrite(t, filepath.Join(sRoot, "backups", managerSubdir, exportChainID, chainManifestFile), string(manifest), 0o600)
 	sum := sha256.Sum256(manifest)
 	f.manifestSum = hex.EncodeToString(sum[:])
+	// The week before's chain, and one of its artifacts: the history lists
+	// the first, never the second.
 	ledger, _ := json.Marshal(map[string]ledgerEntry{
-		exportChainID + "/" + chainManifestFile: {SHA256: f.manifestSum, Bytes: int64(len(manifest)), UploadedTime: "2026-09-30 01:05:00"},
+		exportChainID + "/" + chainManifestFile:  {SHA256: f.manifestSum, Bytes: int64(len(manifest)), UploadedTime: "2026-09-30 01:05:00"},
+		historyChainID + "/" + chainManifestFile: {SHA256: historySum, Bytes: 900, UploadedTime: "2026-09-29 23:00:00"},
+		historyChainID + "/db-0000.sql.gz.enc":   {SHA256: historySum, Bytes: 5000, UploadedTime: "2026-09-23 01:04:00"},
 	})
 	mustWrite(t, filepath.Join(sRoot, "config", ledgerDirName, "manager.json"), string(ledger), 0o600)
 	_ = os.Chmod(filepath.Join(sRoot, "config", ledgerDirName), 0o700)
@@ -189,6 +200,7 @@ func (f *exportFixture) exportParams(target ed25519.PublicKey) Params {
 		"profile":           "manager",
 		"chain_id":          exportChainID,
 		"target_public_key": base64.StdEncoding.EncodeToString(target),
+		"history":           true,
 	})
 }
 
@@ -326,10 +338,110 @@ func TestAnExportOpensOnTheCopyAndWritesWhatTheOtherWordsRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("copy_stage: %v", err)
 	}
-	want := []string{"--workspace", work, "--vouched", f.manifestSum}
+	// The site's history, newest first: this chain's manifest and the week
+	// before's, never an artifact's line.
+	exportUnix, _ := time.Parse("2006-01-02 15:04:05", "2026-09-30 01:05:00")
+	historyUnix, _ := time.Parse("2006-01-02 15:04:05", "2026-09-29 23:00:00")
+	manifestBytes, _ := os.ReadFile(filepath.Join(f.sEnv.SiteRoot, "backups", managerSubdir, exportChainID, chainManifestFile))
+	want := []string{"--workspace", work, "--vouched", f.manifestSum, "--profile", "manager",
+		"--history", fmt.Sprintf("%s,%s,%d,%d", exportChainID, f.manifestSum, len(manifestBytes), exportUnix.Unix()),
+		"--history", fmt.Sprintf("%s,%s,900,%d", historyChainID, historySum, historyUnix.Unix())}
 	if strings.Join(argv, " ") != strings.Join(want, " ") {
-		t.Errorf("copy_stage argv %v, want %v", argv, want)
+		t.Errorf("copy_stage argv\n %v, want\n %v", argv, want)
 	}
+	if n, _ := out["history_chains"].(int); n != 2 {
+		t.Errorf("the import reports %v history chains, want 2", out["history_chains"])
+	}
+}
+
+func TestTheHistoryIsReplacedWholeAndRefusedWhenMalformed(t *testing.T) {
+	f := newExportFixture(t)
+	if _, err := f.importBundle(t, f.export(t, f.target.PublicKey())); err != nil {
+		t.Fatal(err)
+	}
+	hist := filepath.Join(siteStateDir(f.tEnv), copyHistoryFile)
+	if info, err := os.Stat(hist); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("the history is not kept 0600 in the state directory: %v", err)
+	}
+
+	// An export with no history (a source from before it was kept) leaves none.
+	payload := copyPayload{Chains: []copyChain{{ChainID: exportChainID, DataKey: f.dataKey, Manifests: []string{f.manifestSum}}}}
+	if _, err := f.importBundle(t, f.bundleOf(t, payload, time.Now().UTC())); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(hist); !os.IsNotExist(err) {
+		t.Errorf("an export with no history left the earlier one behind: %v", err)
+	}
+	if argv, err := copyHistoryArgs(f.tEnv); err != nil || argv != nil {
+		t.Errorf("no history should mean no arguments: %v %v", argv, err)
+	}
+
+	for what, h := range map[string]*copyHistory{
+		"a profile that is not one":   {Profile: "other"},
+		"a chain id that is a path":   {Profile: "manager", Chains: []copyHistoryChain{{ChainID: "../x", SHA256: historySum, Uploaded: "2026-09-29 23:00:00"}}},
+		"a hash that is not one":      {Profile: "manager", Chains: []copyHistoryChain{{ChainID: historyChainID, SHA256: "zz", Uploaded: "2026-09-29 23:00:00"}}},
+		"a chain with no upload time": {Profile: "manager", Chains: []copyHistoryChain{{ChainID: historyChainID, SHA256: historySum}}},
+	} {
+		payload.History = h
+		if _, err := f.importBundle(t, f.bundleOf(t, payload, time.Now().UTC().Add(time.Second))); !Refused(err) ||
+			!strings.Contains(err.Error(), "history") {
+			t.Errorf("a history with %s was taken: %v", what, err)
+		}
+	}
+
+	// A history file anything but root could have written vouches for nothing.
+	mustWrite(t, hist, "profile manager\n"+historyChainID+" "+historySum+" 900 1\n", 0o666)
+	_ = os.Chmod(hist, 0o666)
+	if _, err := copyHistoryArgs(f.tEnv); err == nil {
+		t.Error("a history writable by others was read")
+	}
+	mustWrite(t, hist, "profile manager\nchain-1 nothash 900 1\n", 0o600)
+	_ = os.Chmod(hist, 0o600)
+	if _, err := copyHistoryArgs(f.tEnv); err == nil {
+		t.Error("a malformed history line was passed on")
+	}
+}
+
+func TestAnExportNotAskedForTheHistoryCarriesNone(t *testing.T) {
+	// A copy whose agent is older than the history refuses a bundle carrying
+	// anything it does not know, so the management node asks for it only of
+	// a pair that both read it.
+	f := newExportFixture(t)
+	out, err := copyExportRun(context.Background(), f.sEnv, validParams(t, "copy_export", map[string]interface{}{
+		"profile": "manager", "chain_id": exportChainID,
+		"target_public_key": base64.StdEncoding.EncodeToString(f.target.PublicKey()),
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := out["history_chains"].(int); n != 0 {
+		t.Errorf("an export not asked for the history reports %v chains", out["history_chains"])
+	}
+	in, err := f.importBundle(t, out["bundle"].(string))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := in["history_chains"].(int); n != 0 {
+		t.Errorf("the copy took %v history chains from an export that carried none", in["history_chains"])
+	}
+	if _, err := os.Stat(filepath.Join(siteStateDir(f.tEnv), copyHistoryFile)); !os.IsNotExist(err) {
+		t.Errorf("an export with no history left a history file: %v", err)
+	}
+}
+
+func TestTheExportStatementSaysTheHistoryTravels(t *testing.T) {
+	f := newExportFixture(t)
+	f.sEnv.ExportApproval = approveAll{}
+	st, _, _, err := copyExportCeremony(context.Background(), f.sEnv, f.exportParams(f.target.PublicKey()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fact := range st.Facts {
+		if fact.Label == "Backup history" && strings.Contains(fact.Value, "2 backup chain(s)") {
+			return
+		}
+	}
+	t.Errorf("the statement does not say the site's history goes with it: %+v", st.Facts)
 }
 
 func TestTheApprovalNamesTheMachineTheSecretsGoTo(t *testing.T) {
@@ -433,7 +545,19 @@ func TestABundleNamingAnotherSourceNodeIsRefused(t *testing.T) {
 // signedBody signs a body as the source would, with chosen times.
 func (f *exportFixture) signedBody(t *testing.T, issued, expires time.Time) string {
 	t.Helper()
-	payload, _ := json.Marshal(copyPayload{Chains: []copyChain{{ChainID: exportChainID, DataKey: "k", Manifests: []string{f.manifestSum}}}})
+	return f.sealPayload(t, copyPayload{Chains: []copyChain{{ChainID: exportChainID, DataKey: "k", Manifests: []string{f.manifestSum}}}},
+		issued, expires)
+}
+
+// bundleOf is a bundle the source signed around this payload, issued then.
+func (f *exportFixture) bundleOf(t *testing.T, p copyPayload, issued time.Time) string {
+	t.Helper()
+	return f.sealPayload(t, p, issued, issued.Add(time.Hour))
+}
+
+func (f *exportFixture) sealPayload(t *testing.T, p copyPayload, issued, expires time.Time) string {
+	t.Helper()
+	payload, _ := json.Marshal(p)
 	sealed, err := sealToAgentKey(f.target.PublicKey(), gzipBytes(t, payload))
 	if err != nil {
 		t.Fatal(err)

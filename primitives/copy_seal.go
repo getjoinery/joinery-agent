@@ -257,6 +257,31 @@ type copyBundleBody struct {
 type copyPayload struct {
 	Chains []copyChain    `json:"chains"`
 	Files  []copyHostFile `json:"files"`
+	// History is the site's other backups, as S's upload ledger records
+	// them: absent from an export made before it was added.
+	History *copyHistory `json:"history,omitempty"`
+}
+
+// copyHistoryMax bounds the chains a history lists: far more than a ledger
+// of BackupLedger::MAX_ENTRIES lines holds, and CopyStaging::MAX_HISTORY.
+const copyHistoryMax = 500
+
+// copyHistory is the newest manifest of each chain S's upload ledger holds,
+// in the profile the export names. T records them in its own ledger, marked
+// handed over (CopyStaging), so after the switch the site's backups from
+// before it restore on T under their own names. Hashes, sizes and times: no
+// secret, and nothing T can apply as a copy.
+type copyHistory struct {
+	Profile string             `json:"profile"`
+	Chains  []copyHistoryChain `json:"chains"`
+}
+
+// copyHistoryChain is one chain's newest manifest, as S's ledger has it.
+type copyHistoryChain struct {
+	ChainID  string `json:"chain_id"`
+	SHA256   string `json:"sha256"`
+	Bytes    int64  `json:"bytes"`
+	Uploaded string `json:"uploaded"` // UTC, the ledger's "2006-01-02 15:04:05"
 }
 
 // copyChain is one chain T may apply: its data key, and the manifest

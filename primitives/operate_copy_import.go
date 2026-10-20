@@ -9,6 +9,9 @@ package primitives
 //     copy_restore hands it to restore_chain.sh;
 //   - the vouch: every manifest hash the source vouched for, written whole to
 //     this site's state directory, read by copy_stage and copy_restore;
+//   - the site's backup history: the newest manifest of each of the source's
+//     chains, written whole to the state directory (history), which
+//     copy_stage records in this machine's upload ledger;
 //   - the host bundle (copy_host.go): the certificate, its account, DNS-01
 //     credentials and DKIM keys, in this machine's own directories.
 //
@@ -182,16 +185,36 @@ func copyImportRun(ctx context.Context, env *ExecEnv, params Params) (map[string
 	if err := writeStateFile(env, copyVouchedFile, []byte(vouch.String())); err != nil {
 		return nil, fmt.Errorf("could not write the vouched runs: %w", err)
 	}
+	// Replaced whole, as the vouch is: an export with no history (one made
+	// before the source kept it) leaves none behind from an earlier one.
+	historyChains := 0
+	if payload.History == nil {
+		if err := os.Remove(filepath.Join(siteStateDir(env), copyHistoryFile)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return nil, fmt.Errorf("could not clear the site's backup history: %w", err)
+		}
+	} else {
+		var hist strings.Builder
+		fmt.Fprintf(&hist, "profile %s\n", payload.History.Profile)
+		for _, h := range payload.History.Chains {
+			t, _ := time.Parse("2006-01-02 15:04:05", h.Uploaded)
+			fmt.Fprintf(&hist, "%s %s %d %d\n", h.ChainID, h.SHA256, h.Bytes, t.Unix())
+		}
+		if err := writeStateFile(env, copyHistoryFile, []byte(hist.String())); err != nil {
+			return nil, fmt.Errorf("could not write the site's backup history: %w", err)
+		}
+		historyChains = len(payload.History.Chains)
+	}
 	if err := writeStateFile(env, copyIssuedFile, []byte(issued.UTC().Format(time.RFC3339Nano)+"\n")); err != nil {
 		return nil, fmt.Errorf("could not record the bundle as taken: %w", err)
 	}
 
 	sort.Strings(chains)
 	out := map[string]interface{}{
-		"chains":     chains,
-		"host_files": len(payload.Files),
-		"notes":      notes,
-		"issued":     issued.UTC().Format(time.RFC3339Nano),
+		"chains":         chains,
+		"history_chains": historyChains,
+		"host_files":     len(payload.Files),
+		"notes":          notes,
+		"issued":         issued.UTC().Format(time.RFC3339Nano),
 	}
 	if look := copyLookPath(env); look != "" {
 		out["look_path"] = look
@@ -274,6 +297,22 @@ func readCopyPayload(gz []byte) (copyPayload, error) {
 	}
 	if len(p.Files) > copyHostMaxFiles {
 		return p, errors.New("the bundle carries more host files than a copy takes")
+	}
+	if h := p.History; h != nil {
+		if h.Profile != string(ProfileSite) && h.Profile != string(ProfileManager) {
+			return p, fmt.Errorf("the bundle's backup history is for %q, which is not a backup profile", h.Profile)
+		}
+		if len(h.Chains) > copyHistoryMax {
+			return p, errors.New("the bundle's backup history lists more chains than a copy takes")
+		}
+		for _, c := range h.Chains {
+			if !chainIDPattern.MatchString(c.ChainID) || len(c.ChainID) > 64 || !sha256Hex.MatchString(c.SHA256) || c.Bytes < 0 {
+				return p, fmt.Errorf("the bundle's backup history names %q, which is not a chain's manifest", c.ChainID)
+			}
+			if _, err := time.Parse("2006-01-02 15:04:05", c.Uploaded); err != nil {
+				return p, fmt.Errorf("the bundle's backup history gives %s no upload time", c.ChainID)
+			}
+		}
 	}
 	return p, nil
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
@@ -543,5 +544,86 @@ func TestAManagementNodeThatCannotAnswerNeverEndsTheWait(t *testing.T) {
 	err := gate.Require(ctx, 4242, testStatement())
 	if !primitives.Refused(err) || !strings.Contains(err.Error(), "Dispatch it again") {
 		t.Fatalf("with no usable answer the wait must run to its window, got %v", err)
+	}
+}
+
+// runApprovalOf is runApproval for a given statement.
+func runApprovalOf(t *testing.T, store *fakeSettings, st primitives.ApprovalStatement, answer func(req approvalRequest) string) error {
+	t.Helper()
+	gate := &SettingsApproval{store: store}
+	store.onWrite = func(name, value string) {
+		if name != settingApprovalRequest || value == "" {
+			return
+		}
+		var req approvalRequest
+		if err := json.Unmarshal([]byte(value), &req); err != nil {
+			t.Errorf("the staged request is not readable JSON: %v", err)
+			return
+		}
+		if reply := answer(req); reply != "" {
+			store.Write(settingApprovalAnswer, reply)
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return gate.Require(ctx, 4242, st)
+}
+
+// A restore of a backup another server made: the page opens its key with the
+// same pasted key, and the job runs only once the box has opened (B20).
+func TestAKeyBoxIsOpenedWithTheApprovalAndOnlyThen(t *testing.T) {
+	store, secret := provenKeyStore(t)
+	public, _ := base64.StdEncoding.DecodeString(store.values[settingRecoveryPublicKey])
+	shared := bytes.Repeat([]byte{7}, 32)
+
+	var gotShared, gotPublic []byte
+	var openErr error
+	st := testStatement()
+	st.KeyBox = &primitives.ApprovalKeyBox{
+		EphemeralPublic: base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{9}, 32)), RecoveryFingerprint: strings.Repeat("ab", 32),
+		Open: func(s, p []byte) error { gotShared, gotPublic = s, p; return openErr },
+	}
+	answerWith := func(withKey bool) func(req approvalRequest) string {
+		return func(req approvalRequest) string {
+			if req.KeyBox == nil || req.KeyBox.EphemeralPublic != st.KeyBox.EphemeralPublic ||
+				req.KeyBox.RecoveryFingerprint != st.KeyBox.RecoveryFingerprint {
+				t.Errorf("the page is not shown the box to open: %+v", req.KeyBox)
+			}
+			a := approvalAnswer{JobID: req.JobID, Answer: openChallenge(t, req.Challenge, secret, public)}
+			if withKey {
+				a.Shared, a.PublicKey = base64.StdEncoding.EncodeToString(shared), base64.StdEncoding.EncodeToString(public)
+			}
+			body, _ := json.Marshal(a)
+			return string(body)
+		}
+	}
+
+	if err := runApprovalOf(t, store, st, answerWith(true)); err != nil {
+		t.Fatalf("a right answer carrying the box's value should run: %v", err)
+	}
+	if !bytes.Equal(gotShared, shared) || !bytes.Equal(gotPublic, public) {
+		t.Errorf("the box was handed %x / %x", gotShared, gotPublic)
+	}
+
+	gotShared = nil
+	err := runApprovalOf(t, store, st, answerWith(false))
+	if !primitives.Refused(err) || !strings.Contains(err.Error(), "did not carry") || gotShared != nil {
+		t.Errorf("a right answer without the box's value ran: %v", err)
+	}
+
+	openErr = errors.New("the recovery key does not match")
+	err = runApprovalOf(t, store, st, answerWith(true))
+	if !primitives.Refused(err) || !strings.Contains(err.Error(), "the recovery key does not match") {
+		t.Errorf("a box that did not open let the job run: %v", err)
+	}
+
+	// The box is part of what the challenge is bound to: another box is another statement.
+	a, _ := json.Marshal(st)
+	other := st
+	other.KeyBox = &primitives.ApprovalKeyBox{EphemeralPublic: base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{8}, 32)),
+		RecoveryFingerprint: st.KeyBox.RecoveryFingerprint}
+	b, _ := json.Marshal(other)
+	if sha256.Sum256(a) == sha256.Sum256(b) {
+		t.Error("two statements differing only in their box hash the same")
 	}
 }

@@ -258,7 +258,15 @@ func TestAVouchReachesCopyStage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("copy_stage: %v", err)
 	}
-	if got := strings.Join(argv, " "); !strings.HasSuffix(got, "--vouched "+final) || strings.Contains(got, f.manifestSum) {
-		t.Errorf("copy_stage argv %q, want only the final manifest vouched", got)
+	// The vouch, not the history beside it (which lists the source's chains
+	// as its ledger had them at the export): only the final manifest.
+	var vouched []string
+	for i := 0; i+1 < len(argv); i++ {
+		if argv[i] == "--vouched" {
+			vouched = append(vouched, argv[i+1])
+		}
+	}
+	if len(vouched) != 1 || vouched[0] != final {
+		t.Errorf("copy_stage vouches for %v (argv %q), want only the final manifest %s", vouched, strings.Join(argv, " "), final)
 	}
 }

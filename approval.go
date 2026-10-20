@@ -273,13 +273,21 @@ type approvalRequest struct {
 	Info         string                    `json:"info"`
 	IssuedTime   string                    `json:"issued_time"`
 	ExpiresTime  string                    `json:"expires_time"`
+	// KeyBox is a backup's key the page opens with the same pasted key: its
+	// box's ephemeral public key and the recovery key's fingerprint.
+	KeyBox *primitives.ApprovalKeyBox `json:"key_box,omitempty"`
 }
 
-// approvalAnswer is what the node's own admin page writes back.
+// approvalAnswer is what the node's own admin page writes back. Shared and
+// PublicKey, base64, are what the page worked out for a request's KeyBox:
+// the X25519 of the pasted key with the box's ephemeral key, and that key's
+// public half.
 type approvalAnswer struct {
-	JobID    int64  `json:"job_id"`
-	Answer   string `json:"answer"`
-	Declined bool   `json:"declined"`
+	JobID     int64  `json:"job_id"`
+	Answer    string `json:"answer"`
+	Declined  bool   `json:"declined"`
+	Shared    string `json:"shared,omitempty"`
+	PublicKey string `json:"public_key,omitempty"`
 }
 
 // Require issues a challenge, waits for this machine's operator to answer it,
@@ -355,6 +363,7 @@ func (a *SettingsApproval) Require(ctx context.Context, jobID int64, statement p
 		Info:         scope.infoPrefix,
 		IssuedTime:   issued.Format("2006-01-02 15:04:05"),
 		ExpiresTime:  issued.Add(primitives.ApprovalWindow).Format("2006-01-02 15:04:05"),
+		KeyBox:       statement.KeyBox,
 	}
 	body, err := json.Marshal(request)
 	if err != nil {
@@ -396,12 +405,13 @@ func (a *SettingsApproval) Require(ctx context.Context, jobID int64, statement p
 	log.Printf("  job #%d is destructive and is waiting for approval on %s (%s)",
 		jobID, scope.page, primitives.ApprovalWindow)
 
-	return a.await(ctx, jobID, plaintext, issued)
+	return a.await(ctx, jobID, plaintext, issued, statement.KeyBox)
 }
 
 // await polls the handoff row until the operator answers, declines, or the
-// window closes.
-func (a *SettingsApproval) await(ctx context.Context, jobID int64, expected string, issued time.Time) error {
+// window closes. With a key box, a right answer must also carry what opens
+// it, and the box must open: the job runs only then.
+func (a *SettingsApproval) await(ctx context.Context, jobID int64, expected string, issued time.Time, keyBox *primitives.ApprovalKeyBox) error {
 	scope := a.scoped()
 	deadline := issued.Add(primitives.ApprovalWindow)
 	ticker := time.NewTicker(restoreApprovalPollInterval)
@@ -427,6 +437,12 @@ func (a *SettingsApproval) await(ctx context.Context, jobID int64, expected stri
 				// over a stray newline would read as "my recovery key does not
 				// work" at the worst possible moment.
 				if hmac.Equal([]byte(trimSpace(answer.Answer)), []byte(expected)) {
+					if keyBox != nil {
+						if err := openApprovalKeyBox(keyBox, answer); err != nil {
+							return &primitives.RefusalError{Reason: "the " + scope.act + " was approved on " + scope.party +
+								"'s admin page, but the backup's key did not open: " + err.Error() + ". Nothing was run"}
+						}
+					}
 					log.Printf("  job #%d approved on %s with its own recovery key", jobID, scope.page)
 					return nil
 				}
@@ -471,6 +487,20 @@ func (a *SettingsApproval) await(ctx context.Context, jobID int64, expected stri
 		case <-ticker.C:
 		}
 	}
+}
+
+// openApprovalKeyBox hands the box what the operator's page worked out.
+func openApprovalKeyBox(keyBox *primitives.ApprovalKeyBox, answer approvalAnswer) error {
+	shared, err1 := base64.StdEncoding.DecodeString(strings.TrimSpace(answer.Shared))
+	public, err2 := base64.StdEncoding.DecodeString(strings.TrimSpace(answer.PublicKey))
+	if err1 != nil || err2 != nil || len(shared) != 32 || len(public) != 32 {
+		return fmt.Errorf("the approval did not carry what opens it (the page that answered may be older than " +
+			"this agent: reload it and approve again)")
+	}
+	if keyBox.Open == nil {
+		return fmt.Errorf("this agent cannot open it")
+	}
+	return keyBox.Open(shared, public)
 }
 
 // provenRecoveryKey reads this machine's recovery public key and refuses unless

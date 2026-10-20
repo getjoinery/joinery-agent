@@ -14,6 +14,10 @@ package primitives
 //   - EVERY ARTIFACT is checked against the vouched manifest's size and hash.
 //   - NO KEY is written: copy_import already wrote chain.key from the export,
 //     and this word refuses until it has.
+//   - WHAT THE SOURCE SIGNED FOR is recorded in this machine's own upload
+//     ledger: the vouched manifest, its artifacts, and the site's other
+//     chains from the history copy_import kept (--profile, --history). After
+//     the switch they restore here through the ordinary staging.
 //
 // utils/copy_stage.php does the transfer, with BackupFetch, as stage_chain
 // does. The vouched hashes and the workspace reach it in argv from here: the
@@ -30,8 +34,13 @@ package primitives
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"time"
 )
 
@@ -94,8 +103,44 @@ func copyStageArgs(ctx context.Context, env *ExecEnv, params Params) ([]string, 
 	for _, v := range vouched {
 		argv = append(argv, "--vouched", v)
 	}
+	history, err := copyHistoryArgs(env)
+	if err != nil {
+		return nil, refusedf("copy_stage: %v", err)
+	}
+	return append(argv, history...), nil
+}
+
+// copyHistoryArgs reads the site's backup history copy_import kept and says it
+// as copy_stage.php's --profile and --history arguments. None when the export
+// carried no history.
+func copyHistoryArgs(env *ExecEnv) ([]string, error) {
+	raw, err := readTrustedStateFile(env, copyHistoryFile)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var argv []string
+	for i, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		f := strings.Fields(line)
+		if i == 0 {
+			if len(f) != 2 || f[0] != "profile" || (f[1] != string(ProfileSite) && f[1] != string(ProfileManager)) {
+				return nil, errors.New("the site's backup history does not say whose backups it lists")
+			}
+			argv = append(argv, "--profile", f[1])
+			continue
+		}
+		if len(f) != 4 || !chainIDPattern.MatchString(f[0]) || !sha256Hex.MatchString(f[1]) || !digits.MatchString(f[2]) || !digits.MatchString(f[3]) {
+			return nil, fmt.Errorf("line %d of the site's backup history is not a chain's manifest", i+1)
+		}
+		argv = append(argv, "--history", strings.Join(f, ","))
+	}
 	return argv, nil
 }
+
+// digits is a non-negative integer as the history writes it.
+var digits = regexp.MustCompile(`^[0-9]{1,19}$`)
 
 func copyStageConfig(params Params) (string, error) {
 	config := map[string]interface{}{

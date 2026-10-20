@@ -144,11 +144,31 @@ func resolveBackupFile(ctx context.Context, env *ExecEnv, params Params, suffixe
 // restore that would refuse the instant it was approved is worse than no screen:
 // it spends the one moment of the operator's attention this design gets.
 func requireStagedChain(env *ExecEnv, work string) error {
-	if err := requireChainFiles(work,
-		"the stage_chain primitive downloads what the chain manifest names and recovers the data key "+
-			"from this machine's own key"); err != nil {
+	if err := requireChainFiles(work, stageChainDoes); err != nil {
 		return err
 	}
+	return requireLedgeredManifest(env, work)
+}
+
+// stageChainDoes is what a refusal says staging does.
+const stageChainDoes = "the stage_chain primitive downloads what the chain manifest names and recovers the data key " +
+	"from this machine's own key"
+
+// requireStagedManifest is requireStagedChain before the approval: the key
+// may be missing, for a chain this machine did not make, whose key the
+// approval opens (restore_key_box.go).
+func requireStagedManifest(env *ExecEnv, work string) error {
+	manifest := filepath.Join(work, chainManifestFile)
+	if info, err := os.Stat(manifest); err != nil || !info.Mode().IsRegular() {
+		return refusedf("this node has no downloaded chain at %s: %s is missing. "+
+			"Stage the chain first (%s)", work, chainManifestFile, stageChainDoes)
+	}
+	return requireLedgeredManifest(env, work)
+}
+
+// requireLedgeredManifest refuses unless the staged manifest is one this
+// machine's ledger records.
+func requireLedgeredManifest(env *ExecEnv, work string) error {
 	manifest := filepath.Join(work, chainManifestFile)
 
 	// The manifest against the ledger, under whichever shelf this machine

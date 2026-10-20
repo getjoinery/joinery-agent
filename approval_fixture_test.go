@@ -2,13 +2,18 @@ package main
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"strings"
 	"testing"
 
 	"golang.org/x/crypto/curve25519"
+	"golang.org/x/crypto/nacl/box"
+
+	"joinery-agent/primitives"
 )
 
 // A challenge this agent sealed, written out so the BROWSER CODE can be asked to
@@ -59,6 +64,26 @@ func TestApprovalChallengeFixture(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// A backup key box (B20): a chain key sealed to the same recovery key, as
+	// a backup another server made seals it. The browser works out the value
+	// that opens it (openKeyBox); the agent finishes it with that value. The
+	// expected value is checked to open the box here, so the gate's
+	// comparison is against a value known to work.
+	var pub32 [32]byte
+	copy(pub32[:], public)
+	sealedKey, err := box.SealAnonymous(nil, []byte("the chain's data key"), &pub32, rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shared, err := curve25519.X25519(secret[:], sealedKey[:32])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opened, err := primitives.OpenRecoverySealed(sealedKey, shared, public); err != nil || string(opened) != "the chain's data key" {
+		t.Fatalf("the expected value does not open the box: %v", err)
+	}
+	fp := sha256.Sum256(public)
+
 	body, err := json.MarshalIndent(map[string]string{
 		"challenge":  challenge,
 		"privateKey": base64.StdEncoding.EncodeToString(secret[:]),
@@ -67,6 +92,10 @@ func TestApprovalChallengeFixture(t *testing.T) {
 		// What the browser must recover, AND what the agent compares against.
 		// The same string, deliberately: the gate asserts they are one thing.
 		"expected": plaintext,
+		// The key box: what the page is shown, and what it must work out.
+		"boxEphemeral":   base64.StdEncoding.EncodeToString(sealedKey[:32]),
+		"boxFingerprint": hex.EncodeToString(fp[:]),
+		"boxShared":      base64.StdEncoding.EncodeToString(shared),
 	}, "", "  ")
 	if err != nil {
 		t.Fatal(err)

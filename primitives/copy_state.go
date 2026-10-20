@@ -13,8 +13,13 @@ package primitives
 //     before it downloads and by copy_restore before it applies.
 //   - copy_import_issued: the issue time of the newest bundle imported. A
 //     bundle issued at or before it is a replay, and refused.
+//   - history: the site's other backups, as the source's export listed them
+//     from its upload ledger: a `profile <name>` line, then one
+//     `<chain id> <manifest sha256> <bytes> <unix time>` line per chain.
+//     Written whole by copy_import, read by copy_stage, which records them in
+//     this machine's own ledger.
 //
-// Clearing the state (_site_state.sh) removes all three with copy_of, so a
+// Clearing the state (_site_state.sh) removes all four with copy_of, so a
 // promoted copy stops trusting its source's key.
 
 import (
@@ -45,6 +50,7 @@ var chainIDPattern = regexp.MustCompile(`^chain-[0-9_]+$`)
 const (
 	copyOfKeyFile    = "copy_of_key"
 	copyIssuedFile   = "copy_import_issued"
+	copyHistoryFile  = "history"
 	copyStateMaxRead = 1 << 20
 )
 

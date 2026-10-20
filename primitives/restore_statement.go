@@ -167,9 +167,14 @@ func describeRestoreChain(ctx context.Context, env *ExecEnv, params Params) (App
 
 	// The same two files restoreChainArgs insists on. Checked here too, so that
 	// an operator is never shown an approval screen for a restore that would
-	// refuse the moment they approved it.
+	// refuse the moment they approved it. The key may be missing for a chain
+	// this machine did not make: then the approval opens it (keyBox).
 	manifest := filepath.Join(work, chainManifestFile)
-	if err := requireStagedChain(env, work); err != nil {
+	if err := requireStagedManifest(env, work); err != nil {
+		return ApprovalStatement{}, err
+	}
+	keyBox, err := chainKeyBox(work)
+	if err != nil {
 		return ApprovalStatement{}, err
 	}
 
@@ -232,8 +237,17 @@ func describeRestoreChain(ctx context.Context, env *ExecEnv, params Params) (App
 		if entry, ok := ledgerMatchFor(env, profile, relname, manifest); ok {
 			facts = append(facts, ApprovalFact{
 				Label: "Chain last extended", Value: describeAge(entry.UploadedTime)})
+			if entry.Source == "handed_over" {
+				facts = append(facts, ApprovalFact{Label: "Made by",
+					Value: "the server this site was on before it moved here, which listed this backup when it handed the site over"})
+			}
 			break
 		}
+	}
+	if keyBox != nil {
+		facts = append(facts, ApprovalFact{Label: "Backup key",
+			Value: "another server made this backup, so it opens only with your recovery key (fingerprint " +
+				keyBox.RecoveryFingerprint[:16] + "). Approving opens it, in your browser"})
 	}
 	if info, err := os.Stat(manifest); err == nil {
 		facts = append(facts, ApprovalFact{
@@ -245,7 +259,8 @@ func describeRestoreChain(ctx context.Context, env *ExecEnv, params Params) (App
 		Summary: "This will replace " + chainReplaces(params) + " for " + project + " on this machine by " +
 			"replaying the backup chain " + chainID + " from its full backup forward. Anything written " +
 			"since the run it lands on is gone.",
-		Facts: facts,
+		Facts:  facts,
+		KeyBox: keyBox,
 	}, nil
 }
 

@@ -13,6 +13,13 @@ package primitives
 //     copy keeps its own.
 //   - the host bundle (copy_host.go): the certificate and its account, any
 //     DNS-01 credentials, the DKIM keys.
+//   - the site's backup history, when asked for (history): the newest
+//     manifest of each chain this machine's upload ledger holds
+//     (ledgerHistory). The copy records them in its own ledger, so after the
+//     switch the site's backups from before it restore there. Hashes and
+//     times, read from the ledger as it is. Asked for only of a copy whose
+//     agent reads it: an older one refuses a bundle with anything it does not
+//     know.
 //
 // Re-sent whole every time, so a certificate renewed here in between always
 // reaches the copy.
@@ -87,6 +94,8 @@ func init() {
 			// to, and what the operator approves by its fingerprint.
 			{Name: "target_public_key", Type: ParamString, Required: true, MaxLen: 64,
 				Pattern: base64Key},
+			// Hand over the site's backup history too.
+			{Name: "history", Type: ParamBool},
 		},
 		Ceremony: copyExportCeremony,
 		Run:      copyExportRun,
@@ -99,13 +108,16 @@ func init() {
 // copyExportPlan is everything the export will hand over, checked, before
 // the operator is asked or anything is sealed.
 type copyExportPlan struct {
-	chainID   string
-	manifest  string
-	sum       string
-	uploaded  string
-	target    ed25519.PublicKey
-	hostFiles []copyHostFile
-	host      copyHostSummary
+	chainID     string
+	manifest    string
+	sum         string
+	uploaded    string
+	target      ed25519.PublicKey
+	hostFiles   []copyHostFile
+	host        copyHostSummary
+	profile     BackupProfile
+	history     []copyHistoryChain
+	withHistory bool
 }
 
 func planCopyExport(ctx context.Context, env *ExecEnv, params Params) (*copyExportPlan, error) {
@@ -151,10 +163,19 @@ func planCopyExport(ctx context.Context, env *ExecEnv, params Params) (*copyExpo
 	if err != nil {
 		return nil, refusedf("copy_export: the certificates and keys could not be gathered: %v", err)
 	}
-	return &copyExportPlan{
+	plan := &copyExportPlan{
 		chainID: chainID, manifest: manifest, sum: sum, uploaded: match.UploadedTime,
-		target: target, hostFiles: files, host: host,
-	}, nil
+		target: target, hostFiles: files, host: host, profile: profile,
+	}
+	if params.Bool("history") {
+		history, err := ledgerHistory(env, profile, copyHistoryMax)
+		if err != nil {
+			return nil, refusedf("copy_export: this machine's record of its backups could not be read: %v", err)
+		}
+		plan.history = history
+		plan.withHistory = true
+	}
+	return plan, nil
 }
 
 // copyExportCeremony composes the statement the operator approves and hands
@@ -182,19 +203,24 @@ func copyExportCeremony(ctx context.Context, env *ExecEnv, params Params) (Appro
 	if uploaded == "" {
 		uploaded = "unknown"
 	}
+	facts := []ApprovalFact{
+		{Label: "Goes to the machine whose key fingerprint is", Value: hex.EncodeToString(full[:])[:16]},
+		{Label: "Check", Value: "the same fingerprint is on that machine's own admin page. If it is not, decline."},
+		{Label: "Its full key (SHA-256)", Value: hex.EncodeToString(full[:])},
+		{Label: "Backup chain", Value: plan.chainID},
+		{Label: "Newest run of it uploaded", Value: uploaded},
+		{Label: "Certificates", Value: certs},
+		{Label: "DKIM keys", Value: dkim},
+	}
+	if plan.withHistory {
+		facts = append(facts, ApprovalFact{Label: "Backup history", Value: fmt.Sprintf("the list of this site's %d "+
+			"backup chain(s) this machine uploaded, so the copy can restore them after a switch", len(plan.history))})
+	}
 	return ApprovalStatement{
 		Primitive: "copy_export",
 		Summary: "Hand this site's backup key, certificate and DKIM keys to a copy of this site on another " +
 			"machine, sealed so only that machine can open them.",
-		Facts: []ApprovalFact{
-			{Label: "Goes to the machine whose key fingerprint is", Value: hex.EncodeToString(full[:])[:16]},
-			{Label: "Check", Value: "the same fingerprint is on that machine's own admin page. If it is not, decline."},
-			{Label: "Its full key (SHA-256)", Value: hex.EncodeToString(full[:])},
-			{Label: "Backup chain", Value: plan.chainID},
-			{Label: "Newest run of it uploaded", Value: uploaded},
-			{Label: "Certificates", Value: certs},
-			{Label: "DKIM keys", Value: dkim},
-		},
+		Facts: facts,
 	}, env.ExportApproval, nil, nil
 }
 
@@ -221,10 +247,14 @@ func copyExportRun(ctx context.Context, env *ExecEnv, params Params) (map[string
 			plan.chainID, err)
 	}
 
-	payload, err := json.Marshal(copyPayload{
+	p := copyPayload{
 		Chains: []copyChain{{ChainID: plan.chainID, DataKey: dataKey, Manifests: []string{plan.sum}}},
 		Files:  plan.hostFiles,
-	})
+	}
+	if plan.withHistory {
+		p.History = &copyHistory{Profile: string(plan.profile), Chains: plan.history}
+	}
+	payload, err := json.Marshal(p)
 	if err != nil {
 		return nil, err
 	}
@@ -269,6 +299,7 @@ func copyExportRun(ctx context.Context, env *ExecEnv, params Params) (map[string
 		"certificates":       plan.host.Lineages,
 		"dkim_keys":          plan.host.DKIMKeys,
 		"host_files":         plan.host.Files,
+		"history_chains":     len(plan.history),
 		"issued":             issued.Format(time.RFC3339Nano),
 	}, nil
 }
