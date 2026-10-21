@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The update watchdog replaced an error taxonomy. The old rollback fired on any
@@ -135,5 +136,81 @@ func TestAnOutageCannotCondemnAGoodRelease(t *testing.T) {
 	}
 	if data, _ := os.ReadFile(u.installPath); string(data) != "NEW-BINARY" {
 		t.Fatal("a release must not be rolled back because the database was down")
+	}
+}
+
+// The trial (hole H3 of the 2026-10-21 restart audit). Confirming at the end of
+// initialisation deleted the previous binary before the new one had polled once,
+// so a binary that died a minute later looped with nothing to roll back to.
+
+func TestAVersionNotOnTrialIsConfirmedAtOnce(t *testing.T) {
+	u := watchdogUpdater(t, "1.6.0", true)
+	u.startTrialAfter(time.Hour)
+	if _, err := os.Stat(u.bakPath()); !os.IsNotExist(err) {
+		t.Fatal("an ordinary start has nothing on trial; leftover debris should be cleared at once")
+	}
+}
+
+func TestATrialKeepsTheBackupUntilItHasRunLongEnough(t *testing.T) {
+	u := watchdogUpdater(t, "1.6.0", true)
+	u.markPendingConfirmation("1.6.0")
+	u.CheckFailedBoot() // first start on trial
+
+	u.startTrialAfter(time.Hour)
+	if !u.OnTrial() {
+		t.Fatal("initialising is not proof; the version stays on trial")
+	}
+	if _, err := os.Stat(u.bakPath()); err != nil {
+		t.Fatal("the previous binary must survive until the trial ends")
+	}
+	// Dying now is still caught.
+	if !u.CheckFailedBoot() {
+		t.Fatal("a crash during the trial must roll back")
+	}
+}
+
+func TestATrialThatRunsItsCourseIsConfirmed(t *testing.T) {
+	u := watchdogUpdater(t, "1.6.0", true)
+	u.markPendingConfirmation("1.6.0")
+	u.CheckFailedBoot()
+
+	u.startTrialAfter(10 * time.Millisecond)
+	deadline := time.Now().Add(2 * time.Second)
+	for u.OnTrial() && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if u.OnTrial() {
+		t.Fatal("a version that kept running for the trial must be confirmed")
+	}
+	if _, err := os.Stat(u.bakPath()); !os.IsNotExist(err) {
+		t.Fatal("the previous binary is removed once the trial is over")
+	}
+}
+
+func TestAStopOnPurposeDuringTheTrialIsNotACrash(t *testing.T) {
+	u := watchdogUpdater(t, "1.6.0", true)
+	u.markPendingConfirmation("1.6.0")
+	u.CheckFailedBoot()
+
+	u.EndTrialCleanly() // the operator's switch, a signal, a move
+
+	if u.CheckFailedBoot() {
+		t.Fatal("a deliberate stop during the trial must not roll the version back")
+	}
+	if !u.OnTrial() {
+		t.Fatal("the next start is a fresh trial, not a confirmation")
+	}
+	if data, _ := os.ReadFile(u.installPath); string(data) != "NEW-BINARY" {
+		t.Fatal("the new binary must stay in place")
+	}
+}
+
+func TestACleanStopForAnotherVersionChangesNothing(t *testing.T) {
+	u := watchdogUpdater(t, "1.6.0", true)
+	u.markPendingConfirmation("1.7.0") // just installed, not yet started
+	u.EndTrialCleanly()
+	data, _ := os.ReadFile(u.pendingPath())
+	if strings.TrimSpace(string(data)) != "1.7.0\n0" {
+		t.Fatalf("the marker for the version about to start must be left alone: %q", data)
 	}
 }

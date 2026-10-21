@@ -71,7 +71,7 @@ func (w *LeaveWatcher) Run(ctx context.Context) {
 		_ = writeAgentSetting(w.db, settingJoinState, "")
 
 		log.Printf("leave: disconnected — restarting into local-only service")
-		os.Exit(0)
+		cleanExit()
 	}
 }
 
@@ -137,7 +137,7 @@ func (w *IdentityWatcher) Run(ctx context.Context) {
 	}
 	exit := w.exit
 	if exit == nil {
-		exit = func() { os.Exit(0) }
+		exit = cleanExit
 	}
 	for {
 		select {

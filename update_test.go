@@ -9,6 +9,8 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -261,5 +263,72 @@ func TestConfirmHealthyCleansUp(t *testing.T) {
 	}
 	if _, err := os.Stat(e.install + ".rejected"); !os.IsNotExist(err) {
 		t.Fatal("own-version rejection marker not removed after healthy boot")
+	}
+}
+
+func TestNoUpdateIsInstalledOverAVersionOnTrial(t *testing.T) {
+	e := newTestUpdaterEnv(t, "0.3.1")
+	e.u.markPendingConfirmation("0.3.1") // this process is on trial
+	e.writeDist(t, "0.3.2", []byte("NEWER-BINARY"), nil)
+	if e.u.CheckAndApply() {
+		t.Fatal("swapping over an unproven version would make it the rollback target")
+	}
+	if e.installedContent(t) != "OLD-BINARY" {
+		t.Fatal("the binary must not change during a trial")
+	}
+	e.u.ConfirmHealthy()
+	if !e.u.CheckAndApply() || e.installedContent(t) != "NEWER-BINARY" {
+		t.Fatal("once the trial is over the waiting release is installed")
+	}
+}
+
+func TestABinaryThatDoesNotStartIsNeverSwappedIn(t *testing.T) {
+	e := newTestUpdaterEnv(t, "0.3.0")
+	var probed string
+	e.u.probeBinary = func(path, version string) error {
+		probed = version
+		return fmt.Errorf("%w: exec format error", errArtifactRefused)
+	}
+	e.writeDist(t, "0.3.1", []byte("WRONG-ARCH"), nil)
+	if e.u.CheckAndApply() {
+		t.Fatal("a binary that cannot start must not be installed")
+	}
+	if probed != "0.3.1" {
+		t.Fatalf("the probe should be asked about the version on offer, got %q", probed)
+	}
+	if e.installedContent(t) != "OLD-BINARY" {
+		t.Fatal("the running binary must stay")
+	}
+	if _, err := os.Stat(e.install + ".bak"); !os.IsNotExist(err) {
+		t.Fatal("no backup is taken for a swap that never happened")
+	}
+	if _, err := os.Stat(e.install + ".pending"); !os.IsNotExist(err) {
+		t.Fatal("nothing is put on trial")
+	}
+	if _, state := e.u.HeartbeatInfo(); state != updateStateVerifyFailed {
+		t.Fatalf("state = %q, want the refusal reported", state)
+	}
+}
+
+func TestTheProbeRunsTheRealBinary(t *testing.T) {
+	// The probe itself, against a script standing in for a binary.
+	dir := t.TempDir()
+	good := filepath.Join(dir, "good")
+	os.WriteFile(good, []byte("#!/bin/sh\necho 'joinery-agent 9.9.9'\n"), 0755)
+	if err := probeNewBinary(good, "9.9.9"); err != nil {
+		t.Fatalf("a binary that answers with its version passes: %v", err)
+	}
+	if err := probeNewBinary(good, "9.9.8"); err == nil {
+		t.Fatal("a binary that names another version fails")
+	}
+	bad := filepath.Join(dir, "bad")
+	os.WriteFile(bad, []byte("#!/bin/sh\nexit 2\n"), 0755)
+	if err := probeNewBinary(bad, "9.9.9"); err == nil || !errors.Is(err, errArtifactRefused) {
+		t.Fatalf("a binary that dies fails as refused: %v", err)
+	}
+	garbage := filepath.Join(dir, "garbage")
+	os.WriteFile(garbage, []byte("\x7fELF-not-really"), 0755)
+	if err := probeNewBinary(garbage, "9.9.9"); err == nil {
+		t.Fatal("bytes that cannot run fail")
 	}
 }

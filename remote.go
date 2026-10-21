@@ -694,7 +694,7 @@ func (r *RemoteSource) runJobLocked(ctx context.Context, job *RemoteJob) {
 	if takeID := primitives.ConsumeIdentityTake(); takeID != 0 {
 		if r.settleIdentityTake(job.JobID, takeID, answer, postErr) {
 			clearJobMarker()
-			os.Exit(0)
+			cleanExit()
 		}
 	}
 
@@ -716,7 +716,7 @@ func (r *RemoteSource) runJobLocked(ctx context.Context, job *RemoteJob) {
 		// would clear it as stale anyway — but leaving one is leaving a lie
 		// about this node on its own disk.
 		clearJobMarker()
-		os.Exit(0)
+		cleanExit()
 	}
 }
 

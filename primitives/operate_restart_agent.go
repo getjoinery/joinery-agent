@@ -47,6 +47,9 @@ const (
 	cronKeepalivePath = "/etc/cron.d/joinery-agent"
 	supervisePath     = "/usr/local/bin/joinery-agent-supervise"
 	enabledMarkerPath = "/etc/joinery-agent/enabled"
+	// The link `systemctl enable` makes: without it systemd restarts the agent
+	// after a crash but never starts it after a reboot.
+	systemdBootLinkPath = "/etc/systemd/system/multi-user.target.wants/joinery-agent.service"
 )
 
 // supervision is the set of facts that decide whether this agent comes back.
@@ -62,6 +65,10 @@ type supervision struct {
 	// systemd started us as a service, which is the difference between "a unit
 	// file exists on this box" and "systemd is supervising THIS process".
 	InvocationID string
+
+	// BootLink is the unit's multi-user.target.wants link. Empty means not
+	// checked (a test that is about something else).
+	BootLink string
 }
 
 func liveSupervision() supervision {
@@ -71,7 +78,26 @@ func liveSupervision() supervision {
 		SupervisePath: supervisePath,
 		EnabledMarker: enabledMarkerPath,
 		InvocationID:  os.Getenv("INVOCATION_ID"),
+		BootLink:      systemdBootLinkPath,
 	}
+}
+
+// startsAtBoot reports whether something will start this agent after a reboot:
+// the keepalive's @reboot line, or systemd with the unit enabled. A unit that
+// restarts the agent after a crash but is not enabled leaves a node dark after
+// its next reboot, while every restart check before it said supervised.
+func (s supervision) startsAtBoot() bool {
+	if s.keepaliveWillRestart() {
+		return true
+	}
+	if !s.systemdWillRestart() {
+		return false
+	}
+	if s.BootLink == "" {
+		return true
+	}
+	_, err := os.Lstat(s.BootLink)
+	return err == nil
 }
 
 // restarters names everything that will independently start this agent again.

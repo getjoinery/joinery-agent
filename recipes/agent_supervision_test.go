@@ -25,6 +25,8 @@ func TestSupervisionVerdicts(t *testing.T) {
 		{"systemd", map[string]interface{}{"supervised": true, "restarted_by": []string{"systemd (Restart=always, back within seconds)"}}, nil, Pass, "systemd"},
 		{"both, as JSON would carry them", map[string]interface{}{"supervised": true, "restarted_by": []interface{}{"systemd", "the cron keepalive"}}, nil, Pass, "systemd and the cron keepalive"},
 		{"nothing", map[string]interface{}{"supervised": false, "restarted_by": []string{}}, nil, Fail, "nothing would restart"},
+		{"restarted, not enabled at boot", map[string]interface{}{"supervised": true, "restarted_by": []string{"systemd"}, "starts_at_boot": false}, nil, Fail, "after a reboot"},
+		{"restarted and enabled", map[string]interface{}{"supervised": true, "restarted_by": []string{"systemd"}, "starts_at_boot": true}, nil, Pass, "systemd"},
 		{"no answer", map[string]interface{}{}, nil, Unknown, "did not say"},
 		{"refused", nil, &primitives.RefusalError{Reason: "policy"}, Unknown, "refused"},
 		{"failed", nil, errors.New("boom"), Unknown, "failed"},

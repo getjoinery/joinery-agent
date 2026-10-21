@@ -117,7 +117,7 @@ const moveCheckInterval = 30 * time.Second
 // starts.
 var (
 	moveWatcherInterval = moveCheckInterval
-	moveWatcherExit     = func() { os.Exit(0) }
+	moveWatcherExit     = cleanExit
 )
 
 // MoveWatcher finishes a move_to_plane once the new management node approves

@@ -72,7 +72,7 @@ func isMountPoint(dir string) bool {
 // test can drive the watcher.
 var (
 	siteConfigWatchInterval = 15 * time.Second
-	siteConfigWatchExit     = func() { os.Exit(0) }
+	siteConfigWatchExit     = cleanExit
 )
 
 // watchSiteConfig waits for a waiting site's config to be readable, then

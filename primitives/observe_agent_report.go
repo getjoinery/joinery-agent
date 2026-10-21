@@ -56,6 +56,16 @@ func SetAgentSupervisionForTests(unitFile, cronFile, supervisePath, enabledMarke
 	return func() { agentSupervision = prev }
 }
 
+// SetAgentSupervisionBootLinkForTests is SetAgentSupervisionForTests with the
+// unit's boot link checked too.
+func SetAgentSupervisionBootLinkForTests(unitFile, cronFile, supervisePath, enabledMarker, invocationID, bootLink string) func() {
+	prev := agentSupervision
+	agentSupervision = func() supervision {
+		return supervision{UnitFile: unitFile, CronFile: cronFile, SupervisePath: supervisePath, EnabledMarker: enabledMarker, InvocationID: invocationID, BootLink: bootLink}
+	}
+	return func() { agentSupervision = prev }
+}
+
 func runAgentReport(_ context.Context, _ *ExecEnv, _ Params) (map[string]interface{}, error) {
 	s := agentSupervision()
 	restarters := s.restarters()
@@ -67,5 +77,6 @@ func runAgentReport(_ context.Context, _ *ExecEnv, _ Params) (map[string]interfa
 		"restarted_by":       restarters,
 		"systemd_restarts":   s.systemdWillRestart(),
 		"keepalive_restarts": s.keepaliveWillRestart(),
+		"starts_at_boot":     s.startsAtBoot(),
 	}, nil
 }

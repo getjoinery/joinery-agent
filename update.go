@@ -3,8 +3,10 @@ package main
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
+	_ "embed"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -98,6 +100,11 @@ type Updater struct {
 	// Nil-able for tests.
 	convergeService func(distDir string)
 
+	// probeBinary runs a verified new binary before it is swapped in and fails
+	// when it does not start far enough to say its version. Nil-able for tests,
+	// whose binaries are placeholder bytes.
+	probeBinary func(path, version string) error
+
 	mu                sync.Mutex
 	bundled           string
 	state             string
@@ -121,6 +128,7 @@ func NewUpdater(cfg *Config, runningVersion string) *Updater {
 		platform:        "linux-" + runtime.GOARCH,
 		running:         runningVersion,
 		convergeService: convergeSystemdUnit,
+		probeBinary:     probeNewBinary,
 		bakedLogKeys:    bakedReleaseLogKeys(),
 		keyDir:          agentStateDir(),
 		warned:          map[string]bool{},
@@ -281,10 +289,10 @@ func (u *Updater) CheckFailedBoot() bool {
 	return u.RestoreBackupBinary()
 }
 
-// ConfirmHealthy is called once the agent has fully initialised (config, DB,
-// schema). Reaching it after an update means the new binary works: the
-// previous binary is no longer needed, and a rejection marker for our own
-// version is stale.
+// ConfirmHealthy is called by StartTrial: at once for a version not on trial,
+// after trialUptime of running for one that is. Reaching it after an update
+// means the new binary works: the previous binary is no longer needed, and a
+// rejection marker for our own version is stale.
 func (u *Updater) ConfirmHealthy() {
 	if u.installPath == "" {
 		return
@@ -298,6 +306,97 @@ func (u *Updater) ConfirmHealthy() {
 	if data, err := os.ReadFile(u.rejectedPath()); err == nil && strings.TrimSpace(string(data)) == u.running {
 		os.Remove(u.rejectedPath())
 	}
+}
+
+// trialUptime is how long a version a self-update installed must keep running
+// before it is trusted and the previous binary deleted. Reaching the end of
+// initialisation is not enough: a binary that dies on its first poll, its first
+// job or a goroutine's first tick has initialised perfectly well, and confirming
+// it at once deleted the only thing that could have put it right. Uptime is a
+// fact about the binary that no outage fakes, as reaching initialisation was:
+// an agent whose management node or database is down keeps running.
+const trialUptime = 3 * time.Minute
+
+// pendingVersionAttempts reads the pending marker: the version on trial and
+// how many starts it has had. ok is false when there is no marker.
+func (u *Updater) pendingVersionAttempts() (version string, attempts int, ok bool) {
+	if u.installPath == "" {
+		return "", 0, false
+	}
+	data, err := os.ReadFile(u.pendingPath())
+	if err != nil {
+		return "", 0, false
+	}
+	parts := strings.SplitN(strings.TrimSpace(string(data)), "\n", 2)
+	if len(parts) > 1 {
+		attempts, _ = strconv.Atoi(strings.TrimSpace(parts[1]))
+	}
+	return strings.TrimSpace(parts[0]), attempts, true
+}
+
+// OnTrial says whether the running version was installed by a self-update and
+// has not yet kept running long enough to be trusted.
+func (u *Updater) OnTrial() bool {
+	version, _, ok := u.pendingVersionAttempts()
+	return ok && version == u.running
+}
+
+// StartTrial is called once the agent has initialised. A version on trial is
+// confirmed after trialUptime of running; anything else is confirmed at once,
+// which also clears debris an earlier version left.
+func (u *Updater) StartTrial() {
+	u.startTrialAfter(trialUptime)
+}
+
+func (u *Updater) startTrialAfter(d time.Duration) {
+	if !u.OnTrial() {
+		u.ConfirmHealthy()
+		return
+	}
+	log.Printf("self-update: v%s is on trial; it is trusted, and the previous binary deleted, after %s running", u.running, d)
+	go func() {
+		time.Sleep(d)
+		if u.OnTrial() {
+			u.ConfirmHealthy()
+		}
+	}()
+}
+
+// EndTrialCleanly is called on a deliberate exit: the operator's switch, a
+// signal, a restart a job asked for, a move or a leave. Stopping on purpose
+// during the trial says nothing against the binary, so the start count goes
+// back to zero and the next start is a fresh trial rather than a rollback. A
+// crash never reaches here, and that difference is the whole signal.
+func (u *Updater) EndTrialCleanly() {
+	version, attempts, ok := u.pendingVersionAttempts()
+	if !ok || version != u.running || attempts == 0 {
+		return
+	}
+	if err := os.WriteFile(u.pendingPath(), []byte(version+"\n0\n"), 0644); err != nil {
+		log.Printf("self-update: could not record a clean stop during the trial: %v", err)
+	}
+}
+
+// probeNewBinary runs a verified binary with --version before it replaces the
+// running one. A binary that cannot start at all (built for the wrong machine,
+// a crash before main) would otherwise be swapped in, and the watchdog that
+// puts the old one back lives in main, which such a binary never reaches.
+func probeNewBinary(path, version string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, path, "--version")
+	cmd.Env = []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin"}
+	out, err := cmd.Output()
+	if ctx.Err() != nil {
+		return fmt.Errorf("%w: v%s did not answer --version within 10s", errArtifactRefused, version)
+	}
+	if err != nil {
+		return fmt.Errorf("%w: v%s does not start on this machine: %v", errArtifactRefused, version, err)
+	}
+	if got := strings.TrimSpace(string(out)); got != "joinery-agent "+version {
+		return fmt.Errorf("%w: the binary says %q, the manifest says v%s", errArtifactRefused, got, version)
+	}
+	return nil
 }
 
 // RestoreBackupBinary is the boot fallback: called when the agent fails fatal
@@ -352,6 +451,14 @@ func (u *Updater) CheckAndApply() bool {
 
 	if m.Version == "" || m.Version == u.running {
 		u.setState(m.Version, updateStateCurrent)
+		return false
+	}
+
+	// Never over a version still on trial: the swap would make it the .bak, so
+	// a failure of the newer one would roll back onto a binary nobody has seen
+	// work. The next check after the trial installs it.
+	if u.OnTrial() {
+		u.warnOnce("trial-"+m.Version, "self-update: v%s is on offer; holding until v%s finishes its trial", m.Version, u.running)
 		return false
 	}
 
@@ -493,7 +600,7 @@ func (u *Updater) CheckAndApply() bool {
 		}
 	}
 
-	if err := u.install(binary); err != nil {
+	if err := u.install(binary, m.Version); err != nil {
 		u.refuse(releaseSum, updateStateVerifyFailed)
 		u.setState(m.Version, updateStateVerifyFailed)
 		log.Printf("=== Self-update === FAILED installing v%s: %v", m.Version, err)
@@ -583,7 +690,7 @@ func (u *Updater) loadAndVerify(entry distBinary, r io.Reader, keys []ed25519.Pu
 // current one as .bak, and renames the new one into place. Rename over the
 // live path is atomic and leaves the running process on its old inode — no
 // ETXTBSY, no torn binary.
-func (u *Updater) install(binary []byte) error {
+func (u *Updater) install(binary []byte, version string) error {
 	dir := filepath.Dir(u.installPath)
 	tmp, err := os.CreateTemp(dir, ".joinery-agent-new-*")
 	if err != nil {
@@ -604,6 +711,12 @@ func (u *Updater) install(binary []byte) error {
 		return fmt.Errorf("close temp binary: %w", err)
 	}
 
+	if u.probeBinary != nil {
+		if err := u.probeBinary(tmpPath, version); err != nil {
+			return err
+		}
+	}
+
 	current, err := os.ReadFile(u.installPath)
 	if err != nil {
 		return fmt.Errorf("read current binary for backup: %w", err)
@@ -619,26 +732,35 @@ func (u *Updater) install(binary []byte) error {
 	return nil
 }
 
+// embeddedUnit is the systemd unit this build was released with, the same file
+// a release ships in agent_dist. A machine with no site fetches its binary and
+// has no shipped directory to read a unit from, so the binary carries it.
+//
+//go:embed install/joinery-agent.service
+var embeddedUnit []byte
+
 // convergeSystemdUnit installs the shipped unit file when it differs from the
-// live one, so Restart=always (which self-update's clean exit depends on) is
-// in place before the restart. No-op on cron-supervised hosts.
+// live one, so Restart=always (which self-update's clean exit depends on) and
+// the start guard are in place before the restart. The shipped directory's copy
+// where there is one, the binary's own where there is not. No-op on
+// cron-supervised hosts.
 func convergeSystemdUnit(distDir string) {
 	const livePath = "/etc/systemd/system/joinery-agent.service"
-	if distDir == "" {
-		// A machine that fetches its binary has no shipped directory and so no
-		// unit to converge from. Its unit was written by the installer at first
-		// install and is not re-derived here — inventing a path to read one
-		// from is exactly what the siteless posture refuses to do.
-		return
-	}
 	if _, err := os.Stat("/run/systemd/system"); err != nil {
 		return // cron supervision — the keepalive restarts us regardless of exit code
 	}
 	if os.Geteuid() != 0 {
 		return
 	}
-	shipped, err := os.ReadFile(filepath.Join(distDir, "joinery-agent.service"))
-	if err != nil {
+	shipped := embeddedUnit
+	if distDir != "" {
+		b, err := os.ReadFile(filepath.Join(distDir, "joinery-agent.service"))
+		if err != nil {
+			return
+		}
+		shipped = b
+	}
+	if len(bytes.TrimSpace(shipped)) == 0 {
 		return
 	}
 	live, _ := os.ReadFile(livePath)
@@ -653,5 +775,9 @@ func convergeSystemdUnit(distDir string) {
 		log.Printf("self-update: systemctl daemon-reload failed: %v", err)
 		return
 	}
-	log.Printf("self-update: converged systemd unit from shipped copy")
+	if len(live) == 0 {
+		log.Printf("systemd unit was missing; restored from this build's own copy")
+	} else {
+		log.Printf("self-update: converged systemd unit from shipped copy")
+	}
 }

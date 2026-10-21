@@ -272,3 +272,47 @@ func TestRestartAgentIsOperateAndRunsNoScript(t *testing.T) {
 		t.Error("restart_agent starts no process — it stops one")
 	}
 }
+
+// Restart audit H7: a unit that restarts after a crash but is not enabled
+// starts nothing after a reboot. agent_report says so; restart_agent still
+// accepts it, since an exit now is followed by systemd's restart now.
+func TestADisabledUnitDoesNotStartAtBoot(t *testing.T) {
+	s := withSystemd(t, supervisionIn(t), "always")
+	s.BootLink = filepath.Join(filepath.Dir(s.UnitFile), "multi-user.target.wants-joinery-agent.service")
+	if s.startsAtBoot() {
+		t.Fatal("no wants link: nothing starts the agent after a reboot")
+	}
+	if len(s.restarters()) == 0 {
+		t.Fatal("it is still restarted after a crash; restart_agent must not refuse over the boot link")
+	}
+	if err := os.Symlink(s.UnitFile, s.BootLink); err != nil {
+		t.Fatal(err)
+	}
+	if !s.startsAtBoot() {
+		t.Fatal("an enabled unit starts at boot")
+	}
+}
+
+func TestTheKeepaliveStartsAtBootByItsRebootLine(t *testing.T) {
+	s := supervisionIn(t)
+	s.BootLink = filepath.Join(filepath.Dir(s.UnitFile), "absent")
+	writeSupervisionFile(t, s.SupervisePath, "#!/bin/sh\n", 0o755)
+	writeSupervisionFile(t, s.CronFile, "@reboot root x\n", 0o644)
+	if !s.startsAtBoot() {
+		t.Fatal("the keepalive's @reboot line starts the agent; no systemd link is needed")
+	}
+}
+
+func TestAgentReportSaysWhetherItStartsAtBoot(t *testing.T) {
+	s := withSystemd(t, supervisionIn(t), "always")
+	link := filepath.Join(filepath.Dir(s.UnitFile), "wants-link")
+	restore := SetAgentSupervisionBootLinkForTests(s.UnitFile, s.CronFile, s.SupervisePath, s.EnabledMarker, s.InvocationID, link)
+	defer restore()
+	out, err := runAgentReport(context.Background(), nil, Params{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out["supervised"] != true || out["starts_at_boot"] != false {
+		t.Fatalf("a disabled unit is supervised but does not start at boot: %v", out)
+	}
+}

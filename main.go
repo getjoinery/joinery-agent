@@ -534,7 +534,8 @@ func main() {
 	// Fully initialised. Everything past this point degrades rather than exits,
 	// so a binary that got here is a binary that runs — which is exactly what
 	// the update watchdog needs to be told.
-	updater.ConfirmHealthy()
+	activeUpdater = updater
+	updater.StartTrial()
 
 	// One job at a time on this machine. The management node's own job source
 	// is now the same one every other node uses — its dispatch arrives over the
@@ -645,6 +646,13 @@ func main() {
 			if attemptUpdate(&jobLock, updater.CheckAndApply) {
 				os.Exit(0)
 			}
+			// A machine with no site has no installer that converges this
+			// agent's unit (restart audit H6): the agent puts its own back,
+			// from the copy built into it, within the minute it goes missing
+			// or is edited. A site's installer converges it from the release.
+			if cfg.Siteless {
+				convergeSystemdUnit("")
+			}
 		}
 	}()
 
@@ -707,5 +715,20 @@ func main() {
 	// into mjb_management_jobs by hand now executes nothing, anywhere.
 	sig := <-sigCh
 	log.Printf("received signal %v — shutting down", sig)
+	cleanExit()
+}
+
+// activeUpdater is the running process's updater, for cleanExit. Nil in a CLI
+// invocation and in tests.
+var activeUpdater *Updater
+
+// cleanExit ends the process on purpose: an operator's switch or signal, a
+// restart a job asked for, a move, a leave. A stop like that during a new
+// version's trial says nothing against it, so the trial starts afresh on the
+// next start instead of being read as a crash and rolled back.
+func cleanExit() {
+	if activeUpdater != nil {
+		activeUpdater.EndTrialCleanly()
+	}
 	os.Exit(0)
 }

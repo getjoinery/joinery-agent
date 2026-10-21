@@ -8,6 +8,15 @@ After=network.target
 
 [Service]
 Type=simple
+# The start guard. A self-update that installed a binary unable to start at
+# all (built for another machine, a crash before main) would loop here for
+# ever: the watchdog that puts the previous binary back lives in main, which
+# such a binary never reaches. So before each start, while a swap is still on
+# trial (.pending) and the previous binary is kept (.bak), the new one must
+# answer --version; when it cannot, the previous one goes back and the new
+# version is marked rejected, as the agent's own watchdog does. The leading -
+# means a guard that fails can never keep the agent from starting.
+ExecStartPre=-/bin/sh -c 'b=/usr/local/bin/joinery-agent; if [ -f "$$b.pending" ] && [ -f "$$b.bak" ] && ! timeout 10 "$$b" --version >/dev/null 2>&1; then head -n 1 "$$b.pending" > "$$b.rejected"; mv -f "$$b.bak" "$$b"; rm -f "$$b.pending"; echo "joinery-agent start guard: the new binary does not start; previous binary restored"; fi'
 ExecStart=/usr/local/bin/joinery-agent
 EnvironmentFile=-/etc/joinery-agent/joinery-agent.env
 Restart=always

@@ -74,6 +74,11 @@ func supervisionVerdict(result map[string]interface{}, err error) Verdict {
 	if !supervised {
 		return Verdict{Fail, "nothing would restart this agent if it stopped: systemd is not supervising this process with a restarting unit, and the cron keepalive is not installed or is switched off"}
 	}
+	// Absent from an agent before 1.87.0, which did not check: no verdict on
+	// what it never said.
+	if atBoot, ok := result["starts_at_boot"].(bool); ok && !atBoot {
+		return Verdict{Fail, "systemd would restart this agent after a crash, but nothing starts it after a reboot: the unit is not enabled"}
+	}
 	by := ""
 	switch v := result["restarted_by"].(type) {
 	case []string:

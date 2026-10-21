@@ -146,7 +146,7 @@ func (w *SwitchWatcher) Run(ctx context.Context) {
 		}
 
 		log.Printf("switch: stopped by the operator's switch")
-		os.Exit(0)
+		cleanExit()
 	}
 }
 
