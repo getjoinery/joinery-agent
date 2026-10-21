@@ -140,6 +140,11 @@ var pinnedVocabulary = map[string]Class{
 	// reports about itself, though it starts, stops and restarts nothing.
 	"reset_failed_unit": ClassOperate,
 
+	// The nightly security updates, now: the machine's own unattended-upgrades
+	// policy, no parameters, never a reboot. Operate: it changes what is
+	// installed.
+	"install_security_updates": ClassOperate,
+
 	// The two repairs of service_health (specs/agent_recipes_and_vocabulary.md,
 	// Settled 2026-09-23): a unit from host_report's expected list, never the
 	// agent; a container whose name is its SITENAME.
