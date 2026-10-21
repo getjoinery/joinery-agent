@@ -96,6 +96,11 @@ var pinnedVocabulary = map[string]Class{
 	// no log, no message and no content.
 	"disk_usage": ClassObserve,
 
+	// What every site state directory holds (site_copy.md WP5): names, sizes
+	// and times, and the values of the plain records only, never the look
+	// secret or the run spec. Observe, NO PARAMETERS.
+	"site_state_report": ClassObserve,
+
 	// Host configuration files from a compiled list, behind the owner's
 	// switch, redacted by the config shape (specs/agent_recipes_and_vocabulary.md,
 	// Host files).
