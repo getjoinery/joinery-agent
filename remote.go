@@ -400,8 +400,11 @@ func (r *RemoteSource) noteFailure(err error) {
 // It answers for the tree this machine runs scripts from: a site tree where
 // there is one, the signed support bundle on a machine with none. Empty when
 // there is nothing to report on — a siteless machine whose bundle has not
-// landed yet, or a verifier that is not manifest-backed. Silence, not a claim
-// of health.
+// landed yet, or a verifier that is not manifest-backed — and while an upgrade
+// runs on the site (primitives.UpgradeRunning): upgrade.php replaces itself
+// minutes before the manifest changes, so a file differs on the way through. An
+// upgrade this agent runs is never seen half-way (pollOnce skips while a job
+// holds the lock); one started by hand is. Silence, not a claim of health.
 func (r *RemoteSource) scriptTrust() string {
 	if r.env == nil {
 		return ""
@@ -417,6 +420,9 @@ func (r *RemoteSource) scriptTrust() string {
 		return ""
 	}
 	if r.env.SiteRoot == "" && installedBundleVersion() == "" {
+		return ""
+	}
+	if primitives.UpgradeRunning(r.env) {
 		return ""
 	}
 	artifacts, ok := verifier.(*primitives.ArtifactManifests)
@@ -439,9 +445,10 @@ func (r *RemoteSource) scriptTrust() string {
 // scriptTrustFiles names the self-update files that differ from the signed
 // manifest, and whether it looked at all. Checked with an empty list is the node
 // saying every one matches, which is how the plane learns to clear a file state
-// that a repair has fixed; not checked sends nothing, as an older agent does.
+// that a repair has fixed; not checked sends nothing, as an older agent does, and
+// so does a site an upgrade is running on (see scriptTrust).
 func (r *RemoteSource) scriptTrustFiles() ([]string, bool) {
-	if r.env == nil || r.env.SiteRoot == "" {
+	if r.env == nil || r.env.SiteRoot == "" || primitives.UpgradeRunning(r.env) {
 		return nil, false
 	}
 	return primitives.DifferingSelfUpdateFiles(r.env)

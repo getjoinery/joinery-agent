@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 
 	"joinery-agent/primitives"
@@ -71,6 +72,43 @@ func TestThePollNamesTheFilesThatDifferFromTheRelease(t *testing.T) {
 	names, checked := src.scriptTrustFiles()
 	if !checked || len(names) != 1 || names[0] != "public_html/utils/upgrade.php" {
 		t.Fatalf("the file is named, got %v checked=%v", names, checked)
+	}
+}
+
+// upgrade.php replaces itself minutes before the manifest changes. While an
+// upgrade holds its lock the poll says nothing of the files, and once the lock
+// is let go (a run that stopped half-way) the difference is reported.
+func TestThePollSaysNothingOfTheFilesWhileAnUpgradeRuns(t *testing.T) {
+	root, pub, _ := relSiteForPoll(t, "<?php // 0.8.519 ")
+	env := &primitives.ExecEnv{SiteRoot: root, WebRoot: filepath.Join(root, "public_html"),
+		Manifest: primitives.NewArtifactManifests(root, pub)}
+	src := sitelessSource(t, env)
+	if err := os.WriteFile(filepath.Join(root, "public_html", "utils", "upgrade.php"), []byte("<?php // 0.8.520"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	lock := primitives.UpgradeLockPath(root)
+	if err := os.MkdirAll(filepath.Dir(lock), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(lock, os.O_RDWR|os.O_CREATE, 0o666)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Fatal(err)
+	}
+	if got := src.scriptTrust(); got != "" {
+		t.Fatalf("mid-upgrade the poll gives no answer, got %q", got)
+	}
+	if names, checked := src.scriptTrustFiles(); checked {
+		t.Fatalf("mid-upgrade the poll names no file, got %v", names)
+	}
+	f.Close()
+	if got := src.scriptTrust(); got != "untrusted_file" {
+		t.Fatalf("an upgrade that stopped with the file replaced is reported, got %q", got)
+	}
+	if names, checked := src.scriptTrustFiles(); !checked || len(names) != 1 {
+		t.Fatalf("and the file is named, got %v checked=%v", names, checked)
 	}
 }
 

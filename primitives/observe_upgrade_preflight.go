@@ -109,8 +109,13 @@ func joinNames(names []string) string {
 }
 
 // lockFree reports whether nothing holds the upgrade lock: a lock file that does
-// not exist is free, and one that can be locked without waiting is free.
+// not exist is free, and so is one the kernel's lock table lists no lock on
+// (upgrade_lock.go: asked without taking it, so an upgrade starting that moment
+// is never turned away). Only where the table cannot be read is the lock tried.
 func lockFree(path string) bool {
+	if held, known := lockHeld(path); known {
+		return !held
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return os.IsNotExist(err)
