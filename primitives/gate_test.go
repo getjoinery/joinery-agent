@@ -187,7 +187,8 @@ var pinnedVocabulary = map[string]Class{
 	// The host's half of a site container's quiet state, held from outside
 	// (specs/site_container_engine.md D9). Operate: off puts the network back,
 	// and is refused while the site says it is quiet.
-	"site_quiet_host": ClassOperate,
+	"site_quiet_host":        ClassOperate,
+	"site_certificate_stage": ClassOperate,
 	// A site's old server forwarding while its DNS moves: believe X-Forwarded-For from it, for at most a week.
 	"trust_forwarder": ClassOperate,
 	// A copy's walls proven by acting as its site (site_copy_final_test.md, the rig). Operate: it acts as the site's web user.
