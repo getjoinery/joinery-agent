@@ -40,6 +40,7 @@ var pinnedMachineWords = []string{
 	"reboot_machine",
 	"reclaim_managed_file",
 	"recreate_site",
+	"refresh_site_containers",
 	"remove_site_certificate",
 	"reset_failed_unit",
 	"restart_agent",

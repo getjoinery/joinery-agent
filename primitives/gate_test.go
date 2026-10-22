@@ -165,6 +165,10 @@ var pinnedVocabulary = map[string]Class{
 	// the site's volumes, run spec and code stay.
 	"recreate_site": ClassOperate,
 
+	// The host's nightly replacement of its site containers, started now.
+	// Operate: each due site's container is replaced, its volumes kept.
+	"refresh_site_containers": ClassOperate,
+
 	// A site's suspended page on its host's proxy, shown or taken down.
 	// Operate: the site and its container are untouched.
 	"suspended_page": ClassOperate,

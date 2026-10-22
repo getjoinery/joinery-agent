@@ -37,7 +37,7 @@ func init() {
 		Name:        "check_status",
 		Class:       ClassObserve,
 		Machine:     true,
-		Description: "The site's web root and domain, disk, memory, load, uptime, PostgreSQL liveness, Joinery version, database list, whether Server Manager is active, the site's plugins with their versions, the site's recorded plugin checks, the release keys the agent and the site trust.",
+		Description: "The site's web root and domain, disk, memory, load, uptime, PostgreSQL liveness, Joinery version, database list, whether Server Manager is active, the site's plugins with their versions, the site's recorded plugin checks, the release keys the agent and the site trust, the PHP packages installed and whether each php-fpm runs the binary installed.",
 		Params:      nil, // takes none, so any param at all is refused
 		Run:         runCheckStatus,
 	})
@@ -69,6 +69,7 @@ func runCheckStatus(ctx context.Context, env *ExecEnv, _ Params) (map[string]int
 	collectLoad(result)
 	collectUptime(result)
 	collectCertificates(letsEncryptLiveDir, time.Now(), result)
+	collectPHP(result)
 	if env.DB != nil {
 		collectDatabase(ctx, env, result)
 	}
