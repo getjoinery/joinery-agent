@@ -24,7 +24,7 @@ import (
 // must stay ABOVE 1.1.0 forever - install_agent.sh's downgrade guard sorts
 // with sort -V and refuses to replace a "newer" binary, so anything below
 // 1.1.0 strands those agents permanently.
-var version = "1.88.0"
+var version = "1.89.0"
 
 // How often the idle loop looks at the shipped agent_dist manifest. Update
 // checks never run while a job is executing.
@@ -505,6 +505,10 @@ func main() {
 		os.Exit(1)
 	}
 
+	// The liveness watch, before anything that can wait: an agent still waiting
+	// for its config is alive, and says so (liveness.go).
+	go agentLiveness.Run(context.Background())
+
 	cfg := loadConfigWaiting()
 	updater := NewUpdater(cfg, version)
 	setSelfUpdateReport(updater.UpdateReport)
@@ -632,10 +636,12 @@ func main() {
 	if bundle != nil {
 		setBundleReport(bundle.Report)
 	}
+	agentLiveness.watch("self-update", updateQuietLimit)
 	go func() {
 		ticker := time.NewTicker(updateCheckInterval)
 		defer ticker.Stop()
 		for range ticker.C {
+			agentLiveness.beat("self-update")
 			if attemptUpdate(&jobLock, bundle.CheckAndApply) && cfg.Siteless {
 				// A new signed tree arrived on a machine with no site:
 				// converge to it now, the machine's twin of the site's path

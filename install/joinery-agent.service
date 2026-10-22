@@ -18,6 +18,12 @@ Type=simple
 # means a guard that fails can never keep the agent from starting.
 ExecStartPre=-/bin/sh -c 'b=/usr/local/bin/joinery-agent; if [ -f "$$b.pending" ] && [ -f "$$b.bak" ] && ! timeout 10 "$$b" --version >/dev/null 2>&1; then head -n 1 "$$b.pending" > "$$b.rejected"; mv -f "$$b.bak" "$$b"; rm -f "$$b.pending"; echo "joinery-agent start guard: the new binary does not start; previous binary restored"; fi'
 ExecStart=/usr/local/bin/joinery-agent
+# The liveness watch. The agent says it is alive every half minute while it is,
+# and states the watchdog's timeout itself (WATCHDOG_USEC), so an agent too old
+# to send anything is never killed for silence. This line only lets systemd
+# hear it. When a hung agent stops saying so (having logged why, with every
+# goroutine's stack), systemd aborts it and Restart=always starts it again.
+NotifyAccess=main
 EnvironmentFile=-/etc/joinery-agent/joinery-agent.env
 Restart=always
 RestartSec=5

@@ -320,6 +320,11 @@ func Execute(ctx context.Context, env *ExecEnv, policy *Policy, req Request) (ma
 	// line.
 	ctx, cancel := context.WithTimeout(ctx, p.Timeout)
 	defer cancel()
+	// Counted as running until it returns, against this deadline, so the
+	// liveness watch can tell a long word from a hung one (inflight.go).
+	if deadline, ok := ctx.Deadline(); ok {
+		defer trackRun(p.Name, deadline)()
+	}
 	// The job's id travels in the context, for a word that stages something
 	// on this site's own page bound to its job (copy_take_key).
 	ctx = WithJobID(ctx, req.JobID)

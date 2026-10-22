@@ -303,6 +303,9 @@ func (r *RemoteSource) Run(ctx context.Context) {
 		r.identity.PlaneURL, r.identity.NodeID, r.identity.NodeSlug, r.policy.Describe())
 	log.Printf("vocabulary compiled into this agent: %s", strings.Join(primitives.Names(), ", "))
 
+	// A poll that stops coming round is the hang the liveness watch exists for
+	// (liveness.go): to the management node it is an agent gone silent.
+	agentLiveness.watch("poll", pollQuietLimit)
 	for {
 		wait := r.pollInterval
 		if r.backoff > 0 {
@@ -341,6 +344,11 @@ func (r *RemoteSource) pollOnce(ctx context.Context) {
 		return
 	}
 	defer r.jobLock.Unlock()
+	// Counted once the plane has been asked, not merely when the tick fired: a
+	// lock held for ever by something else is a poll that never reaches the
+	// plane, and the plane sees exactly that silence. A word running within its
+	// deadline is the lock held legitimately, and the watch allows for it.
+	defer agentLiveness.beat("poll")
 
 	// A result still owed is delivered before anything is claimed, and while
 	// one cannot be, nothing is: the claim below says idle, and the management
