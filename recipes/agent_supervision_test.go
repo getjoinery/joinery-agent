@@ -27,6 +27,11 @@ func TestSupervisionVerdicts(t *testing.T) {
 		{"nothing", map[string]interface{}{"supervised": false, "restarted_by": []string{}}, nil, Fail, "nothing would restart"},
 		{"restarted, not enabled at boot", map[string]interface{}{"supervised": true, "restarted_by": []string{"systemd"}, "starts_at_boot": false}, nil, Fail, "after a reboot"},
 		{"restarted and enabled", map[string]interface{}{"supervised": true, "restarted_by": []string{"systemd"}, "starts_at_boot": true}, nil, Pass, "systemd"},
+		{"heartbeat fresh, in process", map[string]interface{}{"supervised": true, "restarted_by": []string{"systemd"}, "alive_age_seconds": int64(12)}, nil, Pass, "systemd"},
+		{"heartbeat fresh, as JSON", map[string]interface{}{"supervised": true, "restarted_by": []string{"systemd"}, "alive_age_seconds": float64(170)}, nil, Pass, "systemd"},
+		{"heartbeat stale", map[string]interface{}{"supervised": true, "restarted_by": []string{"the cron keepalive"}, "alive_age_seconds": float64(600)}, nil, Fail, "last written 600s ago"},
+		{"heartbeat never written", map[string]interface{}{"supervised": true, "restarted_by": []string{"the cron keepalive"}, "alive_age_seconds": int64(-1)}, nil, Fail, "never written its heartbeat"},
+		{"unsupervised wins over a heartbeat", map[string]interface{}{"supervised": false, "restarted_by": []string{}, "alive_age_seconds": int64(-1)}, nil, Fail, "nothing would restart"},
 		{"no answer", map[string]interface{}{}, nil, Unknown, "did not say"},
 		{"refused", nil, &primitives.RefusalError{Reason: "policy"}, Unknown, "refused"},
 		{"failed", nil, errors.New("boom"), Unknown, "failed"},
@@ -74,6 +79,12 @@ func TestTheAgentSupervisionRecipeRepairsThroughItsTwoWords(t *testing.T) {
 	supervise := filepath.Join(sup, "joinery-agent-supervise")
 	cron := filepath.Join(sup, "cron.d-joinery-agent")
 	restore := primitives.SetAgentSupervisionForTests(filepath.Join(sup, "unit"), cron, supervise, filepath.Join(sup, "enabled"), "")
+	// A running agent's heartbeat, written now, so the verdict turns on supervision alone.
+	alive := filepath.Join(sup, "alive")
+	if err := os.WriteFile(alive, []byte("1\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	defer primitives.SetAliveFileForTests(alive)()
 	t.Cleanup(restore)
 
 	// The runner "installs" the keepalive when asked for the agent installer.

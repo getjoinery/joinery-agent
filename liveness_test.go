@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"joinery-agent/primitives"
 )
 
 // The liveness watch says "alive" only while the agent is (agent restart audit
@@ -147,7 +149,9 @@ func TestSdNotifyWritesToTheSocket(t *testing.T) {
 		t.Skipf("no unix datagram sockets here: %v", err)
 	}
 	defer conn.Close()
-	t.Setenv("NOTIFY_SOCKET", path)
+	old := notifySocket
+	defer func() { notifySocket = old }()
+	notifySocket = path
 	if err := sdNotify("WATCHDOG=1"); err != nil {
 		t.Fatalf("sdNotify: %v", err)
 	}
@@ -158,20 +162,20 @@ func TestSdNotifyWritesToTheSocket(t *testing.T) {
 		t.Fatalf("the socket got %q (%v)", buf[:n], err)
 	}
 
-	t.Setenv("NOTIFY_SOCKET", "")
+	notifySocket = ""
 	if err := sdNotify("WATCHDOG=1"); err != nil {
 		t.Errorf("no socket is no supervisor, not an error: %v", err)
 	}
 }
 
 func TestWriteAliveFile(t *testing.T) {
-	old := AliveFile
-	AliveFile = filepath.Join(t.TempDir(), "run", "alive")
-	defer func() { AliveFile = old }()
+	old := primitives.AliveFile
+	primitives.AliveFile = filepath.Join(t.TempDir(), "run", "alive")
+	defer func() { primitives.AliveFile = old }()
 	if err := writeAliveFile(time.Unix(1792600000, 0)); err != nil {
 		t.Fatal(err)
 	}
-	b, err := os.ReadFile(AliveFile)
+	b, err := os.ReadFile(primitives.AliveFile)
 	if err != nil || strings.TrimSpace(string(b)) != "1792600000" {
 		t.Fatalf("the file holds the unix time: %q %v", b, err)
 	}
@@ -185,5 +189,17 @@ func TestUnitAllowsNotifications(t *testing.T) {
 	}
 	if strings.Contains(string(embeddedUnit), "\nWatchdogSec=") {
 		t.Fatal("the agent states its own watchdog timeout; a WatchdogSec in the unit would kill an older agent that sends nothing")
+	}
+}
+
+func TestNotifySocketIsTakenFromTheEnvironment(t *testing.T) {
+	// A child of the agent must not inherit the notification socket: it would
+	// report there itself, and systemd refuses and logs every such message.
+	t.Setenv("NOTIFY_SOCKET", "/run/systemd/notify")
+	if got := takeNotifySocket(); got != "/run/systemd/notify" {
+		t.Fatalf("the address is kept for the agent's own messages, got %q", got)
+	}
+	if v, ok := os.LookupEnv("NOTIFY_SOCKET"); ok {
+		t.Fatalf("and removed from the environment children inherit, still %q", v)
 	}
 }

@@ -35,7 +35,7 @@ import (
 //     agent that sends nothing. The unit only allows the messages
 //     (NotifyAccess=main). When they stop, systemd aborts it and Restart=always
 //     starts it again.
-//   - everywhere: the time, written to AliveFile. The container keepalive
+//   - everywhere: the time, written to primitives.AliveFile. The container keepalive
 //     (install_agent.sh's joinery-agent-supervise) restarts an agent whose file
 //     has gone stale.
 //
@@ -65,11 +65,6 @@ const (
 	pollQuietLimit   = 20 * time.Minute
 	updateQuietLimit = 20 * time.Minute
 )
-
-// AliveFile is where the agent writes the time while it is alive. Pinned in
-// install_agent.sh's keepalive. Under /run, so a reboot clears it and a missing
-// file never reads as a hang.
-var AliveFile = "/run/joinery-agent/alive"
 
 type loopBeat struct {
 	last  time.Time
@@ -156,7 +151,7 @@ func (l *liveness) tick() {
 		if err := l.alive(now); err != nil {
 			// Not a reason to stop: systemd still hears from us. Said every
 			// tick would be noise; once per process is enough.
-			aliveWriteFailedOnce.Do(func() { log.Printf("liveness: could not write %s: %v", AliveFile, err) })
+			aliveWriteFailedOnce.Do(func() { log.Printf("liveness: could not write %s: %v", primitives.AliveFile, err) })
 		}
 		return
 	}
@@ -190,8 +185,22 @@ func (l *liveness) Run(ctx context.Context) {
 
 // sdNotify sends one sd_notify(3) message. No socket, no message: the agent
 // is not under systemd, or its unit does not allow notifications.
-func sdNotify(state string) error {
+// notifySocket is systemd's notification address, taken from the environment
+// once, before anything runs, and then removed from it (sd_notify(3)'s
+// unset_environment). Left in the environment, every child the agent starts
+// inherits it, and a systemctl among them reports its own exit status there,
+// which systemd refuses and logs (NotifyAccess=main), about twice a minute on
+// every machine (copy-final, B41).
+var notifySocket = takeNotifySocket()
+
+func takeNotifySocket() string {
 	socket := os.Getenv("NOTIFY_SOCKET")
+	os.Unsetenv("NOTIFY_SOCKET")
+	return socket
+}
+
+func sdNotify(state string) error {
+	socket := notifySocket
 	if socket == "" {
 		return nil
 	}
@@ -208,8 +217,8 @@ func sdNotify(state string) error {
 }
 
 func writeAliveFile(now time.Time) error {
-	if err := os.MkdirAll(filepath.Dir(AliveFile), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(primitives.AliveFile), 0755); err != nil {
 		return err
 	}
-	return os.WriteFile(AliveFile, []byte(strconv.FormatInt(now.Unix(), 10)+"\n"), 0644)
+	return os.WriteFile(primitives.AliveFile, []byte(strconv.FormatInt(now.Unix(), 10)+"\n"), 0644)
 }

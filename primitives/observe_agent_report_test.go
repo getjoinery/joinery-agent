@@ -2,7 +2,10 @@ package primitives
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 )
 
 // agent_report answers the same question restart_agent asks before it exits,
@@ -66,5 +69,32 @@ func TestAgentReportSaysWhatRestartAgentWouldFind(t *testing.T) {
 		if (rerr == nil) != row.supervised {
 			t.Errorf("%s: restart_agent and agent_report disagree (restart err %v, supervised %v)", row.label, rerr, row.supervised)
 		}
+	}
+}
+
+func TestAgentReportSaysHowOldTheHeartbeatIs(t *testing.T) {
+	old := AliveFile
+	AliveFile = filepath.Join(t.TempDir(), "alive")
+	defer func() { AliveFile = old }()
+	now := time.Now()
+
+	if got := aliveAge(now); got != -1 {
+		t.Fatalf("no heartbeat file reads as -1, got %d", got)
+	}
+	if err := os.WriteFile(AliveFile, []byte("1\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(AliveFile, now.Add(-95*time.Second), now.Add(-95*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if got := aliveAge(now); got < 94 || got > 96 {
+		t.Fatalf("a file written 95s ago reads as its age, got %d", got)
+	}
+	out, err := runAgentReport(context.Background(), nil, Params{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if age, ok := out["alive_age_seconds"].(int64); !ok || age < 94 {
+		t.Fatalf("agent_report carries the age: %#v", out["alive_age_seconds"])
 	}
 }

@@ -2,6 +2,7 @@ package recipes
 
 import (
 	"context"
+	"fmt"
 
 	"joinery-agent/primitives"
 )
@@ -59,6 +60,24 @@ func init() {
 	})
 }
 
+// aliveStaleSeconds is when a heartbeat counts as stale: the three minutes
+// systemd's watchdog and the container keepalive both wait.
+const aliveStaleSeconds = 180
+
+// numberOf reads a number as the word returns it in process (an integer) or
+// as JSON carries it (a float).
+func numberOf(v interface{}) (int64, bool) {
+	switch n := v.(type) {
+	case int64:
+		return n, true
+	case int:
+		return int64(n), true
+	case float64:
+		return int64(n), true
+	}
+	return 0, false
+}
+
 // supervisionVerdict reads an agent_report result into a verdict.
 func supervisionVerdict(result map[string]interface{}, err error) Verdict {
 	if err != nil {
@@ -78,6 +97,17 @@ func supervisionVerdict(result map[string]interface{}, err error) Verdict {
 	// what it never said.
 	if atBoot, ok := result["starts_at_boot"].(bool); ok && !atBoot {
 		return Verdict{Fail, "systemd would restart this agent after a crash, but nothing starts it after a reboot: the unit is not enabled"}
+	}
+	// Absent from an agent before 1.90.0. The agent answering is running, so a
+	// heartbeat stale or missing means a hang would go unnoticed: systemd and
+	// the keepalive restart a hung agent only by its heartbeat stopping.
+	if age, ok := numberOf(result["alive_age_seconds"]); ok {
+		if age < 0 {
+			return Verdict{Fail, "the agent has never written its heartbeat (/run/joinery-agent/alive), so a hung agent would not be restarted; a person has to look, since reinstalling the supervisor cannot fix a heartbeat write"}
+		}
+		if age > aliveStaleSeconds {
+			return Verdict{Fail, fmt.Sprintf("the agent's heartbeat (/run/joinery-agent/alive) was last written %ds ago: it judges itself hung, or cannot write the file; a person has to look, since reinstalling the supervisor cannot fix a heartbeat write", age)}
+		}
 	}
 	by := ""
 	switch v := result["restarted_by"].(type) {
