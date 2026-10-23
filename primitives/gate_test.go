@@ -80,6 +80,7 @@ var pinnedVocabulary = map[string]Class{
 	// wire — and the column lists leave members' addresses, webhook payloads
 	// and submitted forms unselected rather than merely masked.
 	"site_log":       ClassObserve,
+	"site_log_count": ClassObserve,
 	"log_table_tail": ClassObserve,
 
 	// Why a unit is in the state it is in, from a compiled list of twelve
@@ -374,6 +375,7 @@ var pinnedVocabulary = map[string]Class{
 // declares it by accident asks for permission it does not need.
 var pinnedLogAccessWords = map[string]bool{
 	"site_log":       true,
+	"site_log_count": true,
 	"log_table_tail": true,
 	"unit_journal":   true,
 	"file_head":      true,
