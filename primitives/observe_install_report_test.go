@@ -115,6 +115,21 @@ func TestInstallReportLaterMarkersWinAndWrittenDnsIsWritten(t *testing.T) {
 	}
 }
 
+// An install run again on a box whose certificate is valid and not yet due
+// keeps it; the report says kept, not issued and not unknown.
+func TestInstallReportSaysAKeptCertificateWasKept(t *testing.T) {
+	dir := t.TempDir()
+	log := writeInstallLog(t, dir, "stackscript.log",
+		"=== Joinery first-boot install: x ===\n"+
+			"Certificate not yet due for renewal; no action taken.\n"+
+			"[OK] Kept the LE certificate for example.org: valid here and not yet due for renewal (HTTP-01)\n"+
+			"=== Joinery is installed ===\n")
+	r := installReportFrom([]string{log}, dir, time.Now())
+	if r["certificate"] != "kept" || !strings.HasPrefix(r["certificate_detail"].(string), "example.org: valid here") {
+		t.Errorf("certificate = %v / %v, want kept", r["certificate"], r["certificate_detail"])
+	}
+}
+
 // A log written by an installer that predates the failed marker still says
 // how DNS went, in the wording of the day. The reader must not call that
 // "not attempted".

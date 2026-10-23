@@ -71,6 +71,10 @@ var lineageFiles = []string{"cert.pem", "chain.pem", "fullchain.pem", "privkey.p
 // and the result.
 type copyHostSummary struct {
 	Lineages []string
+	// Account is whether an ACME account goes with them. A container site's
+	// lineage, staged by its host (site_certificate_stage), comes without
+	// one: that account is the host's, and the copy renews under its own.
+	Account  bool
 	DKIMKeys int
 	Files    int
 	Bytes    int
@@ -207,8 +211,15 @@ func collectHostFiles() ([]copyHostFile, copyHostSummary, error) {
 			sum.Lineages = append(sum.Lineages, name)
 		}
 		if _, err := os.Stat(filepath.Join(le, "accounts")); err == nil {
+			before := len(c.entries)
 			if err := c.tree("letsencrypt", le, "accounts"); err != nil {
 				return nil, sum, err
+			}
+			for _, e := range c.entries[before:] {
+				if e.Kind == "file" {
+					sum.Account = true
+					break
+				}
 			}
 		}
 		inis, _ := filepath.Glob(filepath.Join(le, "*.ini"))

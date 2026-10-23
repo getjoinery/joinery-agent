@@ -97,9 +97,12 @@ const (
 	markerDnsRefused    = "Linode returned HTTP "
 	markerDnsNoPublicIP = "Could not determine this instance's public IP"
 	markerCertIssued    = "Issued LE certificate for "
-	markerCertDeferred  = "No SSL certificate was issued"
-	markerWarn          = "[WARN]"
-	markerError         = "ERROR"
+	// A lineage certbot found valid and not yet due is kept, not issued again
+	// (an install run again on a box that has one).
+	markerCertKept     = "Kept the LE certificate for "
+	markerCertDeferred = "No SSL certificate was issued"
+	markerWarn         = "[WARN]"
+	markerError        = "ERROR"
 )
 
 var ansiEscape = regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]`)
@@ -282,6 +285,9 @@ func readInstallVerdicts(text string) map[string]interface{} {
 		if i := strings.Index(trimmed, markerCertIssued); i >= 0 {
 			out["certificate"] = "issued"
 			out["certificate_detail"] = strings.TrimSpace(trimmed[i+len(markerCertIssued):])
+		} else if i := strings.Index(trimmed, markerCertKept); i >= 0 {
+			out["certificate"] = "kept"
+			out["certificate_detail"] = strings.TrimSpace(trimmed[i+len(markerCertKept):])
 		} else if strings.Contains(trimmed, markerCertDeferred) {
 			out["certificate"] = "deferred"
 			out["certificate_detail"] = strings.TrimSpace(strings.SplitN(trimmed, "—", 2)[len(strings.SplitN(trimmed, "—", 2))-1])

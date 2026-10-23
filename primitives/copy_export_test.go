@@ -472,6 +472,37 @@ func TestTheApprovalNamesTheMachineTheSecretsGoTo(t *testing.T) {
 	}
 }
 
+// A container site's certificate is staged by its host without the host's
+// ACME account; the statement says so rather than promising an account.
+func TestTheStatementSaysWhetherTheAccountGoes(t *testing.T) {
+	f := newExportFixture(t)
+	f.sEnv.ExportApproval = approveAll{}
+	certs := func() string {
+		t.Helper()
+		st, _, _, err := copyExportCeremony(context.Background(), f.sEnv, f.exportParams(f.target.PublicKey()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, fact := range st.Facts {
+			if fact.Label == "Certificates" {
+				return fact.Value
+			}
+		}
+		t.Fatalf("no Certificates line: %+v", st.Facts)
+		return ""
+	}
+	if got := certs(); !strings.Contains(got, "example.org (with its private key and its Let's Encrypt account)") {
+		t.Errorf("an account that goes is not named: %q", got)
+	}
+	if err := os.RemoveAll(filepath.Join(CopyLetsEncryptDir, "accounts")); err != nil {
+		t.Fatal(err)
+	}
+	got := certs()
+	if strings.Contains(got, "and its Let's Encrypt account") || !strings.Contains(got, "no Let's Encrypt account goes") {
+		t.Errorf("a lineage without an account is said to carry one: %q", got)
+	}
+}
+
 type approveAll struct{}
 
 func (approveAll) Require(context.Context, int64, ApprovalStatement) error { return nil }

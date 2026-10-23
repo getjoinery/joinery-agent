@@ -193,7 +193,11 @@ func copyExportCeremony(ctx context.Context, env *ExecEnv, params Params) (Appro
 	full := sha256.Sum256(plan.target)
 	certs := "none"
 	if len(plan.host.Lineages) > 0 {
-		certs = strings.Join(plan.host.Lineages, ", ") + " (with its private key and its Let's Encrypt account)"
+		with := "with its private key and its Let's Encrypt account"
+		if !plan.host.Account {
+			with = "with its private key; no Let's Encrypt account goes, so the copy renews it under its own"
+		}
+		certs = strings.Join(plan.host.Lineages, ", ") + " (" + with + ")"
 	}
 	dkim := "none"
 	if plan.host.DKIMKeys > 0 {
