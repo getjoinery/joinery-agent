@@ -35,6 +35,7 @@ var pinnedMachineWords = []string{
 	"listening_sockets",
 	"move_to_plane",
 	"moved_site_check",
+	"net_health",
 	"outbound_limits",
 	"provision_certificate",
 	"reboot_machine",
@@ -55,6 +56,7 @@ var pinnedMachineWords = []string{
 	"suspended_page",
 	"trust_forwarder",
 	"unit_journal",
+	"web_workers",
 }
 
 func TestASitelessMachineReportsOnlyMachineWords(t *testing.T) {

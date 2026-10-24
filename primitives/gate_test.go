@@ -122,6 +122,16 @@ var pinnedVocabulary = map[string]Class{
 	// sender or a row.
 	"spam_learning_status": ClassObserve,
 
+	// Whether the machine is dropping packets or connections
+	// (specs/slow_request_diagnosis_words.md WP2). Observe, NO PARAMETERS,
+	// counts only, never a remote address; refused inside a site container.
+	"net_health": ClassObserve,
+
+	// Whether the web tier is out of workers (same spec, WP3). Observe, NO
+	// PARAMETERS: its one argument is the site's own domain from its config,
+	// and it reads two loopback status pages as counts, never ?full.
+	"web_workers": ClassObserve,
+
 	// Reboot the machine twenty seconds out (the running list, 2026-10-10).
 	// Operate, NO PARAMETERS: it loses no data, and it refuses where the boot
 	// would wait for a person to type a recovery key.

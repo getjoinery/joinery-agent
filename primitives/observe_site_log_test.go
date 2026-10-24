@@ -38,7 +38,7 @@ func TestSiteLogTakesOnlyTheClosedList(t *testing.T) {
 	if p.Class != ClassObserve {
 		t.Fatalf("site_log is %s; it reads and must be observe", p.Class)
 	}
-	for _, bad := range []interface{}{"access", "../config/Globalvars_site", "/etc/passwd", "error.log", "error/../../x", ""} {
+	for _, bad := range []interface{}{"access_log", "../config/Globalvars_site", "/etc/passwd", "error.log", "error/../../x", ""} {
 		if _, err := Validate(p.Params, map[string]interface{}{"file": bad}); err == nil {
 			t.Errorf("file=%v must be refused by the enum", bad)
 		}
@@ -304,9 +304,73 @@ func TestPostgresLogIsOnTheListAndGated(t *testing.T) {
 		t.Error("the database log is a log: it reads only with the owner's leave")
 	}
 	// Still closed. The new entry does not open the enum to anything else.
-	for _, bad := range []string{"postgres", "postgresql-16-main", "/var/log/postgresql/postgresql-16-main.log", "access"} {
+	for _, bad := range []string{"postgres", "postgresql-16-main", "/var/log/postgresql/postgresql-16-main.log", "access.log"} {
 		if _, err := Validate(p.Params, map[string]interface{}{"file": bad}); err == nil {
 			t.Errorf("file %q must be refused", bad)
+		}
+	}
+}
+
+// The access log leaves the node only as a compiled shape: no visitor address,
+// no Referer, no user agent, no query string, no path segment that could be a
+// token, and nothing at all after /s/ (specs/slow_request_diagnosis_words.md
+// WP1a).
+func TestSiteLogAccessIsACompiledShape(t *testing.T) {
+	env := siteLogEnv(t, "1")
+	writeLog(t, env, "access.log", strings.Join([]string{
+		`203.0.113.9 - - [23/Oct/2026:17:20:03 +0000] "GET /api/v1/action/drive_upload_init?token=SECRETQUERY HTTP/1.1" 200 4537 8129 "https://other.example/page?x=REFERER" "Mozilla/5.0 UA-SECRET"`,
+		`2600:3c03::1 - - [23/Oct/2026:17:20:04 +0000] "GET /s/SHARECAPABILITY/file.pdf HTTP/1.1" 200 10 900 "-" "curl/8"`,
+		`198.51.100.4 - - [23/Oct/2026:17:20:05 +0000] "POST /password-reset/0123456789abcdef0123456789abcdef0123 HTTP/1.1" 302 0 1500 "-" "x"`,
+		`198.51.100.5 - - [23/Oct/2026:17:20:06 +0000] "GET /login HTTP/1.1" 200 11125 "-" "combined, no duration"`,
+		`not an access log line at all`,
+	}, "\n")+"\n")
+	res, err := runSiteLog(context.Background(), env, mustValidate(t, "site_log", map[string]interface{}{"file": "access"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := res["text"].(string)
+	for _, leaked := range []string{"203.0.113.9", "2600:3c03", "198.51.100", "SECRETQUERY", "token=", "REFERER", "other.example", "UA-SECRET", "Mozilla", "SHARECAPABILITY", "file.pdf", "0123456789abcdef0123456789abcdef0123"} {
+		if strings.Contains(text, leaked) {
+			t.Errorf("%q left the node: %q", leaked, text)
+		}
+	}
+	for _, want := range []string{
+		"[23/Oct/2026:17:20:03 +0000] GET /api/v1/action/drive_upload_init 200 4537 8129",
+		"GET /s/<cut> 200 10 900",
+		"POST /password-reset/<cut> 302 0 1500",
+		"GET /login 200 11125 -",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("want %q in %q", want, text)
+		}
+	}
+	if res["unparsed_lines"] != 1 || res["lines_returned"] != 4 {
+		t.Errorf("one line did not parse and four were carried; got unparsed=%v lines=%v", res["unparsed_lines"], res["lines_returned"])
+	}
+}
+
+func TestAccessPathCutsWhatCouldBeAToken(t *testing.T) {
+	for in, want := range map[string]string{
+		"/":                                        "/",
+		"/login?next=/x":                           "/login",
+		"/profile/mailbox/mailbox":                 "/profile/mailbox/mailbox",
+		"/s/abc":                                   "/s/<cut>",
+		"/s/abc/def/ghi":                           "/s/<cut>",
+		"/files/a%20b":                             "/files/<cut>",
+		"http://evil/x":                            "<cut>",
+		"/x#frag":                                  "/x",
+		"/x/0123456789abcdef0123456789abcdef":      "/x/<cut>",
+		"/r/AbCdEfGh1IjKlMnOpQrStUv2":              "/r/<cut>",
+		"/api/v1/action/drive_upload_init":         "/api/v1/action/drive_upload_init",
+		"/admin/admin_management_node_settings":    "/admin/admin_management_node_settings",
+		"/v2026":                                   "/v2026",
+		"/login_2fa_passkey_options":               "/login_2fa_passkey_options",
+		"/login_2fa_passkey_verify":                "/login_2fa_passkey_verify",
+		"/ajax/password_reset_2fa_passkey_options": "/ajax/password_reset_2fa_passkey_options",
+		"/password_reset_2fa_passkey_verify":       "/password_reset_2fa_passkey_verify",
+	} {
+		if got := accessPath(in); got != want {
+			t.Errorf("accessPath(%q) = %q, want %q", in, got, want)
 		}
 	}
 }

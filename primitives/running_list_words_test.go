@@ -137,3 +137,58 @@ var errFakeDown = &fakeDownError{}
 type fakeDownError struct{}
 
 func (*fakeDownError) Error() string { return "database not accepting connections" }
+
+// The two words of specs/slow_request_diagnosis_words.md: net_health takes
+// nothing at all; web_workers takes nothing from the wire and passes only the
+// site's own domain, from its config, when it is a host name.
+func TestSlowRequestWordsAskForNothing(t *testing.T) {
+	for name, script := range map[string]string{"net_health": netHealthScript, "web_workers": webWorkersScript} {
+		p, ok := Lookup(name)
+		if !ok {
+			t.Fatalf("%s should be registered", name)
+		}
+		if len(p.Params) != 0 {
+			t.Errorf("%s declares %d parameter(s); it must declare none", name, len(p.Params))
+		}
+		for _, key := range []string{"port", "address", "domain", "url", "path", "pool"} {
+			if _, err := Validate(p.Params, map[string]interface{}{key: "anything"}); err == nil {
+				t.Errorf("%s: a job carrying %q must be refused", name, key)
+			}
+		}
+		if p.Script == nil || p.Run != nil || p.Script.ScriptPath != script || p.Script.Interpreter != "/bin/bash" {
+			t.Fatalf("%s runs the one script it names", name)
+		}
+		if p.Class != ClassObserve || !p.Machine || p.RequiresLogAccess {
+			t.Errorf("%s: observe, a machine word, and behind no switch", name)
+		}
+		if len(p.Script.Args) != 0 || p.Script.StdinFrom != nil {
+			t.Errorf("%s: no fixed argv and no stdin", name)
+		}
+		if p.Timeout <= 0 || p.Timeout > 2*time.Minute {
+			t.Errorf("%s: a timeout of %v is not a bounded read", name, p.Timeout)
+		}
+	}
+	if p, _ := Lookup("net_health"); p.Script.ArgsFrom != nil {
+		t.Errorf("net_health takes no argument at all")
+	}
+}
+
+func TestWebWorkersPassesOnlyTheSitesOwnHostName(t *testing.T) {
+	ctx := context.Background()
+	for domain, want := range map[string][]string{
+		"jeremytunnell.com":        {"jeremytunnell.com"},
+		"":                         {},
+		"evil.com/../etc":          {},
+		"a b":                      {},
+		"-leading.example":         {},
+		"x.example --resolve evil": {},
+	} {
+		got, err := webWorkersArgs(ctx, &ExecEnv{SiteDomain: domain}, Params{})
+		if err != nil || strings.Join(got, "|") != strings.Join(want, "|") {
+			t.Errorf("SiteDomain %q gave %q (%v), want %q", domain, got, err, want)
+		}
+	}
+	if got, _ := webWorkersArgs(ctx, nil, Params{}); len(got) != 0 {
+		t.Errorf("no environment, no argument; got %q", got)
+	}
+}

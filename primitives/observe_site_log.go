@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -26,7 +27,7 @@ import (
 //
 // What it cannot do:
 //
-//   - Name a file. `file` is an ENUM of six names compiled here. Five resolve
+//   - Name a file. `file` is an ENUM of seven names compiled here. Six resolve
 //     to SiteRoot/logs/<name>.log; postgresql resolves to the newest cluster
 //     log in /var/log/postgresql, a directory and a glob both compiled here.
 //     `previous` selects a file's most recent rotation (.log.1) and nothing
@@ -42,6 +43,19 @@ import (
 //     and both are capped. It earns its place because a disk that fills, a
 //     connection that dies and a write that is refused are all the database
 //     saying so in its own words, and nothing else on this node records them.
+//
+//     The access log is the one file NOT returned as it is written. Its lines
+//     carry every visitor's address, the page they came from, their browser,
+//     and whole request targets, and a target can carry a token in its query
+//     string or in its path: /s/{token} is a Drive share link whose token is
+//     the capability (specs/slow_request_diagnosis_words.md WP1a). So each
+//     line is parsed on this machine and rebuilt as a compiled shape: time,
+//     method, path, status, bytes, duration. Address, Referer, user agent and
+//     query string are dropped. Each path segment outside a compiled safe
+//     shape (letters, digits, - _ ., at most 64 characters) or that looks like a token (20 or more characters with letters and two digits) becomes <cut>,
+//     and everything after /s/ is cut whatever it looks like. The redactor
+//     then runs over the rebuilt lines as it does over every other file. A
+//     line that does not parse is counted, never carried.
 //
 //   - Read without the owner's leave. The switch is checked FIRST, before a
 //     stat: off means the pinned refusal and nothing read. The rule is
@@ -62,7 +76,7 @@ func init() {
 	Register(Primitive{
 		Name:        "site_log",
 		Class:       ClassObserve,
-		Description: "The last lines of one of the site's own log files (error, cron, AI worker, install executor, host converger) or of the PostgreSQL cluster log, redacted on the node; refused unless the site's owner allows log access.",
+		Description: "The last lines of one of the site's own log files (error, cron, AI worker, install executor, host converger, access as a compiled shape) or of the PostgreSQL cluster log, redacted on the node; refused unless the site's owner allows log access.",
 		Params: []ParamSpec{
 			{Name: "file", Type: ParamEnum, Required: true, Values: siteLogFiles},
 			{Name: "previous", Type: ParamBool},
@@ -75,10 +89,11 @@ func init() {
 }
 
 // siteLogFiles is the closed list. All but one are SiteRoot/logs/<name>.log;
-// postgresql is the exception and is resolved by siteLogPath. The access log is
-// deliberately absent: visitor addresses and URLs by the megabyte, wanted by no
-// diagnosis on the list.
+// postgresql is the exception and is resolved by siteLogPath. The access log
+// is carried only as accessLogShape rebuilds it: never a visitor's address,
+// never a query string, never a path segment that could be a token.
 var siteLogFiles = []string{
+	"access",
 	"error",
 	"cron_scheduled_tasks",
 	"joinery_ai_worker",
@@ -186,11 +201,93 @@ func runSiteLog(ctx context.Context, env *ExecEnv, p Params) (map[string]interfa
 	if err != nil {
 		return nil, err
 	}
+	if name == "access" {
+		shaped, unparsed := accessLogShape(text)
+		text = shaped
+		result["unparsed_lines"] = unparsed
+	}
 	kept, truncatedLines := lastLines(text, lines)
 	result["truncated"] = truncatedBytes || truncatedLines
 	result["lines_returned"] = countLines(kept)
 	result["text"] = redact.Text(kept)
 	return result, nil
+}
+
+// accessLogLine reads Apache's combined format and the site vhost's
+// joinery_timed (combined with %D after the byte count): time, method,
+// target, status, bytes and, when present, the duration in microseconds.
+// Nothing after the duration (Referer, user agent) is captured.
+var accessLogLine = regexp.MustCompile(`^\S+ \S+ \S+ \[([^\]]{1,40})\] "([A-Z]{1,10}) ([^" ]+)(?: [^"]*)?" ([0-9]{3}) ([0-9]+|-)(?: ([0-9]+))?(?: |$)`)
+
+// accessPathSegment is the shape a path segment must have to be carried.
+var accessPathSegment = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
+
+// accessTokenLike is a segment that could be a credential even inside the safe
+// shape: 20 characters or more with letters and at least two digits, which is
+// what bin2hex(random_bytes(n)) and most base64url tokens look like. Route and
+// action names are words and underscores, at most one digit
+// (login_2fa_passkey_verify), and survive. A token with fewer than two digits
+// is what the prefix list below is for.
+var accessHasLetter = regexp.MustCompile(`[A-Za-z]`)
+
+func accessTokenLike(seg string) bool {
+	return len(seg) >= 20 && accessHasLetter.MatchString(seg) && strings.Count(seg, "0")+strings.Count(seg, "1")+
+		strings.Count(seg, "2")+strings.Count(seg, "3")+strings.Count(seg, "4")+strings.Count(seg, "5")+
+		strings.Count(seg, "6")+strings.Count(seg, "7")+strings.Count(seg, "8")+strings.Count(seg, "9") >= 2
+}
+
+// accessLogShape rebuilds each access log line as
+// "TIME METHOD PATH STATUS BYTES DURATION_US" ("-" where a field is absent),
+// and counts the lines it could not parse, which are left out.
+func accessLogShape(text string) (string, int) {
+	var out []string
+	unparsed := 0
+	for _, line := range strings.Split(strings.TrimRight(text, "\n"), "\n") {
+		if line == "" {
+			continue
+		}
+		m := accessLogLine.FindStringSubmatch(line)
+		if m == nil {
+			unparsed++
+			continue
+		}
+		duration := m[6]
+		if duration == "" {
+			duration = "-"
+		}
+		out = append(out, strings.Join([]string{"[" + m[1] + "]", m[2], accessPath(m[3]), m[4], m[5], duration}, " "))
+	}
+	if len(out) == 0 {
+		return "", unparsed
+	}
+	return strings.Join(out, "\n") + "\n", unparsed
+}
+
+// accessPath keeps a request target's path, without its query string, segment
+// by segment: a segment outside accessPathSegment, or one that looks like a
+// token (accessTokenLike), becomes <cut>, and everything after /s/ (a share
+// link's capability) is cut.
+//
+// A route that puts a credential in its path adds its prefix here, beside
+// /s/: the token heuristic is the second line of defence, not the first.
+func accessPath(target string) string {
+	if i := strings.IndexAny(target, "?#"); i >= 0 {
+		target = target[:i]
+	}
+	if !strings.HasPrefix(target, "/") {
+		return "<cut>"
+	}
+	segs := strings.Split(target[1:], "/")
+	for i, seg := range segs {
+		if i > 0 && segs[0] == "s" {
+			segs = append(segs[:1], "<cut>")
+			break
+		}
+		if seg != "" && (!accessPathSegment.MatchString(seg) || accessTokenLike(seg)) {
+			segs[i] = "<cut>"
+		}
+	}
+	return "/" + strings.Join(segs, "/")
 }
 
 // tailBytes reads at most max bytes from the end of f, cut forward to a line
