@@ -20,6 +20,7 @@ var pinnedMachineWords = []string{
 	"data_root_encrypt",
 	"data_root_enrol",
 	"data_root_migrate",
+	"data_root_provider_layer",
 	"data_root_recipient",
 	"data_root_rekey",
 	"decommission_moved_site",

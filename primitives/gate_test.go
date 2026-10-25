@@ -289,6 +289,9 @@ var pinnedVocabulary = map[string]Class{
 	"data_root_decrypt":   ClassOperate,
 	"data_root_recipient": ClassOperate,
 	"data_root_rekey":     ClassOperate,
+	// The provider's own disk encryption under the machine, as its management
+	// node knows it (B114): one recorded fact, enabled or disabled.
+	"data_root_provider_layer": ClassOperate,
 
 	"provision_certificate": ClassOperate,
 
