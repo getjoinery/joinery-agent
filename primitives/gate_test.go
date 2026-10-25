@@ -162,6 +162,11 @@ var pinnedVocabulary = map[string]Class{
 	"restart_unit":      ClassOperate,
 	"restart_container": ClassOperate,
 
+	// Root SSH login turned off for good on the machine
+	// (specs/implemented/beta_break_glass_root_access.md 5.3): no parameters, one value
+	// written, nothing removed. Operate: a setting changes, nothing is lost.
+	"disable_root_login": ClassOperate,
+
 	// A removed site's certificate (its Let's Encrypt lineage and placeholder),
 	// refused while any enabled site names it. Operate: nothing serves with
 	// it, and it is issued again by asking.

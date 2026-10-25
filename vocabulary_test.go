@@ -386,4 +386,8 @@ func TestClaimReportsTheLogAccessSwitch(t *testing.T) {
 	if _, present := claimed["server_manager"]; present {
 		t.Fatalf("no database means no server_manager answer, got %v", claimed["server_manager"])
 	}
+	// So is the owner's emergency root access answer.
+	if _, present := claimed["root_access"]; present {
+		t.Fatalf("no database means no root_access answer, got %v", claimed["root_access"])
+	}
 }

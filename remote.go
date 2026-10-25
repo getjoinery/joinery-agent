@@ -519,6 +519,12 @@ func (r *RemoteSource) claim(ctx context.Context) (*RemoteJob, error) {
 				claimBody["server_manager"] = "inactive"
 			}
 		}
+		// The owner's answer to keeping emergency root access for the beta
+		// (specs/implemented/beta_break_glass_root_access.md 5.1). Left out when the
+		// database does not answer, so the plane keeps the last answer.
+		if v := primitives.RootAccessReport(ctx, r.env); v != "" {
+			claimBody["root_access"] = v
+		}
 		// Whether this node can verify the scripts it would run as root.
 		//
 		// The plane can already work this out from a refusal, but only for a

@@ -24,6 +24,7 @@ var pinnedMachineWords = []string{
 	"data_root_rekey",
 	"decommission_moved_site",
 	"decommission_site",
+	"disable_root_login",
 	"discard_copy",
 	"disk_usage",
 	"file_head",
