@@ -93,8 +93,10 @@ func init() {
 // Four of the five units the Host card names (sshd is not among them and is
 // not added: its journal is a record of who connected from where, which is
 // exactly what host_report refuses to carry), the agent itself, the
-// housekeeping units that turn up failed on an ordinary Debian box, and the
-// mail apps gateway (host_report's mail_gateway).
+// housekeeping units that turn up failed on an ordinary Debian box, the
+// mail apps gateway (host_report's mail_gateway), and the host converger, whose
+// journal is the only record of which installer failed a run on a host with a
+// data root (host_converger.last says only that one did).
 var unitJournalUnits = []string{
 	"fail2ban",
 	"apache2",
@@ -109,6 +111,7 @@ var unitJournalUnits = []string{
 	"fstrim",
 	"e2scrub_all",
 	"joinery-mail-gateway",
+	"joinery-host-converger",
 }
 
 const (

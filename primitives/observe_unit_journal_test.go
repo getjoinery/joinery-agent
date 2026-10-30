@@ -109,3 +109,12 @@ func TestUnitJournalNeverOffersSshd(t *testing.T) {
 		}
 	}
 }
+
+// The host converger's journal is the only record of which installer failed a
+// run on a host with a data root, so it stays on the list.
+func TestUnitJournalReadsTheHostConverger(t *testing.T) {
+	p, _ := Lookup("unit_journal")
+	if _, err := Validate(p.Params, map[string]interface{}{"unit": "joinery-host-converger"}); err != nil {
+		t.Errorf("joinery-host-converger must validate: %v", err)
+	}
+}
