@@ -150,7 +150,12 @@ func copyImportRun(ctx context.Context, env *ExecEnv, params Params) (map[string
 	if err != nil {
 		return nil, refusedf("copy_import refused: the sealed part is not readable")
 	}
-	opened, err := key.OpenSealed(sealed)
+	var opened []byte
+	if body.Seal == CopySealXWing {
+		opened, err = key.OpenKEMSealed(sealed, CopySealScope)
+	} else {
+		opened, err = key.OpenSealed(sealed)
+	}
 	if err != nil {
 		return nil, refusedf("copy_import refused: %v", err)
 	}

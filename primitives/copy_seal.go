@@ -35,7 +35,6 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/ed25519"
-	"crypto/rand"
 	"crypto/sha256"
 	"crypto/sha512"
 	"encoding/base64"
@@ -43,15 +42,54 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"strings"
 	"time"
 
 	"golang.org/x/crypto/curve25519"
 	"golang.org/x/crypto/hkdf"
+
+	"joinery-agent/xwing"
 )
 
 // CopyExportDomain names everything an export is: its signature prefix, its
 // seal's HKDF context, and the format field T checks first.
 const CopyExportDomain = "joinery-copy-export-v1"
+
+// The machine's own X-Wing key (specs/post_quantum_sealing.md R6). An Ed25519
+// identity has no ML-KEM half, so each agent holds a KEM seed beside its
+// identity and SIGNS the public half with the identity key under
+// AgentKEMDomain: the message is AgentKEMDomain, a newline, and the base64
+// public key. The management node passes the key and signature on; a source
+// seals to the key only once the signature verifies against the identity key
+// the owner approved, so a management node that substituted its own KEM key
+// would need the target's identity key to do it.
+const (
+	AgentKEMDomain = "joinery-agent-kem-v1"
+	// CopySealScope is the v2 seal's scope for an export bundle.
+	CopySealScope = CopyExportDomain + ":seal"
+	// CopySealXWing marks a bundle sealed to the target's KEM key.
+	CopySealXWing = "xwing"
+)
+
+// AgentKEMMessage is what the identity key signs for its KEM public key.
+func AgentKEMMessage(kemPublicB64 string) []byte {
+	return []byte(AgentKEMDomain + "\n" + kemPublicB64)
+}
+
+// VerifiedAgentKEM returns the raw KEM public key when sig is the identity
+// key's signature over it, and refuses otherwise.
+func VerifiedAgentKEM(identity ed25519.PublicKey, kemPublicB64, sigB64 string) ([]byte, error) {
+	pub, err := base64.StdEncoding.DecodeString(strings.TrimSpace(kemPublicB64))
+	if err != nil || len(pub) != xwing.PublicKeyBytes {
+		return nil, errors.New("the copy has reported no post-quantum key of its own yet (its agent reports one from 1.99.0)")
+	}
+	sig, err := base64.StdEncoding.DecodeString(strings.TrimSpace(sigB64))
+	if err != nil || len(identity) != ed25519.PublicKeySize ||
+		!ed25519.Verify(identity, AgentKEMMessage(base64.StdEncoding.EncodeToString(pub)), sig) {
+		return nil, errors.New("the copy's post-quantum key is not signed by the agent key its owner approved, so nothing is sealed to it")
+	}
+	return pub, nil
+}
 
 // copyExportLifetime is how long T accepts a bundle after S issued it. An
 // export is imported minutes after it is made — at the final copy, inside
@@ -141,47 +179,6 @@ func sealKey(shared, ephPublic, recipient []byte) ([]byte, error) {
 	return key, nil
 }
 
-// sealToAgentKey seals plaintext so only the holder of the Ed25519 private
-// key behind recipient can open it: ephemeralPublic[32] || iv[12] ||
-// ciphertext || tag[16].
-func sealToAgentKey(recipient ed25519.PublicKey, plaintext []byte) ([]byte, error) {
-	rx, err := ed25519PublicToX25519(recipient)
-	if err != nil {
-		return nil, err
-	}
-	eph := make([]byte, 32)
-	if _, err := rand.Read(eph); err != nil {
-		return nil, err
-	}
-	defer zero(eph)
-	ephPublic, err := curve25519.X25519(eph, curve25519.Basepoint)
-	if err != nil {
-		return nil, err
-	}
-	// X25519 refuses an all-zero result: a low-order recipient key, whose
-	// shared secret would be the same for anyone.
-	shared, err := curve25519.X25519(eph, rx)
-	if err != nil {
-		return nil, fmt.Errorf("the target key cannot be sealed to: %w", err)
-	}
-	key, err := sealKey(shared, ephPublic, rx)
-	zero(shared)
-	if err != nil {
-		return nil, err
-	}
-	gcm, err := newGCM(key)
-	zero(key)
-	if err != nil {
-		return nil, err
-	}
-	iv := make([]byte, gcm.NonceSize())
-	if _, err := rand.Read(iv); err != nil {
-		return nil, err
-	}
-	out := append(append([]byte{}, ephPublic...), iv...)
-	return gcm.Seal(out, iv, plaintext, nil), nil
-}
-
 // OpenSealedToAgentKey opens what sealToAgentKey sealed, with the Ed25519
 // private key it was sealed to. Exported for the agent's identity, which
 // holds the key; nothing in this package does.
@@ -251,6 +248,10 @@ type copyBundleBody struct {
 	Issued       string `json:"issued"`
 	Expires      string `json:"expires"`
 	Sealed       string `json:"sealed"`
+	// Seal is CopySealXWing for a bundle sealed to the copy's X-Wing key
+	// (CopySealScope); absent for one an agent before 1.99.0 sealed to the
+	// copy's agent key itself (sealToAgentKey).
+	Seal string `json:"seal,omitempty"`
 }
 
 // copyPayload is what the seal holds, gzipped.

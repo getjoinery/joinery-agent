@@ -59,14 +59,34 @@ import (
 	"strings"
 	"time"
 
+	"joinery-agent/xwing"
+
 	"golang.org/x/crypto/blake2b"
 	"golang.org/x/crypto/nacl/box"
 	"golang.org/x/crypto/salsa20/salsa"
 )
 
-// copyTakeKeyMaxSealed bounds the sealed data key a request carries: a chain
-// key is a 44-character passphrase, sealed with 48 bytes of overhead.
-const copyTakeKeyMaxSealed = 512
+// copyTakeKeyMaxSealed bounds the sealed data key a request carries, raw and
+// as base64: a chain key is a 44-character passphrase, sealed with 1148 bytes
+// of overhead in a v2 box (48 in a v1 box).
+const copyTakeKeyMaxSealed = 2048
+
+// recoveryBoxParts is how the owner's page half-opens a box sealed to the
+// recovery key, by the manifest recipient's alg: a v2 box ("xwing") gives the
+// page its X-Wing ciphertext, a v1 box its ephemeral X25519 key. ok is false
+// when the box is not the shape its alg says.
+func recoveryBoxParts(sealed []byte, alg string) (ciphertext, ephemeral string, ok bool) {
+	if alg == "xwing" {
+		if len(sealed) <= xwing.Overhead {
+			return "", "", false
+		}
+		return base64.StdEncoding.EncodeToString(sealed[:xwing.CiphertextBytes]), "", true
+	}
+	if alg != "" || len(sealed) <= 32+box.Overhead {
+		return "", "", false
+	}
+	return "", base64.StdEncoding.EncodeToString(sealed[:32]), true
+}
 
 // CopyKeyRequest is what the copy's own page shows its owner.
 type CopyKeyRequest struct {
@@ -76,7 +96,8 @@ type CopyKeyRequest struct {
 	StoredTime          string `json:"stored_time"` // when the provider stored the manifest; "" when not checked
 	StoredAt            string `json:"stored_at"`   // the provider that says so; "" when not checked
 	RecoveryFingerprint string `json:"recovery_fingerprint"`
-	EphemeralPublic     string `json:"ephemeral_public"`
+	Ciphertext          string `json:"ciphertext,omitempty"`       // a v2 box's X-Wing ciphertext
+	EphemeralPublic     string `json:"ephemeral_public,omitempty"` // a v1 box's ephemeral key
 	Site                string `json:"site"`
 }
 
@@ -149,7 +170,7 @@ func copyTakeKeyRun(ctx context.Context, env *ExecEnv, params Params) (map[strin
 		return nil, refusedf("this machine cannot ask its owner on its own page (no site database), so it takes no key")
 	}
 	sealed, err := base64.StdEncoding.DecodeString(params.String("recovery_sealed"))
-	if err != nil || len(sealed) <= 32+box.Overhead {
+	if err != nil || len(sealed) <= 32+box.Overhead || len(sealed) > copyTakeKeyMaxSealed {
 		return nil, refusedf("copy_take_key: the sealed chain key is not a sealed box")
 	}
 	chainID := params.String("chain_id")
@@ -166,8 +187,13 @@ func copyTakeKeyRun(ctx context.Context, env *ExecEnv, params Params) (map[strin
 		RunTime:             stored.NewestRun.Format(time.RFC3339),
 		StoredAt:            stored.StoredAt,
 		RecoveryFingerprint: fingerprint,
-		EphemeralPublic:     base64.StdEncoding.EncodeToString(sealed[:32]),
 		Site:                params.String("site"),
+	}
+	// The box's version is its manifest's word, read at the provider.
+	var shapeOK bool
+	req.Ciphertext, req.EphemeralPublic, shapeOK = recoveryBoxParts(sealed, stored.RecoveryAlg)
+	if !shapeOK {
+		return nil, refusedf("copy_take_key: the sealed chain key is not the shape its manifest says it is")
 	}
 	if !stored.StoredTime.IsZero() {
 		req.StoredTime = stored.StoredTime.Format(time.RFC3339)
@@ -218,19 +244,36 @@ func copyTakeKeyRun(ctx context.Context, env *ExecEnv, params Params) (map[strin
 }
 
 // OpenRecoverySealed is openRecoverySealed for the encrypted data root's
-// unlock page (the agent's unlock mode), which takes the same 32-byte value
-// from a browser for the break-glass copy's box.
+// unlock page (the agent's unlock mode) and the escrow's, which take the same
+// 32-byte value from a browser for the break-glass copy's box.
 func OpenRecoverySealed(sealed, shared, recipientPublic []byte) ([]byte, error) {
 	return openRecoverySealed(sealed, shared, recipientPublic)
 }
 
-// openRecoverySealed finishes opening a libsodium sealed box
-// (crypto_box_seal) given the X25519 shared secret of the recipient's private
-// key with the box's ephemeral public key, which is what the owner's browser
-// works out with WebCrypto. The rest is crypto_box's: the key is HSalsa20 of
-// that secret, the nonce BLAKE2b-192 of the ephemeral and recipient public
-// keys, and XSalsa20-Poly1305 authenticates and opens.
+// openRecoverySealed finishes opening a box sealed to the recovery key with
+// the value the owner's browser worked out (VaultCrypto.halfOpenKeyBox). The
+// caller has already held recipientPublic to the box's fingerprint, so its
+// length is the box's version (specs/post_quantum_sealing.md R2):
+//
+//   - 1216 bytes, a v2 box: shared is the box's dek-scope AES key (never the
+//     X-Wing shared secret, which would key any scope's box), and the AES-GCM
+//     opens with it.
+//   - 32 bytes, a v1 libsodium sealed box (crypto_box_seal), a backup sealed to
+//     an old recovery key: shared is the X25519 of the recipient's private key
+//     with the box's ephemeral key. The rest is crypto_box's: the key is
+//     HSalsa20 of that secret, the nonce BLAKE2b-192 of the ephemeral and
+//     recipient public keys, and XSalsa20-Poly1305 authenticates and opens.
 func openRecoverySealed(sealed, shared, recipientPublic []byte) ([]byte, error) {
+	if len(recipientPublic) == xwing.PublicKeyBytes {
+		if len(sealed) <= xwing.Overhead || len(shared) != 32 {
+			return nil, errors.New("the answer is not the shape the backup's key opens with")
+		}
+		opened, err := xwing.OpenWithKey(sealed, shared)
+		if err != nil {
+			return nil, errors.New("the value given does not open this backup's key")
+		}
+		return opened, nil
+	}
 	if len(sealed) <= 32+box.Overhead || len(shared) != 32 || len(recipientPublic) != 32 {
 		return nil, errors.New("the answer is not the shape the backup's key opens with")
 	}

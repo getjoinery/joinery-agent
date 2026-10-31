@@ -1,3 +1,6 @@
-# A TEST recovery keypair for the data-root sidecar fixtures; it guards nothing.
+# TEST recovery keys for the data-root sidecar fixtures; they guard nothing.
+# secret/public: an old X25519 pair (data_root_sidecar_php.json, version 1);
+# secret_v2: an X-Wing seed (data_root_sidecar_php_v2.json, version 2).
 secret=oQPzooLmSXpB1fa9huP2sWYl0yBUmYzC9vG9iDKdC9E=
 public=FUlFq6ANNWbjoxS/AOfEfBCTQntsOSlTwpgiPhLelXE=
+secret_v2=QDaJoozQJDEs3nDlqtTBdCjHa0xjmSjVNn9jqV8IX1U=

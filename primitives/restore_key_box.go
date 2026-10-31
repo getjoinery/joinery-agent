@@ -33,8 +33,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-
-	"golang.org/x/crypto/nacl/box"
 )
 
 // chainKeyBox is the approval's key box for a staged chain with no key: its
@@ -55,6 +53,7 @@ func chainKeyBox(work string) (*ApprovalKeyBox, error) {
 				Kind        string `json:"kind"`
 				Fingerprint string `json:"fingerprint"`
 				Sealed      string `json:"sealed"`
+				Alg         string `json:"alg"`
 			} `json:"recipients"`
 		} `json:"envelope"`
 	}
@@ -66,12 +65,17 @@ func chainKeyBox(work string) (*ApprovalKeyBox, error) {
 			continue
 		}
 		sealed, err := base64.StdEncoding.DecodeString(r.Sealed)
-		if err != nil || len(sealed) <= 32+box.Overhead || len(sealed) > copyTakeKeyMaxSealed {
+		if err != nil || len(sealed) > copyTakeKeyMaxSealed {
+			continue
+		}
+		ciphertext, ephemeral, ok := recoveryBoxParts(sealed, r.Alg)
+		if !ok {
 			continue
 		}
 		fingerprint := r.Fingerprint
 		return &ApprovalKeyBox{
-			EphemeralPublic:     base64.StdEncoding.EncodeToString(sealed[:32]),
+			Ciphertext:          ciphertext,
+			EphemeralPublic:     ephemeral,
 			RecoveryFingerprint: fingerprint,
 			Open: func(shared, recoveryPublic []byte) error {
 				sum := sha256.Sum256(recoveryPublic)

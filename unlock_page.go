@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"joinery-agent/primitives"
+	"joinery-agent/xwing"
 )
 
 // The unlock page (specs/hosted_data_promise_disk_encryption.md D2b, WP8).
@@ -32,10 +33,16 @@ import (
 // name and works through the Cloudflare proxy; a host serves every name it
 // has a certificate for, and never a self-signed one.
 //
-// THE KEY STAYS IN THE BROWSER. The page works like /copy-key: the browser
-// takes the X25519 of the pasted key with the box's ephemeral public key and
-// sends only that 32-byte value, which opens the break-glass box and nothing
-// else; this finishes the opening. Its limit, said plainly in the spec: the
+// THE KEY STAYS IN THE BROWSER. The page works like /copy-key
+// (VaultCrypto.halfOpenKeyBox): for a version-2 box (an X-Wing recovery key)
+// the browser decapsulates the box's ciphertext with the pasted seed and sends
+// the box's dek-scope AES key; for a version-1 box (an old X25519 key) it takes
+// the X25519 of the pasted key with the box's ephemeral key. Either is a
+// 32-byte value that opens the break-glass box and nothing else; this finishes
+// the opening. X-Wing in the browser is the platform's vendored module
+// (assets/vendor/noble/), embedded here and inlined into the page, since a
+// locked machine serves nothing else; unlock_xwing_test.go holds it to the
+// platform's pin. Its limit, said plainly in the spec: the
 // page is served by the machine itself, so it carries the console's risk and
 // no more. Where the holder is up, the unlock is the holder's.
 //
@@ -46,6 +53,13 @@ import (
 
 //go:embed cloudflare_ip_ranges.txt
 var embeddedCloudflareRanges string
+
+// unlockXWingSHA256 is the platform's pin of its vendored X-Wing module
+// (assets/vendor/noble/README.md); the embedded copy must be that file.
+const unlockXWingSHA256 = "c755cc88401a2eda9b19fcc71f6c4d651136560c4a1108aff7fda0eb5431bb98"
+
+//go:embed unlock_xwing.min.js
+var embeddedXWing string
 
 const (
 	unlockPagePost      = "/.joinery-unlock"
@@ -58,6 +72,7 @@ type unlockPage struct {
 	u            *dataRootUnlocker
 	host         string
 	sealed       []byte
+	alg          string // the recipient's: "xwing" for a version-2 box
 	recipientPub []byte
 	fingerprint  string
 	cf           []*net.IPNet
@@ -76,7 +91,8 @@ func newUnlockPage(u *dataRootUnlocker) (*unlockPage, error) {
 		return nil, errors.New("the break-glass copy is not readable")
 	}
 	sealed, err := base64.StdEncoding.DecodeString(env.Recipients[0].Sealed)
-	if err != nil || len(sealed) <= 32 {
+	alg := env.Recipients[0].Alg
+	if err != nil || len(sealed) <= 32 || (alg == sidecarAlgXWing && len(sealed) <= xwing.Overhead) {
 		return nil, errors.New("the break-glass copy holds no sealed box")
 	}
 	pub, fpr, err := readRecipient(filepath.Join(filepath.Dir(dataRootConfPath), "data-root", "recovery_recipient"))
@@ -86,7 +102,10 @@ func newUnlockPage(u *dataRootUnlocker) (*unlockPage, error) {
 	if fpr != env.Recipients[0].Fingerprint {
 		return nil, fmt.Errorf("the break-glass copy is sealed to %s, and the recovery recipient here is %s", env.Recipients[0].Fingerprint, fpr)
 	}
-	return &unlockPage{u: u, host: u.host, sealed: sealed, recipientPub: pub, fingerprint: fpr,
+	if (alg == sidecarAlgXWing) != (len(pub) == xwing.PublicKeyBytes) {
+		return nil, errors.New("the break-glass copy and the recovery recipient here are not the same kind of key")
+	}
+	return &unlockPage{u: u, host: u.host, sealed: sealed, alg: alg, recipientPub: pub, fingerprint: fpr,
 		cf: cloudflareRanges(), fails: map[string][]time.Time{}}, nil
 }
 
@@ -209,7 +228,7 @@ func (p *unlockPage) answer(w http.ResponseWriter, r *http.Request) {
 	}
 	shared, err1 := base64.StdEncoding.DecodeString(in.Shared)
 	pub, err2 := base64.StdEncoding.DecodeString(in.PublicKey)
-	if err1 != nil || err2 != nil || len(shared) != 32 || len(pub) != 32 {
+	if err1 != nil || err2 != nil || len(shared) != 32 || len(pub) != len(p.recipientPub) {
 		p.failed(addr)
 		p.reply(w, http.StatusBadRequest, false, "That request is not one this page sends.")
 		return
@@ -339,16 +358,22 @@ func (s *siteCertificates) get(hello *tls.ClientHelloInfo) (*tls.Certificate, er
 }
 
 func (p *unlockPage) pageHTML() string {
-	cfg, _ := json.Marshal(map[string]string{
-		"fingerprint":     p.fingerprint,
-		"ephemeralPublic": base64.StdEncoding.EncodeToString(p.sealed[:32]),
-		"post":            unlockPagePost,
-	})
-	return strings.Replace(strings.Replace(unlockPageTemplate, "{{HOST}}", html.EscapeString(p.host), -1), "{{CONFIG}}", string(cfg), 1)
+	box := map[string]string{"fingerprint": p.fingerprint, "post": unlockPagePost}
+	xw := ""
+	if p.alg == sidecarAlgXWing {
+		box["ciphertext"] = base64.StdEncoding.EncodeToString(p.sealed[:xwing.CiphertextBytes])
+		xw = "<script>" + embeddedXWing + "</script>\n"
+	} else {
+		box["ephemeralPublic"] = base64.StdEncoding.EncodeToString(p.sealed[:32])
+	}
+	cfg, _ := json.Marshal(box)
+	page := strings.Replace(unlockPageTemplate, "{{HOST}}", html.EscapeString(p.host), -1)
+	page = strings.Replace(page, "{{XWING}}", xw, 1)
+	return strings.Replace(page, "{{CONFIG}}", string(cfg), 1)
 }
 
 // The page: nothing about the machine beyond its name and that it is locked.
-// Its script is copy-key.js's arithmetic (assets/js/copy-key.js).
+// Its script is VaultCrypto.halfOpenKeyBox's arithmetic (assets/js/vault-crypto.js).
 const unlockPageTemplate = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex"><title>Waiting to be unlocked</title>
@@ -370,7 +395,7 @@ button:disabled{opacity:.6}.s{margin-top:12px;font-size:.92rem}.bad{color:#b4231
 <div id="s" class="s" role="status"></div>
 <noscript><p class="bad">This page needs JavaScript to keep the key in your browser.</p></noscript>
 </main>
-<script>
+{{XWING}}<script>
 (function(){'use strict';
 var c={{CONFIG}};var subtle=window.crypto&&window.crypto.subtle;
 var k=document.getElementById('k'),b=document.getElementById('b'),s=document.getElementById('s');
@@ -384,6 +409,15 @@ async function work(p){
  if(!subtle)throw new Error('This browser has no WebCrypto. Use a current Chrome, Firefox or Safari.');
  var priv;try{priv=d(p);}catch(x){throw new Error('That is not a recovery key: it is one line of base64.');}
  if(priv.length!==32)throw new Error('That is not a recovery key: expected 32 bytes, got '+priv.length+'.');
+ if(c.ciphertext){
+  var X=window.JoineryPQ&&window.JoineryPQ.xwing;if(!X){priv.fill(0);throw new Error('This page could not load its encryption code. Reload it.');}
+  var kp=X.keygen(priv),xp=new Uint8Array(kp.publicKey);if(kp.secretKey&&kp.secretKey!==priv)kp.secretKey.fill(0);
+  var xf=h(await subtle.digest('SHA-256',xp));
+  if(xf!==c.fingerprint){priv.fill(0);throw new Error('That recovery key has fingerprint '+xf.slice(0,16)+', and this server is sealed to '+c.fingerprint.slice(0,16)+'.');}
+  var ss=new Uint8Array(X.decapsulate(d(c.ciphertext),priv));priv.fill(0);
+  var hk=await subtle.importKey('raw',ss,'HKDF',false,['deriveBits']);ss.fill(0);
+  var dk=new Uint8Array(await subtle.deriveBits({name:'HKDF',hash:'SHA-256',salt:new Uint8Array(0),info:new TextEncoder().encode('joinery-seal:v2:dek')},hk,256));
+  var out={shared:e(dk),public_key:e(xp)};dk.fill(0);return out;}
  var pk=new Uint8Array(48);pk.set(PKCS8,0);pk.set(priv,16);priv.fill(0);var key;
  try{key=await subtle.importKey('pkcs8',pk,{name:'X25519'},true,['deriveBits']);}catch(x){throw new Error('This browser cannot do X25519. Use a current Chrome, Firefox or Safari.');}finally{pk.fill(0);}
  var j=await subtle.exportKey('jwk',key);var pub=du(j.x);j.d='';

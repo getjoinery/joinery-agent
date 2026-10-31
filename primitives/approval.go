@@ -102,8 +102,13 @@ type ApprovalStatement struct {
 // key, the one value that opens this box (copy_take_key's construction), and
 // sends it with the approval. The recovery key itself stays in the browser.
 type ApprovalKeyBox struct {
-	// EphemeralPublic is the sealed box's ephemeral X25519 public key, base64.
-	EphemeralPublic string `json:"ephemeral_public"`
+	// The box as the page needs it to half-open it, one of the two:
+	// Ciphertext, base64, the X-Wing ciphertext of a v2 box (a backup sealed to
+	// an X-Wing recovery key), for which the page posts the box's dek-scope key;
+	// EphemeralPublic, base64, the ephemeral X25519 key of a v1 sealed box (a
+	// backup sealed to an old recovery key), for which it posts the X25519.
+	Ciphertext      string `json:"ciphertext,omitempty"`
+	EphemeralPublic string `json:"ephemeral_public,omitempty"`
 	// RecoveryFingerprint is the SHA-256, hex, of the recovery public key the
 	// box is sealed to: the key the operator must paste.
 	RecoveryFingerprint string `json:"recovery_fingerprint"`

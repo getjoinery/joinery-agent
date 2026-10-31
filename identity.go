@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"joinery-agent/primitives"
+	"joinery-agent/xwing"
 )
 
 // Node posture: the agent takes work from its control plane over an outbound
@@ -55,6 +57,11 @@ type NodeIdentity struct {
 	// clampPollInterval before it is used, because it came from the wire.
 	PollSeconds int  `json:"poll_seconds,omitempty"`
 	TLSInsecure bool `json:"tls_insecure,omitempty"`
+	// KEMSeed is this machine's X-Wing secret, base64 (a 32-byte seed): what
+	// a copy export is sealed to, since an Ed25519 key has no ML-KEM half
+	// (specs/post_quantum_sealing.md R6). Minted on the first run without one
+	// (EnsureKEM) and reported, signed by the identity key, at every poll.
+	KEMSeed string `json:"kem_seed,omitempty"`
 
 	private ed25519.PrivateKey
 }
@@ -195,6 +202,55 @@ func (k nodeKey) SignDomain(domain string, message []byte) ([]byte, error) {
 
 func (k nodeKey) OpenSealed(blob []byte) ([]byte, error) {
 	return primitives.OpenSealedToAgentKey(k.id.private, blob)
+}
+
+func (k nodeKey) OpenKEMSealed(blob []byte, scope string) ([]byte, error) {
+	seed, err := base64.StdEncoding.DecodeString(k.id.KEMSeed)
+	if err != nil || len(seed) != xwing.SeedBytes {
+		return nil, errors.New("this machine holds no post-quantum key, so nothing sealed to one opens here")
+	}
+	defer xwing.Zero(seed)
+	return xwing.Open(blob, seed, scope)
+}
+
+// EnsureKEM mints this machine's KEM seed when its identity has none and
+// saves the identity at path. Idempotent; an identity that has one is left
+// as it is.
+func (id *NodeIdentity) EnsureKEM(path string) error {
+	if id.KEMSeed != "" {
+		return nil
+	}
+	seed, err := xwing.NewSeed()
+	if err != nil {
+		return err
+	}
+	id.KEMSeed = base64.StdEncoding.EncodeToString(seed)
+	xwing.Zero(seed)
+	if err := id.Save(path); err != nil {
+		id.KEMSeed = ""
+		return err
+	}
+	return nil
+}
+
+// KEMStatement is the KEM public key, base64, and the identity key's
+// signature over it (primitives.AgentKEMMessage), as a poll reports them.
+func (id *NodeIdentity) KEMStatement() (string, string, error) {
+	seed, err := base64.StdEncoding.DecodeString(id.KEMSeed)
+	if err != nil || len(seed) != xwing.SeedBytes {
+		return "", "", errors.New("no KEM seed")
+	}
+	defer xwing.Zero(seed)
+	pub, err := xwing.PublicKey(seed)
+	if err != nil {
+		return "", "", err
+	}
+	pubB64 := base64.StdEncoding.EncodeToString(pub)
+	sig, err := (nodeKey{id}).SignDomain(primitives.AgentKEMDomain, primitives.AgentKEMMessage(pubB64))
+	if err != nil {
+		return "", "", err
+	}
+	return pubB64, base64.StdEncoding.EncodeToString(sig), nil
 }
 
 // currentNodeKey is this machine's agent key from its identity file right

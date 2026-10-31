@@ -112,9 +112,11 @@ type RemoteJob struct {
 // RemoteSource is the node-posture job source.
 type RemoteSource struct {
 	identity *NodeIdentity
-	policy   *primitives.Policy
-	env      *primitives.ExecEnv
-	client   *http.Client
+	// kemMintFailed: minting the KEM key failed once; not tried at every poll.
+	kemMintFailed bool
+	policy        *primitives.Policy
+	env           *primitives.ExecEnv
+	client        *http.Client
 
 	pollInterval time.Duration
 	backoff      time.Duration
@@ -496,6 +498,20 @@ func (r *RemoteSource) claim(ctx context.Context) (*RemoteJob, error) {
 		// that has a site tree to verify scripts against. It is the only
 		// evidence the plane gets that the bundle actually landed somewhere.
 		claimBody["bundle_version"] = installedBundleVersion()
+		// This machine's own X-Wing key and the identity key's signature over
+		// it (specs/post_quantum_sealing.md R6): what a copy export to this
+		// machine is sealed to. Minted the first time an agent runs without
+		// one; the plane keeps it only when the signature verifies.
+		if r.identity.KEMSeed == "" && !r.kemMintFailed {
+			if err := r.identity.EnsureKEM(IdentityPath()); err != nil {
+				r.kemMintFailed = true
+				log.Printf("could not make this machine's post-quantum key: %v", err)
+			}
+		}
+		if pub, sig, err := r.identity.KEMStatement(); err == nil {
+			claimBody["kem_public_key"] = pub
+			claimBody["kem_signature"] = sig
+		}
 		// Where the owner's log-access switch stands (specs/agent_log_access.md
 		// §1, "reported at poll"): "on" or "off", from the one rule the log
 		// words themselves use, so the plane can show the switch and disable

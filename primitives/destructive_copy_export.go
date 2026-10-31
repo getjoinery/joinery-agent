@@ -73,12 +73,19 @@ import (
 	"time"
 
 	"golang.org/x/crypto/nacl/box"
+
+	"joinery-agent/xwing"
 )
 
-// siteKeyFile is this machine's backup keypair, under config/: base64 of
-// the 32-byte secret key followed by the 32-byte public key
-// (BackupEnvelope::SITE_KEY_FILE).
-const siteKeyFile = "backup_site_key"
+// siteKeyFile is this machine's backup key, under config/: base64 of its
+// 32-byte X-Wing seed (BackupEnvelope::SITE_KEY_FILE). siteKeyRetiredFile is
+// the old X25519 keypair the converger moved aside when it minted the seed
+// (base64 of the 32-byte secret then the 32-byte public key): chains begun
+// before that are sealed to it (specs/post_quantum_sealing.md R7).
+const (
+	siteKeyFile        = "backup_site_key"
+	siteKeyRetiredFile = "backup_site_key.retired"
+)
 
 func init() {
 	Register(Primitive{
@@ -94,6 +101,11 @@ func init() {
 			// to, and what the operator approves by its fingerprint.
 			{Name: "target_public_key", Type: ParamString, Required: true, MaxLen: 64,
 				Pattern: base64Key},
+			// The copy's X-Wing key and its agent key's signature over it
+			// (AgentKEMDomain): what the bundle is sealed to, once the
+			// signature verifies against target_public_key.
+			{Name: "target_kem_public_key", Type: ParamString, Required: true, MaxLen: 2048},
+			{Name: "target_kem_signature", Type: ParamString, Required: true, MaxLen: 128},
 			// Hand over the site's backup history too.
 			{Name: "history", Type: ParamBool},
 		},
@@ -113,6 +125,7 @@ type copyExportPlan struct {
 	sum         string
 	uploaded    string
 	target      ed25519.PublicKey
+	targetKEM   []byte
 	hostFiles   []copyHostFile
 	host        copyHostSummary
 	profile     BackupProfile
@@ -136,8 +149,11 @@ func planCopyExport(ctx context.Context, env *ExecEnv, params Params) (*copyExpo
 	if err != nil {
 		return nil, refusedf("copy_export: the target key %v", err)
 	}
-	if _, err := ed25519PublicToX25519(target); err != nil {
-		return nil, refusedf("copy_export: the target key cannot be sealed to: %v", err)
+	// The bundle is sealed to the copy's X-Wing key, and only once its own
+	// agent key (the one the owner approves by fingerprint) has signed it.
+	targetKEM, err := VerifiedAgentKEM(target, params.String("target_kem_public_key"), params.String("target_kem_signature"))
+	if err != nil {
+		return nil, refusedf("copy_export: %v", err)
 	}
 
 	profile := BackupProfile(params.String("profile"))
@@ -165,7 +181,7 @@ func planCopyExport(ctx context.Context, env *ExecEnv, params Params) (*copyExpo
 	}
 	plan := &copyExportPlan{
 		chainID: chainID, manifest: manifest, sum: sum, uploaded: match.UploadedTime,
-		target: target, hostFiles: files, host: host, profile: profile,
+		target: target, targetKEM: targetKEM, hostFiles: files, host: host, profile: profile,
 	}
 	if params.Bool("history") {
 		history, err := ledgerHistory(env, profile, copyHistoryMax)
@@ -270,7 +286,7 @@ func copyExportRun(ctx context.Context, env *ExecEnv, params Params) (map[string
 	}
 	zero(payload)
 
-	sealed, err := sealToAgentKey(plan.target, gz.Bytes())
+	sealed, err := xwing.Seal(gz.Bytes(), plan.targetKEM, CopySealScope)
 	if err != nil {
 		return nil, refusedf("copy_export: %v", err)
 	}
@@ -281,6 +297,7 @@ func copyExportRun(ctx context.Context, env *ExecEnv, params Params) (map[string
 		SourceNodeID: nodeID,
 		SourceKey:    base64.StdEncoding.EncodeToString(key.PublicKey()),
 		TargetKey:    base64.StdEncoding.EncodeToString(plan.target),
+		Seal:         CopySealXWing,
 		Issued:       issued.Format(time.RFC3339Nano),
 		Expires:      issued.Add(copyExportLifetime).Format(time.RFC3339Nano),
 		Sealed:       base64.StdEncoding.EncodeToString(sealed),
@@ -309,23 +326,50 @@ func copyExportRun(ctx context.Context, env *ExecEnv, params Params) (map[string
 }
 
 // openChainDataKey opens the chain data key from a manifest's envelope with
-// this machine's own backup_site_key: libsodium sealed boxes, one per
-// recipient (BackupEnvelope::build).
+// this machine's own backup key (BackupEnvelope::build): a version-2
+// recipient ("alg": "xwing") with the X-Wing seed in backup_site_key, a
+// version-1 one (a libsodium sealed box) with the retired X25519 keypair, or
+// with a backup_site_key that is still a keypair on a machine not converged
+// since. Each recipient is matched by its fingerprint, never tried blind.
 func openChainDataKey(env *ExecEnv, manifest string) (string, error) {
-	raw, err := os.ReadFile(filepath.Join(strings.TrimRight(env.SiteRoot, "/"), "config", siteKeyFile))
+	config := filepath.Join(strings.TrimRight(env.SiteRoot, "/"), "config")
+	current, err := readSiteKey(filepath.Join(config, siteKeyFile))
 	if err != nil {
 		return "", fmt.Errorf("this machine's backup key cannot be read: %v", err)
 	}
-	pair, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(raw)))
-	zero(raw)
-	if err != nil || len(pair) != 64 {
-		return "", errors.New("this machine's backup key is not a keypair")
+	defer zero(current)
+	retired, _ := readSiteKey(filepath.Join(config, siteKeyRetiredFile))
+	defer zero(retired)
+
+	var seed, pair []byte
+	for _, k := range [][]byte{current, retired} {
+		switch len(k) {
+		case xwing.SeedBytes:
+			if seed == nil {
+				seed = k
+			}
+		case 64:
+			if pair == nil {
+				pair = k
+			}
+		}
 	}
-	defer zero(pair)
-	var priv, pub [32]byte
-	copy(priv[:], pair[:32])
-	copy(pub[:], pair[32:])
-	defer zero(priv[:])
+	if seed == nil && pair == nil {
+		return "", errors.New("this machine's backup key is neither an X-Wing seed nor a keypair")
+	}
+	var xwFpr, v1Fpr string
+	if seed != nil {
+		pub, err := xwing.PublicKey(seed)
+		if err != nil {
+			return "", err
+		}
+		sum := sha256.Sum256(pub)
+		xwFpr = hex.EncodeToString(sum[:])
+	}
+	if pair != nil {
+		sum := sha256.Sum256(pair[32:])
+		v1Fpr = hex.EncodeToString(sum[:])
+	}
 
 	body, err := os.ReadFile(manifest)
 	if err != nil {
@@ -334,8 +378,10 @@ func openChainDataKey(env *ExecEnv, manifest string) (string, error) {
 	var m struct {
 		Envelope struct {
 			Recipients []struct {
-				Kind   string `json:"kind"`
-				Sealed string `json:"sealed"`
+				Kind        string `json:"kind"`
+				Fingerprint string `json:"fingerprint"`
+				Sealed      string `json:"sealed"`
+				Alg         string `json:"alg"`
 			} `json:"recipients"`
 		} `json:"envelope"`
 	}
@@ -347,11 +393,37 @@ func openChainDataKey(env *ExecEnv, manifest string) (string, error) {
 		if err != nil {
 			continue
 		}
-		if opened, ok := box.OpenAnonymous(nil, blob, &pub, &priv); ok {
-			return string(opened), nil
+		switch {
+		case r.Alg == "xwing" && xwFpr != "" && r.Fingerprint == xwFpr:
+			if opened, err := xwing.Open(blob, seed, xwing.ScopeDEK); err == nil {
+				return string(opened), nil
+			}
+		case r.Alg == "" && v1Fpr != "" && r.Fingerprint == v1Fpr:
+			var priv, pub [32]byte
+			copy(priv[:], pair[:32])
+			copy(pub[:], pair[32:])
+			opened, ok := box.OpenAnonymous(nil, blob, &pub, &priv)
+			zero(priv[:])
+			if ok {
+				return string(opened), nil
+			}
 		}
 	}
 	return "", errors.New("no recipient of the chain's envelope is this machine's key")
+}
+
+// readSiteKey reads a site key file's base64 bytes; nil when there is none.
+func readSiteKey(path string) ([]byte, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	key, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(raw)))
+	zero(raw)
+	if err != nil {
+		return nil, fmt.Errorf("%s is not base64", filepath.Base(path))
+	}
+	return key, nil
 }
 
 // decodeAgentKey reads a base64 Ed25519 public key.

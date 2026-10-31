@@ -202,8 +202,13 @@ type NodeKey interface {
 	// The agent's own request domain is refused, so no primitive can ever
 	// produce a signature the management node would take as this machine's.
 	SignDomain(domain string, message []byte) ([]byte, error)
-	// OpenSealed opens what was sealed to this key (copy_seal.go).
+	// OpenSealed opens what was sealed to this key (copy_seal.go): the
+	// Ed25519-as-X25519 seal an agent before 1.99.0 makes.
 	OpenSealed(blob []byte) ([]byte, error)
+	// OpenKEMSealed opens what was sealed to this machine's X-Wing key
+	// (AgentKEMDomain): a v2 seal under scope, made with the seed it holds
+	// beside its identity.
+	OpenKEMSealed(blob []byte, scope string) ([]byte, error)
 }
 
 // ScriptTree is the one answer to "which tree does this machine run scripts

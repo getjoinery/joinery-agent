@@ -1,7 +1,6 @@
 package main
 
 import (
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -10,10 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"golang.org/x/crypto/curve25519"
-	"golang.org/x/crypto/nacl/box"
-
 	"joinery-agent/primitives"
+	"joinery-agent/xwing"
 )
 
 // A challenge this agent sealed, written out so the BROWSER CODE can be asked to
@@ -37,17 +34,14 @@ func TestApprovalChallengeFixture(t *testing.T) {
 		t.Skip("set JOINERY_APPROVAL_FIXTURE to write a browser-parity fixture")
 	}
 
-	// A recovery keypair of the shape the platform's own is: a raw 32-byte
-	// X25519 scalar, which is what an operator pastes out of their password
-	// manager and what WebCrypto is handed after a PKCS#8 wrapper is put around
-	// it. Both sides clamp at use, so no clamping happens here — and that is
-	// worth exercising rather than working around, because it is what the real
-	// key does.
-	var secret [32]byte
-	if _, err := rand.Read(secret[:]); err != nil {
+	// A recovery keypair of the shape the platform's own is: a 32-byte X-Wing
+	// seed, which is what an operator pastes out of their password manager,
+	// and the 1216-byte public key it makes.
+	secret, err := xwing.NewSeed()
+	if err != nil {
 		t.Fatal(err)
 	}
-	public, err := curve25519.X25519(secret[:], curve25519.Basepoint)
+	public, err := xwing.PublicKey(secret)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,17 +59,20 @@ func TestApprovalChallengeFixture(t *testing.T) {
 	}
 
 	// A backup key box (B20): a chain key sealed to the same recovery key, as
-	// a backup another server made seals it. The browser works out the value
-	// that opens it (openKeyBox); the agent finishes it with that value. The
-	// expected value is checked to open the box here, so the gate's
-	// comparison is against a value known to work.
-	var pub32 [32]byte
-	copy(pub32[:], public)
-	sealedKey, err := box.SealAnonymous(nil, []byte("the chain's data key"), &pub32, rand.Reader)
+	// a backup another server made seals it (a v2 dek box). The browser works
+	// out the value that opens it (VaultCrypto.halfOpenKeyBox: the box's
+	// dek-scope key); the agent finishes it with that value. The expected
+	// value is checked to open the box here, so the gate's comparison is
+	// against a value known to work.
+	sealedKey, err := xwing.Seal([]byte("the chain's data key"), public, xwing.ScopeDEK)
 	if err != nil {
 		t.Fatal(err)
 	}
-	shared, err := curve25519.X25519(secret[:], sealedKey[:32])
+	ss, err := xwing.Decapsulate(secret, sealedKey[:xwing.CiphertextBytes])
+	if err != nil {
+		t.Fatal(err)
+	}
+	shared, err := xwing.Key(ss, xwing.ScopeDEK)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,14 +83,14 @@ func TestApprovalChallengeFixture(t *testing.T) {
 
 	body, err := json.MarshalIndent(map[string]string{
 		"challenge":  challenge,
-		"privateKey": base64.StdEncoding.EncodeToString(secret[:]),
+		"privateKey": base64.StdEncoding.EncodeToString(secret),
 		"publicKey":  base64.StdEncoding.EncodeToString(public),
 		"infoPrefix": approvalInfoPrefix,
 		// What the browser must recover, AND what the agent compares against.
 		// The same string, deliberately: the gate asserts they are one thing.
 		"expected": plaintext,
 		// The key box: what the page is shown, and what it must work out.
-		"boxEphemeral":   base64.StdEncoding.EncodeToString(sealedKey[:32]),
+		"boxCiphertext":  base64.StdEncoding.EncodeToString(sealedKey[:xwing.CiphertextBytes]),
 		"boxFingerprint": hex.EncodeToString(fp[:]),
 		"boxShared":      base64.StdEncoding.EncodeToString(shared),
 	}, "", "  ")

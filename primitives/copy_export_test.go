@@ -19,6 +19,8 @@ import (
 
 	"golang.org/x/crypto/curve25519"
 	"golang.org/x/crypto/nacl/box"
+
+	"joinery-agent/xwing"
 )
 
 // The copy export end to end (specs/site_copy.md WP4): copy_export seals on
@@ -37,7 +39,25 @@ var historySum = strings.Repeat("ab", 32)
 
 // testKey is a NodeKey over a key the test holds, as the agent's identity is
 // over the key in its identity file.
-type testKey struct{ priv ed25519.PrivateKey }
+type testKey struct {
+	priv ed25519.PrivateKey
+	kem  []byte // the machine's X-Wing seed
+}
+
+// testKeys finds a test machine's key by its public half, so a test that
+// names a target by its agent key gets that machine's signed KEM key too.
+var testKeys = map[string]testKey{}
+
+// kemStatement is the target's KEM public key and its agent key's signature
+// over it, as the plane passes them on from the target's poll.
+func (k testKey) kemStatement() (string, string) {
+	pub, err := xwing.PublicKey(k.kem)
+	if err != nil {
+		panic(err)
+	}
+	pubB64 := base64.StdEncoding.EncodeToString(pub)
+	return pubB64, base64.StdEncoding.EncodeToString(ed25519.Sign(k.priv, AgentKEMMessage(pubB64)))
+}
 
 func (k testKey) PublicKey() ed25519.PublicKey { return k.priv.Public().(ed25519.PublicKey) }
 func (k testKey) SignDomain(domain string, msg []byte) ([]byte, error) {
@@ -47,6 +67,9 @@ func (k testKey) SignDomain(domain string, msg []byte) ([]byte, error) {
 	return ed25519.Sign(k.priv, msg), nil
 }
 func (k testKey) OpenSealed(blob []byte) ([]byte, error) { return OpenSealedToAgentKey(k.priv, blob) }
+func (k testKey) OpenKEMSealed(blob []byte, scope string) ([]byte, error) {
+	return xwing.Open(blob, k.kem, scope)
+}
 
 func newTestKey(t *testing.T) testKey {
 	t.Helper()
@@ -54,7 +77,13 @@ func newTestKey(t *testing.T) testKey {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return testKey{priv: priv}
+	seed, err := xwing.NewSeed()
+	if err != nil {
+		t.Fatal(err)
+	}
+	k := testKey{priv: priv, kem: seed}
+	testKeys[string(k.PublicKey())] = k
+	return k
 }
 
 type exportFixture struct {
@@ -119,22 +148,25 @@ func newExportFixture(t *testing.T) *exportFixture {
 	// The source: a site root with a backup keypair, a chain manifest sealed
 	// to it, and the ledger entry that vouches for the manifest.
 	sRoot := filepath.Join(t.TempDir(), "sourcesite")
-	sitePub, sitePriv, err := box.GenerateKey(rand.Reader)
+	// The site key is an X-Wing seed and the envelope version 2, as
+	// BackupEnvelope writes them (specs/post_quantum_sealing.md R2).
+	siteSeed, err := xwing.NewSeed()
 	if err != nil {
 		t.Fatal(err)
 	}
-	mustWrite(t, filepath.Join(sRoot, "config", siteKeyFile),
-		base64.StdEncoding.EncodeToString(append(append([]byte{}, sitePriv[:]...), sitePub[:]...)), 0o640)
+	sitePub, _ := xwing.PublicKey(siteSeed)
+	mustWrite(t, filepath.Join(sRoot, "config", siteKeyFile), base64.StdEncoding.EncodeToString(siteSeed), 0o640)
 	f.dataKey = base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
-	sealed, err := box.SealAnonymous(nil, []byte(f.dataKey), sitePub, rand.Reader)
+	sealed, err := xwing.Seal([]byte(f.dataKey), sitePub, xwing.ScopeDEK)
 	if err != nil {
 		t.Fatal(err)
 	}
+	siteFpr := sha256.Sum256(sitePub)
 	manifest, _ := json.Marshal(map[string]interface{}{
 		"chain_id": exportChainID,
-		"envelope": map[string]interface{}{"recipients": []map[string]string{
-			{"kind": "recovery", "sealed": base64.StdEncoding.EncodeToString([]byte("not for this machine"))},
-			{"kind": "site", "sealed": base64.StdEncoding.EncodeToString(sealed)},
+		"envelope": map[string]interface{}{"version": 2, "recipients": []map[string]string{
+			{"kind": "recovery", "alg": "xwing", "fingerprint": strings.Repeat("ab", 32), "sealed": base64.StdEncoding.EncodeToString([]byte("not for this machine"))},
+			{"kind": "site", "alg": "xwing", "fingerprint": hex.EncodeToString(siteFpr[:]), "sealed": base64.StdEncoding.EncodeToString(sealed)},
 		}},
 	})
 	mustWrite(t, filepath.Join(sRoot, "backups", managerSubdir, exportChainID, chainManifestFile), string(manifest), 0o600)
@@ -196,11 +228,14 @@ func mustWrite(t *testing.T, path, body string, mode os.FileMode) {
 }
 
 func (f *exportFixture) exportParams(target ed25519.PublicKey) Params {
+	kemPub, kemSig := testKeys[string(target)].kemStatement()
 	return validParams(f.t, "copy_export", map[string]interface{}{
-		"profile":           "manager",
-		"chain_id":          exportChainID,
-		"target_public_key": base64.StdEncoding.EncodeToString(target),
-		"history":           true,
+		"profile":               "manager",
+		"chain_id":              exportChainID,
+		"target_public_key":     base64.StdEncoding.EncodeToString(target),
+		"target_kem_public_key": kemPub,
+		"target_kem_signature":  kemSig,
+		"history":               true,
 	})
 }
 
@@ -407,9 +442,11 @@ func TestAnExportNotAskedForTheHistoryCarriesNone(t *testing.T) {
 	// anything it does not know, so the management node asks for it only of
 	// a pair that both read it.
 	f := newExportFixture(t)
+	kemPub, kemSig := f.target.kemStatement()
 	out, err := copyExportRun(context.Background(), f.sEnv, validParams(t, "copy_export", map[string]interface{}{
 		"profile": "manager", "chain_id": exportChainID,
-		"target_public_key": base64.StdEncoding.EncodeToString(f.target.PublicKey()),
+		"target_public_key":     base64.StdEncoding.EncodeToString(f.target.PublicKey()),
+		"target_kem_public_key": kemPub, "target_kem_signature": kemSig,
 	}))
 	if err != nil {
 		t.Fatal(err)
@@ -786,5 +823,64 @@ func gzipBytes(t *testing.T, b []byte) []byte {
 func TestSignDomainMessagesAreNeverRequestSignatures(t *testing.T) {
 	if strings.HasPrefix(string(copyExportSigned([]byte("x"))), "joinery-agent-v1\n") {
 		t.Fatal("the export signs a message in the request domain")
+	}
+}
+
+// A chain begun before the site key became an X-Wing seed is sealed to the
+// old keypair the converger moved to backup_site_key.retired: its data key
+// still opens, from that file, by its fingerprint.
+func TestAChainSealedToTheRetiredSiteKeyStillOpens(t *testing.T) {
+	root := t.TempDir()
+	seed, _ := xwing.NewSeed()
+	mustWrite(t, filepath.Join(root, "config", siteKeyFile), base64.StdEncoding.EncodeToString(seed), 0o640)
+	oldPub, oldPriv, err := box.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(root, "config", siteKeyRetiredFile),
+		base64.StdEncoding.EncodeToString(append(append([]byte{}, oldPriv[:]...), oldPub[:]...)), 0o640)
+	sealed, _ := box.SealAnonymous(nil, []byte("the old chain's key"), oldPub, rand.Reader)
+	fpr := sha256.Sum256(oldPub[:])
+	manifest, _ := json.Marshal(map[string]interface{}{"envelope": map[string]interface{}{"version": 1, "recipients": []map[string]string{
+		{"kind": "site", "fingerprint": hex.EncodeToString(fpr[:]), "sealed": base64.StdEncoding.EncodeToString(sealed)},
+	}}})
+	path := filepath.Join(root, "manifest.json")
+	mustWrite(t, path, string(manifest), 0o600)
+	got, err := openChainDataKey(&ExecEnv{SiteRoot: root}, path)
+	if err != nil || got != "the old chain's key" {
+		t.Fatalf("a chain sealed to the retired key does not open: %q %v", got, err)
+	}
+}
+
+// The bundle is sealed to the copy's X-Wing key only when the copy's own
+// agent key signed it: a management node that hands the source another KEM
+// key (its own) gets a refusal, not a bundle it could open.
+func TestAnExportSealsOnlyToAKEMKeyTheCopySigned(t *testing.T) {
+	f := newExportFixture(t)
+	impostor := newTestKey(t)
+	impPub, _ := impostor.kemStatement()
+	_, realSig := f.target.kemStatement()
+	_, impSig := impostor.kemStatement()
+	for name, kem := range map[string][2]string{
+		"another KEM key with the copy's signature": {impPub, realSig},
+		"another KEM key signed by another machine": {impPub, impSig},
+		"no KEM key at all":                         {"", ""},
+	} {
+		_, err := copyExportRun(context.Background(), f.sEnv, Params{values: map[string]interface{}{
+			"profile": "manager", "chain_id": exportChainID,
+			"target_public_key":     base64.StdEncoding.EncodeToString(f.target.PublicKey()),
+			"target_kem_public_key": kem[0], "target_kem_signature": kem[1],
+		}})
+		if !Refused(err) {
+			t.Errorf("%s: sealed anyway (%v)", name, err)
+		}
+	}
+	var b copyBundle
+	_ = json.Unmarshal([]byte(f.export(t, f.target.PublicKey())), &b)
+	raw, _ := base64.StdEncoding.DecodeString(b.Body)
+	var body copyBundleBody
+	_ = json.Unmarshal(raw, &body)
+	if body.Seal != CopySealXWing {
+		t.Errorf("the bundle does not say it is sealed to the copy's X-Wing key: %q", body.Seal)
 	}
 }

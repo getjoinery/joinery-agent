@@ -1,0 +1,14 @@
+{
+    "version": 2,
+    "artifact": "data-root",
+    "cipher": "luks2-volume-key",
+    "created": "2026-10-31T00:00:00Z",
+    "recipients": [
+        {
+            "kind": "recovery",
+            "fingerprint": "ab7dc94c6e67f5f834676e5d4ed3f8d9654d8c22d8668f7fac71c4292b2acce0",
+            "sealed": "rb1hrjOXLj9wDc+V7ya4EgEFtG0+7bivuJ7Bjrk6j8EIuvrry069YGHWbbuERXvYv3QTmLlAt/F15jv5OyDDap1gPY8otHvOe6DoCFZ8TSB0j8qyz9ofwBiOoakhRyVDCP2f+O5mDlF1cLxkggOnKTezMsdAUbouhylOZgFdhCvGi5mN6UvPjq0qDa+gzKwSxzOLXQkjLVdzhQ3WT9YUD1pj08MGKICnUf+LT2z3beo57PT412YMkvayJV09qhiK1oT9C6gkLc2hrAUJoz78Uf9HYASpgkJ2BxAtJSCWTvGmvHCrUpJ5rijqcHx8nVe0DjdySTcq8WNyID4uwUfRtrlGmVmiSaPmTVGHooS2jxK1ZXbY9E3mEqfegMzVFoLpV9ifBF6USMbfF8LlzYXEgFG9VZlQQEWmsjCGVps9Al09vcH+f4Rp3sAy3FewZTPEUJWm13zUs9KNZiM3C3GUlMRb8N1hm9Vzue4qugs+57LJrvqJIVkzzxhQLswKhs/Qz0uYn1ARyNa+begD+ttb5JrFHorsuY8fUkj0FgZcbcM+i11VO1A6ApLcqZJ1CDuMhBta/9G5al0+ar8yaHTJdeTRazrgENQIRJEQdtEL6ETxrOAMYP8q5O33Royb7kMi9HMIL9o2rQcxpLI+c2YtdNajLPw6JjxOfbkpQPY2og4zG0gMMFOye40YVztiDTWwfwspkM1jQbpa1lc6fjwGD3j8c0r/hU3zB7GDcnxZiILq6prEWU0ZOK0qECPDG61mZQidNE+UQ+WCY/utaT3dkv0iTOqom5Oti8x5/ZWWSzJDq63FJ0IcEmAEvb2qwWuwLeeGZI+WXMCJ0od3M5F0IPQEkgFXCS7GbrS+7J26r8PSBpBHx3rP/4CaqhTIQcTNS/qydawsoz1aWgj8sSypP10oh/c0zlU7bqgiE/Si/PB1UHnhxMJoGsE5cD1UvBd2lV3L+rmEzPQterOrjkAxh7pHZioa5CrR1zDRQdWg0sVkjftZoZu0R1nzaYCuhFAKnwSxXyD4wO8EA8vNjV/3m1cl6xtideG5vSBo+xiBIDFglmMDgEuupo0lWLfZiaK8gcROKK/eRsjVlCPfh88TnOpTw29O9WVNkWTMW4Nc7kxx2rtDHZX1HA1kqy7hM3Zm8nZI270aueYvo9t47pDrJ8FR8g94XGzfdCbThtUPPMUoc5qXNbZnbNjzgkx6S5+7d+la4iyzzRSmJX4Sh/uDCjCx+IkoaR0avMiZwuuP8Czoc6lGOnB4pkWCKuZtwNBcfcureeTGkgtZal6oVML/kab9L0TrF92ZvtY7nuSFiCum0e/eZ8LRZGGBshf8mdE0cDRFbbpV06ObfWtdBMtnxxVXYynDiUfS5Z/mSNBG+yv1lDUvrKiRHXhRl7jW8g2ijOqTkoQyiZm0Sh6qlL61/XuiiRViwDyqO5mxqGQHxI6jybekge1HeBIHRDz6fbIE2oRhfSRExiYBIpBYRupTU+E3qb7jmC8H+dcrmxoyg6BmgzUXxlIwLiS7cKFtOBRH2bSkGPjEq13ZK0vM5kZzBKJf/HTe2AgYzl8maITGOJU/X0h/gH30rjCggf3IEovpTP3qqfiBDCAMziIs",
+            "alg": "xwing"
+        }
+    ]
+}

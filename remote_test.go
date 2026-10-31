@@ -33,6 +33,9 @@ func testIdentity(t *testing.T, planeURL string, nodeID int64) *NodeIdentity {
 
 func testSource(t *testing.T, id *NodeIdentity) *RemoteSource {
 	t.Helper()
+	// A claim mints the machine's KEM key and saves the identity: never to
+	// this machine's real identity file.
+	t.Setenv("AGENT_IDENTITY_PATH", filepath.Join(t.TempDir(), "identity.json"))
 	return NewRemoteSource(id,
 		&primitives.Policy{Accept: []primitives.Class{primitives.ClassObserve, primitives.ClassOperate}},
 		&primitives.ExecEnv{SiteRoot: t.TempDir(), WebRoot: t.TempDir(), Manifest: primitives.UnavailableVerifier{}},

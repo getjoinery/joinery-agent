@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/aes"
-	"crypto/cipher"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -16,10 +14,8 @@ import (
 	"strings"
 	"time"
 
-	"golang.org/x/crypto/curve25519"
-	"golang.org/x/crypto/hkdf"
-
 	"joinery-agent/primitives"
+	"joinery-agent/xwing"
 )
 
 // The node-side approval for a destructive job.
@@ -493,7 +489,7 @@ func (a *SettingsApproval) await(ctx context.Context, jobID int64, expected stri
 func openApprovalKeyBox(keyBox *primitives.ApprovalKeyBox, answer approvalAnswer) error {
 	shared, err1 := base64.StdEncoding.DecodeString(strings.TrimSpace(answer.Shared))
 	public, err2 := base64.StdEncoding.DecodeString(strings.TrimSpace(answer.PublicKey))
-	if err1 != nil || err2 != nil || len(shared) != 32 || len(public) != 32 {
+	if err1 != nil || err2 != nil || len(shared) != 32 || (len(public) != 32 && len(public) != xwing.PublicKeyBytes) {
 		return fmt.Errorf("the approval did not carry what opens it (the page that answered may be older than " +
 			"this agent: reload it and approve again)")
 	}
@@ -521,11 +517,19 @@ func (a *SettingsApproval) provenRecoveryKey() ([]byte, error) {
 			Reason: scope.party + "'s recovery key setting could not be read, so approval cannot be asked for"}
 	}
 	raw, decodeErr := base64.StdEncoding.DecodeString(trimSpace(b64))
-	if trimSpace(b64) == "" || decodeErr != nil || len(raw) != curve25519.ScalarSize {
+	if trimSpace(b64) == "" || decodeErr != nil {
 		return nil, &primitives.RefusalError{
 			Reason: scope.party + " has no usable backup recovery key, so there is no one to ask to " +
 				"approve a " + scope.act + ". Set one up on its own Backups page first — it is the same " +
 				"key that opens its backups"}
+	}
+	if len(raw) != xwing.PublicKeyBytes {
+		// A 32-byte key is an old X25519 one: the browser opens only an X-Wing
+		// challenge, so a challenge sealed to it could never be answered.
+		return nil, &primitives.RefusalError{
+			Reason: scope.party + "'s recovery key is an old X25519 key, which nothing seals to any more, so " +
+				"a " + scope.act + " cannot be approved with it. Rotate it on its own Backups page (Recovery " +
+				"key, Actions, Rotate key) first"}
 	}
 
 	proof, _ := a.store.Read(settingRecoveryProof)
@@ -559,59 +563,21 @@ func scopedApprovalPlaintext(tag string, secret []byte, jobID int64, statementSH
 		tag, base64.StdEncoding.EncodeToString(secret), jobID, statementSHA)
 }
 
-// sealToRecoveryKey produces the blob the browser opens: ephemeral X25519 →
-// HKDF-SHA256 → AES-256-GCM, laid out as
-// base64( ephemeralPublic[32] || iv[12] || ciphertext || tag[16] ).
+// sealToRecoveryKey produces the blob the browser opens: a v2 X-Wing seal to
+// the 1216-byte recovery key under the scope's own label,
+// base64( ct[1120] || iv[12] || ciphertext || tag[16] ), with the AES key
+// HKDF-SHA256(shared, ”, 'joinery-seal:v2:' || infoPrefix).
 //
-// Byte-for-byte the construction BackupRecoveryKey::browser_challenge() uses,
-// because the browser code that opens it is the same code — only the HKDF info
-// string differs, which is what keeps an approval challenge, a possession
-// challenge, and each scope's approval challenges from ever being answers to
-// one another. It is NOT libsodium's sealed box: that is the backup envelope's
-// construction, and it has no WebCrypto equivalent, so a challenge built that
-// way could not be opened on the page where the operator actually is.
+// Byte-for-byte the construction BackupRecoveryKey::browser_challenge() uses
+// (SealedBox::sealV2), because the browser code that opens it is the same code
+// (VaultCrypto.openChallenge) — only the scope differs, which is what keeps an
+// approval challenge, a possession challenge, each scope's approval challenges
+// and every key seal (scope dek) from ever being answers to one another.
 func sealToRecoveryKey(infoPrefix string, recipient []byte, plaintext string) (string, error) {
-	var ephSecret [32]byte
-	if _, err := rand.Read(ephSecret[:]); err != nil {
-		return "", err
-	}
-	ephPublic, err := curve25519.X25519(ephSecret[:], curve25519.Basepoint)
+	blob, err := xwing.Seal([]byte(plaintext), recipient, infoPrefix)
 	if err != nil {
 		return "", err
 	}
-	shared, err := curve25519.X25519(ephSecret[:], recipient)
-	if err != nil {
-		return "", err
-	}
-	zero(ephSecret[:])
-
-	info := append([]byte(infoPrefix), ephPublic...)
-	info = append(info, recipient...)
-	aesKey := make([]byte, 32)
-	if _, err := hkdf.New(sha256.New, shared, nil, info).Read(aesKey); err != nil {
-		return "", err
-	}
-	zero(shared)
-
-	block, err := aes.NewCipher(aesKey)
-	if err != nil {
-		return "", err
-	}
-	zero(aesKey)
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return "", err
-	}
-	iv := make([]byte, gcm.NonceSize())
-	if _, err := rand.Read(iv); err != nil {
-		return "", err
-	}
-	sealed := gcm.Seal(nil, iv, []byte(plaintext), nil)
-
-	blob := make([]byte, 0, len(ephPublic)+len(iv)+len(sealed))
-	blob = append(blob, ephPublic...)
-	blob = append(blob, iv...)
-	blob = append(blob, sealed...)
 	return base64.StdEncoding.EncodeToString(blob), nil
 }
 

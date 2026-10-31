@@ -98,9 +98,12 @@ var storedManifestClient = &http.Client{
 
 // StoredManifest is what the copy learned from the manifest it read.
 type StoredManifest struct {
-	NewestRun  time.Time // the manifest's newest run
-	StoredTime time.Time // the provider's Last-Modified; zero when not checked
-	StoredAt   string    // the provider's name; "" when the date could not be checked
+	NewestRun time.Time // the manifest's newest run
+	// RecoveryAlg is the recovery recipient's alg: "xwing" for a v2 box, "" for
+	// a v1 sealed box (BackupEnvelope's recipient shape).
+	RecoveryAlg string
+	StoredTime  time.Time // the provider's Last-Modified; zero when not checked
+	StoredAt    string    // the provider's name; "" when the date could not be checked
 }
 
 // readStoredManifest downloads the chain's manifest from rawURL and holds it
@@ -146,6 +149,7 @@ func readStoredManifest(ctx context.Context, rawURL, chainID, manifestSHA, seale
 				Kind        string `json:"kind"`
 				Fingerprint string `json:"fingerprint"`
 				Sealed      string `json:"sealed"`
+				Alg         string `json:"alg"`
 			} `json:"recipients"`
 		} `json:"envelope"`
 		Runs []struct {
@@ -161,6 +165,7 @@ func readStoredManifest(ctx context.Context, rawURL, chainID, manifestSHA, seale
 	matched := false
 	for _, r := range m.Envelope.Recipients {
 		if r.Kind == "recovery" && r.Fingerprint == fingerprint && r.Sealed == sealed {
+			out.RecoveryAlg = r.Alg
 			matched = true
 		}
 	}

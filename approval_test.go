@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -16,10 +15,10 @@ import (
 	"testing"
 	"time"
 
-	"golang.org/x/crypto/curve25519"
 	"golang.org/x/crypto/hkdf"
 
 	"joinery-agent/primitives"
+	"joinery-agent/xwing"
 )
 
 // The node-side approval, and specifically its refusals — which are the whole
@@ -84,11 +83,11 @@ func (f *fakeSettings) Write(name, value string) error {
 // proven here — the only state that lets a challenge be issued at all.
 func provenKeyStore(t *testing.T) (*fakeSettings, []byte) {
 	t.Helper()
-	var secret [32]byte
-	if _, err := rand.Read(secret[:]); err != nil {
+	secret, err := xwing.NewSeed()
+	if err != nil {
 		t.Fatal(err)
 	}
-	public, err := curve25519.X25519(secret[:], curve25519.Basepoint)
+	public, err := xwing.PublicKey(secret)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +95,7 @@ func provenKeyStore(t *testing.T) (*fakeSettings, []byte) {
 	return newFakeSettings(map[string]string{
 		settingRecoveryPublicKey: base64.StdEncoding.EncodeToString(public),
 		settingRecoveryProof:     hex.EncodeToString(sum[:]),
-	}), secret[:]
+	}), secret
 }
 
 func testStatement() primitives.ApprovalStatement {
@@ -110,29 +109,19 @@ func testStatement() primitives.ApprovalStatement {
 	}
 }
 
-// openChallenge is the operator's browser, in Go: the same X25519 → HKDF-SHA256
-// → AES-256-GCM the shipped JavaScript does. It is here so the round trip can be
-// exercised in a unit test; the check that the REAL browser code agrees with the
-// real sealing code is tests/backups/approval_challenge_parity_gate.sh, which
-// runs the shipped .js file rather than a copy of the algorithm.
+// openChallenge is the operator's browser, in Go: the same v2 X-Wing open
+// under the restore scope that the shipped JavaScript does
+// (VaultCrypto.openChallenge). It is here so the round trip can be exercised
+// in a unit test; the check that the REAL browser code agrees with the real
+// sealing code is tests/backups/approval_challenge_parity_gate.sh, which runs
+// the shipped .js file rather than a copy of the algorithm.
 func openChallenge(t *testing.T, blob string, secret, public []byte) string {
 	t.Helper()
 	raw, err := base64.StdEncoding.DecodeString(blob)
-	if err != nil || len(raw) < 32+12+16 {
+	if err != nil || len(raw) <= xwing.Overhead {
 		t.Fatalf("challenge is not a well-formed blob: %v (%d bytes)", err, len(raw))
 	}
-	ephPub, iv, ct := raw[:32], raw[32:44], raw[44:]
-
-	shared, err := curve25519.X25519(secret, ephPub)
-	if err != nil {
-		t.Fatal(err)
-	}
-	info := append(append([]byte(approvalInfoPrefix), ephPub...), public...)
-	key := make([]byte, 32)
-	if _, err := hkdfRead(shared, info, key); err != nil {
-		t.Fatal(err)
-	}
-	plain, err := gcmOpen(key, iv, ct)
+	plain, err := xwing.Open(raw, secret, approvalInfoPrefix)
 	if err != nil {
 		t.Fatalf("could not open the challenge: %v", err)
 	}
