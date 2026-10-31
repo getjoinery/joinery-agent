@@ -94,8 +94,9 @@ type ScriptSpec struct {
 	// Off by default, and deliberately: the script words in this vocabulary
 	// print COMPILED facts — a unit state, a byte count, a version — and
 	// masking those would corrupt an answer to hide nothing. It is set only
-	// where a script prints text it did not compose, which today is one word:
-	// unit_journal, whose journal lines carry whatever the unit logged.
+	// where a script prints text it did not compose, which today is two words:
+	// unit_journal, whose journal lines carry whatever the unit logged, and
+	// site_converger, whose log lines carry whatever a site's installers printed.
 	//
 	// The redactor masks values in place and never introduces a quote or a
 	// backslash, so a script that prints JSON still prints JSON afterwards.

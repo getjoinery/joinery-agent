@@ -51,6 +51,7 @@ var pinnedMachineWords = []string{
 	"restart_unit",
 	"run_installer",
 	"site_certificate_stage",
+	"site_converger",
 	"site_install",
 	"site_limits",
 	"site_quiet_host",

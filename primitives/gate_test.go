@@ -91,6 +91,12 @@ var pinnedVocabulary = map[string]Class{
 	// of who connected from where, which host_report already refuses to carry.
 	"unit_journal": ClassObserve,
 
+	// Whether one site container's host converger is running, read from its
+	// host (specs/agent_recipes_and_vocabulary.md, running list, 2026-10-31).
+	// Observe, gated by the owner switch and redacted: its log lines are text
+	// the node did not compose.
+	"site_converger": ClassObserve,
+
 	// Where the disk went (§ 11 of the same spec). Observe, NO PARAMETERS, and
 	// sizes only: a directory name and a byte count, never a file name, a
 	// count, a time or an owner. It carries no owner switch because it reads
@@ -396,6 +402,7 @@ var pinnedLogAccessWords = map[string]bool{
 	"site_log_count": true,
 	"log_table_tail": true,
 	"unit_journal":   true,
+	"site_converger": true,
 	"file_head":      true,
 }
 
@@ -415,7 +422,7 @@ func TestLogAccessIsDeclaredNotAssumed(t *testing.T) {
 // corrupt an answer to hide nothing, and NOT masking free text would carry a
 // credential off the machine that produced it.
 func TestScriptRedactionIsDeliberate(t *testing.T) {
-	redacting := map[string]bool{"unit_journal": true}
+	redacting := map[string]bool{"unit_journal": true, "site_converger": true}
 	for _, name := range Names() {
 		p, _ := Lookup(name)
 		if p.Script == nil {
