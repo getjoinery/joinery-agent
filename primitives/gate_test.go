@@ -97,6 +97,12 @@ var pinnedVocabulary = map[string]Class{
 	// the node did not compose.
 	"site_converger": ClassObserve,
 
+	// This site's twenty-five biggest files by name (the running list,
+	// 2026-11-01). Observe, NO PARAMETERS, gated by the owner switch and
+	// redacted: a file name can say what somebody stored. config/ is never
+	// walked and no file is opened.
+	"largest_files": ClassObserve,
+
 	// Where the disk went (§ 11 of the same spec). Observe, NO PARAMETERS, and
 	// sizes only: a directory name and a byte count, never a file name, a
 	// count, a time or an owner. It carries no owner switch because it reads
@@ -403,6 +409,7 @@ var pinnedLogAccessWords = map[string]bool{
 	"log_table_tail": true,
 	"unit_journal":   true,
 	"site_converger": true,
+	"largest_files":  true,
 	"file_head":      true,
 }
 
@@ -422,7 +429,7 @@ func TestLogAccessIsDeclaredNotAssumed(t *testing.T) {
 // corrupt an answer to hide nothing, and NOT masking free text would carry a
 // credential off the machine that produced it.
 func TestScriptRedactionIsDeliberate(t *testing.T) {
-	redacting := map[string]bool{"unit_journal": true, "site_converger": true}
+	redacting := map[string]bool{"unit_journal": true, "site_converger": true, "largest_files": true}
 	for _, name := range Names() {
 		p, _ := Lookup(name)
 		if p.Script == nil {
