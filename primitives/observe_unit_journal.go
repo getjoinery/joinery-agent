@@ -39,9 +39,14 @@ import "time"
 //   - Read the whole journal. The line count is 1..200 in the enum spec and
 //     clamped again in the script; the script caps each line too, so the
 //     agent's 64 KiB output cap is never the thing that bounds the answer.
-//   - Read without the owner's leave. RequiresLogAccess: the dispatcher checks
-//     the agent_log_access switch before this word runs, and a switch that
-//     cannot be read reads OFF.
+//   - Read without the owner's leave. RequiresLogAccess: on a machine with a
+//     site, the dispatcher checks the agent_log_access switch before this word
+//     runs, and a switch that cannot be read reads OFF. On a machine with no
+//     site the units are the host's, whose only owner is the management
+//     node's operator, so there is no switch to ask (log_access.go). No unit
+//     on the list carries a container's output. The one unit whose journal
+//     is about the sites' members (joinery-mail-gateway: sign-ins, addresses)
+//     is refused there (SitelessRefuses).
 //   - Carry anything unmasked. ScriptSpec.Redact runs the node's redactor over
 //     the script's output before it is returned — credentials, the personal
 //     half of an address, IP literals and opaque tokens are masked here, on
@@ -57,12 +62,22 @@ func init() {
 		Name:        "unit_journal",
 		Class:       ClassObserve,
 		Machine:     true,
-		Description: "One unit's state, result, exit status and last journal lines, from a compiled list of units, redacted on the node; refused unless the site's owner allows log access.",
+		Description: "One unit's state, result, exit status and last journal lines, from a compiled list of units, redacted on the node; on a machine with a site, refused unless its owner allows log access.",
 		Params: []ParamSpec{
 			{Name: "unit", Type: ParamEnum, Required: true, Values: unitJournalUnits},
 			{Name: "lines", Type: ParamInt, Min: 1, Max: unitJournalMaxLines},
 		},
 		RequiresLogAccess: true,
+		// The mail apps gateway's journal names the members of the sites it
+		// serves (who signed in, from where); on a machine with no site of
+		// its own those are the container sites' members, and there is no
+		// switch here that could allow reading them.
+		SitelessRefuses: func(params Params) string {
+			if params.String("unit") == "joinery-mail-gateway" {
+				return "this machine has no site, and the mail apps gateway's journal names the members of the sites it serves, so it is not read here"
+			}
+			return ""
+		},
 
 		Script: &ScriptSpec{
 			Interpreter: "/bin/bash",

@@ -120,7 +120,29 @@ type Primitive struct {
 	// declares it, which a body call cannot be asserted about. It is also the
 	// only way a SCRIPT word can be gated at all — a script word has no body
 	// to put the call in.
+	//
+	// WHOSE switch decides is the owner of what is read. A word that reads
+	// this machine's own site asks this machine's switch. A machine word on a
+	// machine with no site of its own reads only the host, whose sole owner is
+	// the management node's operator, so there is nobody else to ask and it
+	// runs. A word that reads one co-resident container site names that site's
+	// parameter in LogAccessSite, and THAT site's own switch decides.
 	RequiresLogAccess bool
+
+	// LogAccessSite names the parameter that says which container site on this
+	// host the word reads. Set, the dispatcher asks that site's own
+	// agent_log_access switch (ExecEnv.SiteLogAccess), after the parameters are
+	// validated, instead of this machine's. Only a machine word that requires
+	// log access may set it, and the parameter must be a required string.
+	LogAccessSite string
+
+	// SitelessRefuses, on a machine word that requires log access, names the
+	// calls that read something other than the host's own even on a machine
+	// with no site (a unit whose journal names the members of the sites it
+	// serves). On such a machine there is no switch to grant those, so the
+	// dispatcher refuses them, after validation, with the reason returned. ""
+	// lets the call run.
+	SitelessRefuses func(params Params) string
 
 	// Quiet says under which quiet reasons this word still runs on a quiet
 	// site (site_state.go). Zero refuses it under both; observe words run
@@ -215,6 +237,23 @@ func Register(p Primitive) {
 	}
 	if p.Class != ClassDestructive && (p.Describe != nil || p.Ceremony != nil) {
 		panic(fmt.Sprintf("primitives: primitive %q is not destructive but declares Describe or Ceremony", p.Name))
+	}
+	if p.SitelessRefuses != nil && (!p.RequiresLogAccess || !p.Machine || p.LogAccessSite != "") {
+		panic(fmt.Sprintf("primitives: primitive %q declares SitelessRefuses but is not a machine word that requires this machine's log access", p.Name))
+	}
+	if p.LogAccessSite != "" {
+		if !p.RequiresLogAccess || !p.Machine {
+			panic(fmt.Sprintf("primitives: primitive %q names LogAccessSite but is not a machine word that requires log access", p.Name))
+		}
+		found := false
+		for _, ps := range p.Params {
+			if ps.Name == p.LogAccessSite && ps.Type == ParamString && ps.Required {
+				found = true
+			}
+		}
+		if !found {
+			panic(fmt.Sprintf("primitives: primitive %q names LogAccessSite %q, which is not a required string parameter", p.Name, p.LogAccessSite))
+		}
 	}
 	if p.Class == ClassObserve && p.Quiet != 0 {
 		panic(fmt.Sprintf("primitives: observe primitive %q declares Quiet; every observe word runs on a quiet site", p.Name))

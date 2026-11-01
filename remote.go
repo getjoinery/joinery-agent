@@ -516,8 +516,9 @@ func (r *RemoteSource) claim(ctx context.Context) (*RemoteJob, error) {
 		// §1, "reported at poll"): "on" or "off", from the one rule the log
 		// words themselves use, so the plane can show the switch and disable
 		// its Logs action with the owner's reason instead of dispatching a job
-		// the node will refuse.
-		if on, _ := primitives.LogAccessOn(ctx, r.env); on {
+		// the node will refuse. A machine with no site reports "on": its
+		// machine log words need no switch (primitives/log_access.go).
+		if primitives.ReportedLogAccess(ctx, r.env) {
 			claimBody["log_access"] = "on"
 		} else {
 			claimBody["log_access"] = "off"

@@ -63,6 +63,9 @@ const (
 	victimDBPortOffset = 1000
 
 	victimDialTimeout = 10 * time.Second
+
+	// victimQueryTimeout bounds each statement on the victim's connection.
+	victimQueryTimeout = 10 * time.Second
 )
 
 // proxyPassPort finds the published web port in the host-owned vhost.
@@ -91,14 +94,30 @@ func victimCeremony(ctx context.Context, site string) (primitives.ApprovalStatem
 		return none, nil, nil, &primitives.RefusalError{Reason: "the site name is not one this host composes paths from"}
 	}
 
-	webPort, err := victimWebPort(site)
+	db, cfg, err := openVictimDB(ctx, site, "its operator cannot be asked to approve its removal — a site that cannot consent is not removed this way")
 	if err != nil {
 		return none, nil, nil, err
 	}
 
+	statement := decommissionStatement(ctx, db, site, cfg)
+	gate := newScopedApproval(victimSettings{db: db}, decommissionScope)
+	cleanup := func() { _ = db.Close() }
+	return statement, gate, cleanup, nil
+}
+
+// openVictimDB connects to one container site's own database, located through
+// the host-owned vhost and the site's config volume (see the file comment).
+// why finishes the refusal when the database does not answer: what cannot
+// happen because it does not. The caller closes the connection.
+func openVictimDB(ctx context.Context, site, why string) (*sql.DB, map[string]string, error) {
+	webPort, err := victimWebPort(site)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	cfg, err := victimConfig(site)
 	if err != nil {
-		return none, nil, nil, err
+		return nil, nil, err
 	}
 
 	dbPort := webPort + victimDBPortOffset
@@ -106,22 +125,17 @@ func victimCeremony(ctx context.Context, site string) (primitives.ApprovalStatem
 		dbPort, quoteDSNValue(cfg["dbname"]), quoteDSNValue(cfg["dbusername"]), quoteDSNValue(cfg["dbpassword"]))
 	db, err := sql.Open("postgres", dsn)
 	if err != nil {
-		return none, nil, nil, &primitives.RefusalError{Reason: fmt.Sprintf(
-			"the site %s's database connection could not be prepared, so its operator cannot be asked: %v", site, err)}
+		return nil, nil, &primitives.RefusalError{Reason: fmt.Sprintf(
+			"the site %s's database connection could not be prepared, so %s: %v", site, why, err)}
 	}
 	pingCtx, cancel := context.WithTimeout(ctx, victimDialTimeout)
 	defer cancel()
 	if err := db.PingContext(pingCtx); err != nil {
 		db.Close()
-		return none, nil, nil, &primitives.RefusalError{Reason: fmt.Sprintf(
-			"the site %s's database did not answer on its published port (127.0.0.1:%d), so its operator "+
-				"cannot be asked to approve its removal — a site that cannot consent is not removed this way", site, dbPort)}
+		return nil, nil, &primitives.RefusalError{Reason: fmt.Sprintf(
+			"the site %s's database did not answer on its published port (127.0.0.1:%d), so %s", site, dbPort, why)}
 	}
-
-	statement := decommissionStatement(ctx, db, site, cfg)
-	gate := newScopedApproval(victimSettings{db: db}, decommissionScope)
-	cleanup := func() { _ = db.Close() }
-	return statement, gate, cleanup, nil
+	return db, cfg, nil
 }
 
 // victimWebPort reads the container's published web port out of the host-owned
@@ -232,14 +246,32 @@ func lastCompletedUpload(ctx context.Context, db *sql.DB) string {
 	return rendered + " — this site's own record of its uploads, not the storage bucket's"
 }
 
-// victimSettings is approvalStore over the victim's connection: the same two
+// victimSettings is approvalStore over the victim's connection. ctx, when
+// set, is the job's own context, so a cancelled word stops its query too; the
+// approval store interface carries none, so a gate's store bounds each
+// statement by victimQueryTimeout alone.: the same two
 // statements readAgentSetting/writeAgentSetting run against the agent's own
-// database, aimed at the victim's.
-type victimSettings struct{ db *sql.DB }
+// database, aimed at the victim's. Each is bounded by victimQueryTimeout: the
+// victim's Postgres is container-controlled, and one that accepts the
+// connection and then never answers would otherwise hold the job lock, and so
+// every job, for good.
+type victimSettings struct {
+	db  *sql.DB
+	ctx context.Context
+}
+
+func (v victimSettings) parent() context.Context {
+	if v.ctx != nil {
+		return v.ctx
+	}
+	return context.Background()
+}
 
 func (v victimSettings) Read(name string) (string, error) {
+	ctx, cancel := context.WithTimeout(v.parent(), victimQueryTimeout)
+	defer cancel()
 	var value sql.NullString
-	err := v.db.QueryRow("SELECT stg_value FROM stg_settings WHERE stg_name = $1", name).Scan(&value)
+	err := v.db.QueryRowContext(ctx, "SELECT stg_value FROM stg_settings WHERE stg_name = $1", name).Scan(&value)
 	if err == sql.ErrNoRows {
 		return "", nil
 	}
@@ -250,7 +282,9 @@ func (v victimSettings) Read(name string) (string, error) {
 }
 
 func (v victimSettings) Write(name, value string) error {
-	_, err := v.db.Exec(
+	ctx, cancel := context.WithTimeout(v.parent(), victimQueryTimeout)
+	defer cancel()
+	_, err := v.db.ExecContext(ctx,
 		`INSERT INTO stg_settings (stg_name, stg_value, stg_usr_user_id, stg_create_time, stg_update_time, stg_group_name)
 		 VALUES ($1, $2, 1, NOW(), NOW(), 'general')
 		 ON CONFLICT (stg_name) DO UPDATE SET stg_value = EXCLUDED.stg_value, stg_update_time = NOW()`,

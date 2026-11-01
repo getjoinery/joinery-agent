@@ -69,6 +69,9 @@ func TestSiteConvergerIsGatedRedactedAndRunsItsScript(t *testing.T) {
 	if !p.RequiresLogAccess {
 		t.Error("site_converger reads a log: it must ask the owner's switch")
 	}
+	if p.LogAccessSite != "site" {
+		t.Errorf("site_converger reads one container site: that site's own switch decides (LogAccessSite %q)", p.LogAccessSite)
+	}
 	if p.Run != nil || p.Script == nil {
 		t.Fatal("site_converger is a script word with no embedded Run")
 	}

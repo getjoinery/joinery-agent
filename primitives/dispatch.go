@@ -138,6 +138,17 @@ type ExecEnv struct {
 	// siteless machine, nil everywhere else.
 	MovedSiteProof func(ctx context.Context, site string) (ApprovalStatement, ApprovalGate, func(), error)
 
+	// Siteless is true on a machine with no Joinery site of its own (a
+	// container host). It decides one thing here: whose leave a machine word
+	// that reads a log needs (log_access.go). It grants nothing else.
+	Siteless bool
+
+	// SiteLogAccess reads one co-resident container site's own
+	// agent_log_access switch from that site's own database, for a word that
+	// reads that site (Primitive.LogAccessSite). Nil means it cannot ask, and
+	// such a word refuses. See site_log_access.go in the agent.
+	SiteLogAccess func(ctx context.Context, site string) (bool, error)
+
 	// MovedSiteCheck runs the same proof for moved_site_check and reports
 	// it instead of enforcing it. Host posture only, as MovedSiteProof.
 	MovedSiteCheck func(ctx context.Context, site string) (map[string]interface{}, error)
@@ -271,8 +282,8 @@ func Execute(ctx context.Context, env *ExecEnv, policy *Policy, req Request) (ma
 	//
 	// The rule itself lives in log_access.go and is not repeated here. Fail
 	// closed: a switch that cannot be read at all reads OFF.
-	if p.RequiresLogAccess {
-		if err := requireLogAccess(ctx, env); err != nil {
+	if p.RequiresLogAccess && p.LogAccessSite == "" {
+		if err := requireLogAccessFor(ctx, env, p); err != nil {
 			return nil, err
 		}
 	}
@@ -333,6 +344,26 @@ func Execute(ctx context.Context, env *ExecEnv, policy *Policy, req Request) (ma
 	// The job's id travels in the context, for a word that stages something
 	// on this site's own page bound to its job (copy_take_key).
 	ctx = WithJobID(ctx, req.JobID)
+
+	// On a machine with no site a machine log word runs without a switch,
+	// except for the calls it names as reading the sites' data rather than the
+	// host's: there is nobody here who could allow those.
+	if p.RequiresLogAccess && p.LogAccessSite == "" && p.SitelessRefuses != nil && p.Machine && env != nil && env.Siteless {
+		if reason := p.SitelessRefuses(params); reason != "" {
+			return nil, refusedf("%s", reason)
+		}
+	}
+
+	// A word that reads one container site on this host asks THAT site's own
+	// switch. After validation, because the question names the site; inside
+	// the word's deadline and counted as running, because the question goes
+	// to a database the container controls, which may never answer; and
+	// before anything is read.
+	if p.RequiresLogAccess && p.LogAccessSite != "" {
+		if err := requireSiteLogAccess(ctx, env, params.String(p.LogAccessSite)); err != nil {
+			return nil, err
+		}
+	}
 
 	// THE APPROVAL ITSELF, for anything that destroys. After validation,
 	// because the statement the operator approves is composed from validated

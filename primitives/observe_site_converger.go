@@ -27,7 +27,7 @@ import "time"
 // HOSTILE-CALLER REVIEW (rule 5 of specs/agent_recipes_and_vocabulary.md).
 //
 // What is the worst a compromised management node can do with this word? Read,
-// on a machine whose owner has left log access on, the last 200 redacted lines
+// for a site whose own owner has left log access on, the last 200 redacted lines
 // of one site container's converger log, and a handful of compiled facts
 // about that site's converger. The converger's transcript is installer
 // output, narrower than the site's error log that site_log already reads,
@@ -46,8 +46,12 @@ import "time"
 //     the way that is a link is not entered, a bind mount is never read.
 //   - Carry the cron entry. Only whether it is there, whether it runs this
 //     site's converger, and when it and its folder last changed.
-//   - Read without the owner's leave. RequiresLogAccess: the dispatcher checks
-//     the agent_log_access switch before this word runs.
+//   - Read without the site owner's leave. RequiresLogAccess with
+//     LogAccessSite: before this word runs, the dispatcher asks the named
+//     site's OWN agent_log_access switch, in that site's own database
+//     (site_log_access.go in the agent), not the host's. The host's owner is
+//     not the site's: on a machine with no site there is no host switch at
+//     all, and the site's owner is the one person whose leave this needs.
 //   - Carry anything unmasked. ScriptSpec.Redact runs the node's redactor over
 //     the script's output before it is returned.
 //   - Change anything. The engine's ps and inspect, /proc, and bounded reads.
@@ -60,12 +64,13 @@ func init() {
 		Name:        "site_converger",
 		Class:       ClassObserve,
 		Machine:     true,
-		Description: "Whether one site container's host converger is running: its last run and outcome, its stamp, the code check, its cron entry and cron, and the last lines of its log, redacted on the node; refused unless log access is allowed.",
+		Description: "Whether one site container's host converger is running: its last run and outcome, its stamp, the code check, its cron entry and cron, and the last lines of its log, redacted on the node; refused unless that site's owner allows log access.",
 		Params: []ParamSpec{
 			{Name: "site", Type: ParamString, Required: true, MaxLen: 50, Pattern: holdContainerName},
 			{Name: "lines", Type: ParamInt, Min: 1, Max: siteConvergerMaxLines},
 		},
 		RequiresLogAccess: true,
+		LogAccessSite:     "site",
 
 		Script: &ScriptSpec{
 			Interpreter: "/bin/bash",

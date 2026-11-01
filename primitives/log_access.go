@@ -108,6 +108,52 @@ func LogAccessOn(ctx context.Context, env *ExecEnv) (on bool, source string) {
 	return SettingOn(string(data)), "marker"
 }
 
+// requireLogAccessFor is the dispatcher's question for a word that reads this
+// machine: a machine word on a machine with no site of its own runs, because
+// what it reads is the host's, and the host has no owner but the management
+// node's operator (there is no site, and so no switch, to ask). Every other
+// word asks this machine's own switch.
+func requireLogAccessFor(ctx context.Context, env *ExecEnv, p Primitive) error {
+	if p.Machine && env != nil && env.Siteless {
+		return nil
+	}
+	return requireLogAccess(ctx, env)
+}
+
+// SiteLogAccessRefusal is the reason a word that reads one container site
+// gives when that site's own switch is off. %s is the validated site name.
+const SiteLogAccessRefusal = "the owner of the site %s has not allowed log access (its agent_log_access is off)"
+
+// requireSiteLogAccess asks the named container site's own switch. Fail
+// closed: no way to ask, or a site that cannot answer, reads OFF.
+func requireSiteLogAccess(ctx context.Context, env *ExecEnv, site string) error {
+	if env == nil || env.SiteLogAccess == nil {
+		return refusedf("this machine cannot ask the site %s whether it allows log access, so it reads nothing of it", site)
+	}
+	on, err := env.SiteLogAccess(ctx, site)
+	if err != nil {
+		if Refused(err) {
+			return err
+		}
+		return refusedf("the site %s could not say whether it allows log access, so nothing of it is read: %v", site, err)
+	}
+	if !on {
+		return refusedf(SiteLogAccessRefusal, site)
+	}
+	return nil
+}
+
+// ReportedLogAccess is what the poll tells the plane: on a machine with no
+// site, its machine log words run (requireLogAccessFor), so "on"; everywhere
+// else, the rule above.
+func ReportedLogAccess(ctx context.Context, env *ExecEnv) bool {
+	if env != nil && env.Siteless {
+		return true
+	}
+	on, _ := LogAccessOn(ctx, env)
+	return on
+}
+
 // requireLogAccess is what every log word calls first. It returns the pinned
 // refusal, and nothing has been read when it does.
 func requireLogAccess(ctx context.Context, env *ExecEnv) error {

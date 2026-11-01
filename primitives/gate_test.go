@@ -729,6 +729,13 @@ func TestPrimitiveExecutionEnvIsExplicit(t *testing.T) {
 		// moved_site_check. Host posture only.
 		"MovedSiteCheck": true,
 
+		// Whose leave a log word needs (log_access.go): Siteless lets a
+		// machine word on a machine with no site run without a switch, which
+		// reads only the host; SiteLogAccess reads one container site's own
+		// agent_log_access, so the site's owner decides about that site.
+		"Siteless":      true,
+		"SiteLogAccess": true,
+
 		// move_to_plane: stage a keypair for another management node and file
 		// the join there. It changes which plane this machine answers to only
 		// once a person approves the ask on that plane; the plane managing it

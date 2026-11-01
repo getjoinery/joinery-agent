@@ -48,13 +48,15 @@ import (
 // a regular file - the directories above it are root's, so only root could
 // plant one higher up); read more than
 // fileHeadMaxLines lines or fileHeadMaxBytes bytes; read a file the switch has
-// not allowed (RequiresLogAccess); or change anything.
+// not allowed (RequiresLogAccess; on a machine with no site every file here is
+// the host's own configuration, and there is no switch to ask); or change
+// anything.
 func init() {
 	Register(Primitive{
 		Name:        "file_head",
 		Class:       ClassObserve,
 		Machine:     true,
-		Description: "The first lines of one host configuration file from a compiled list (fail2ban, Apache, PHP, journald, logrotate, cron, apt, docker, sysctl, mail settings), redacted on the node; refused unless the site's owner allows log access.",
+		Description: "The first lines of one host configuration file from a compiled list (fail2ban, Apache, PHP, journald, logrotate, cron, apt, docker, sysctl, mail settings), redacted on the node; on a machine with a site, refused unless its owner allows log access.",
 		Params: []ParamSpec{
 			{Name: "file", Type: ParamEnum, Required: true, Values: fileHeadNames()},
 			{Name: "lines", Type: ParamInt, Min: 1, Max: fileHeadMaxLines},

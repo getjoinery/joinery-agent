@@ -24,7 +24,7 @@ import (
 // must stay ABOVE 1.1.0 forever - install_agent.sh's downgrade guard sorts
 // with sort -V and refuses to replace a "newer" binary, so anything below
 // 1.1.0 strands those agents permanently.
-var version = "1.101.0"
+var version = "1.102.0"
 
 // How often the idle loop looks at the shipped agent_dist manifest. Update
 // checks never run while a job is executing.
@@ -328,6 +328,12 @@ func execEnvFor(cfg *Config, db *DB) *primitives.ExecEnv {
 		// site of its own — gets one; everywhere else the field is nil and
 		// the primitive refuses. See victim.go.
 		VictimCeremony: victimCeremonyFor(cfg),
+
+		// Whose leave a log word needs: on a machine with no site, its
+		// machine words read only the host; a word that reads one container
+		// site asks that site's own switch (site_log_access.go).
+		Siteless:      cfg.Siteless,
+		SiteLogAccess: siteLogAccess,
 
 		// How a HOST proves a co-resident site's domain has left it, standing
 		// in for that site's approval after a switch-over
