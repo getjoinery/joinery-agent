@@ -132,8 +132,13 @@ func openVictimDB(ctx context.Context, site, why string) (*sql.DB, map[string]st
 	defer cancel()
 	if err := db.PingContext(pingCtx); err != nil {
 		db.Close()
+		// The driver's own words say which of the usual causes it is (nothing
+		// listening, a pg_hba rule refusing this host's address, the
+		// credential refused, no answer in time). They name addresses, the
+		// role and the database, never the password, which travels only in
+		// the DSN and is not part of any error.
 		return nil, nil, &primitives.RefusalError{Reason: fmt.Sprintf(
-			"the site %s's database did not answer on its published port (127.0.0.1:%d), so %s", site, dbPort, why)}
+			"the site %s's database did not answer on its published port (127.0.0.1:%d), so %s (%v)", site, dbPort, why, err)}
 	}
 	return db, cfg, nil
 }
