@@ -134,6 +134,11 @@ var pinnedVocabulary = map[string]Class{
 	// sender or a row.
 	"spam_learning_status": ClassObserve,
 
+	// This site's view of its mail relay (the running list, 2026-11-01).
+	// Observe, NO PARAMETERS: versions, times, counts and the transport key's
+	// kind, never an address or a key. The relay itself is not asked.
+	"relay_status": ClassObserve,
+
 	// Whether the machine is dropping packets or connections
 	// (specs/slow_request_diagnosis_words.md WP2). Observe, NO PARAMETERS,
 	// counts only, never a remote address; refused inside a site container.
