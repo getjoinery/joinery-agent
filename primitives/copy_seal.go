@@ -16,37 +16,20 @@ package primitives
 //     own domain prefix, and T trusts the one S key its dormant install
 //     recorded (Q7).
 //
-// ONE KEY, TWO JOBS. The agent key is Ed25519, made for signing. Sealing to
-// it converts it to X25519 — the public half by the birational map from the
-// Edwards curve, the private half by the scalar Ed25519 itself derives from
-// the seed. That pairing is studied and in wide use (age seals to ssh-ed25519
-// keys the same way). What keeps the two jobs apart is domain separation: the
-// seal's HKDF context and the signature's prefix are this file's own, and
-// neither is ever the agent's request signature (identity.go signs messages
-// that begin "joinery-agent-v1").
-//
-// NOT libsodium's sealed box, and nothing outside this agent opens it: the
-// construction is the one sealToRecoveryKey uses — ephemeral X25519,
-// HKDF-SHA256, AES-256-GCM — with curve25519.X25519, which refuses a
-// low-order recipient whose shared secret anyone could compute.
+// THE SEAL is the v2 seal (X-Wing, specs/post_quantum_sealing.md R6) to the
+// copy's KEM key, under CopySealScope. The copy's agent key signs that KEM
+// key (AgentKEMDomain), so the source seals only to a key the approved
+// identity vouches for.
 
 import (
 	"bytes"
-	"crypto/aes"
-	"crypto/cipher"
 	"crypto/ed25519"
-	"crypto/sha256"
-	"crypto/sha512"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/big"
 	"strings"
 	"time"
-
-	"golang.org/x/crypto/curve25519"
-	"golang.org/x/crypto/hkdf"
 
 	"joinery-agent/xwing"
 )
@@ -110,119 +93,10 @@ const copyExportMaxBundle = 200 * 1024
 // copyExportMaxPayload bounds what an opened bundle may decompress to.
 const copyExportMaxPayload = 4 * 1024 * 1024
 
-// fieldPrime is 2^255 - 19, the prime both curves are defined over.
-var fieldPrime = new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 255), big.NewInt(19))
-
-// ed25519PublicToX25519 maps an Ed25519 public key to the X25519 public key
-// of the same secret: u = (1 + y) / (1 - y) mod p, where y is the Edwards
-// point's y-coordinate (the key's little-endian bytes, sign bit cleared).
-func ed25519PublicToX25519(pub ed25519.PublicKey) ([]byte, error) {
-	if len(pub) != ed25519.PublicKeySize {
-		return nil, errors.New("not an Ed25519 public key")
-	}
-	le := make([]byte, 32)
-	copy(le, pub)
-	le[31] &= 0x7f
-	y := new(big.Int).SetBytes(reverse(le))
-	if y.Cmp(fieldPrime) >= 0 {
-		return nil, errors.New("not a canonical Ed25519 public key")
-	}
-	one := big.NewInt(1)
-	den := new(big.Int).Sub(one, y)
-	den.Mod(den, fieldPrime)
-	if den.Sign() == 0 {
-		return nil, errors.New("an Ed25519 public key with no X25519 counterpart")
-	}
-	num := new(big.Int).Add(one, y)
-	u := num.Mul(num, den.ModInverse(den, fieldPrime))
-	u.Mod(u, fieldPrime)
-
-	out := make([]byte, 32)
-	u.FillBytes(out)
-	return reverse(out), nil
-}
-
-// ed25519PrivateToX25519 is the X25519 secret of an Ed25519 private key: the
-// first half of SHA-512 over the seed, which is the scalar Ed25519 signs with
-// (curve25519.X25519 clamps it).
-func ed25519PrivateToX25519(priv ed25519.PrivateKey) []byte {
-	h := sha512.Sum512(priv.Seed())
-	out := make([]byte, 32)
-	copy(out, h[:32])
-	zero(h[:])
-	return out
-}
-
-func reverse(b []byte) []byte {
-	out := make([]byte, len(b))
-	for i := range b {
-		out[len(b)-1-i] = b[i]
-	}
-	return out
-}
-
 func zero(b []byte) {
 	for i := range b {
 		b[i] = 0
 	}
-}
-
-// sealKey derives the AES key for one seal from the shared secret, bound to
-// both public keys.
-func sealKey(shared, ephPublic, recipient []byte) ([]byte, error) {
-	info := append([]byte(CopyExportDomain+":seal:"), ephPublic...)
-	info = append(info, recipient...)
-	key := make([]byte, 32)
-	if _, err := hkdf.New(sha256.New, shared, nil, info).Read(key); err != nil {
-		return nil, err
-	}
-	return key, nil
-}
-
-// OpenSealedToAgentKey opens what sealToAgentKey sealed, with the Ed25519
-// private key it was sealed to. Exported for the agent's identity, which
-// holds the key; nothing in this package does.
-func OpenSealedToAgentKey(priv ed25519.PrivateKey, blob []byte) ([]byte, error) {
-	if len(priv) != ed25519.PrivateKeySize {
-		return nil, errors.New("not an Ed25519 private key")
-	}
-	if len(blob) < 32+12+16 {
-		return nil, errors.New("the sealed part is too short to be a seal")
-	}
-	secret := ed25519PrivateToX25519(priv)
-	defer zero(secret)
-	own, err := curve25519.X25519(secret, curve25519.Basepoint)
-	if err != nil {
-		return nil, err
-	}
-	ephPublic, iv, sealed := blob[:32], blob[32:44], blob[44:]
-	shared, err := curve25519.X25519(secret, ephPublic)
-	if err != nil {
-		return nil, errors.New("the sealed part does not open with this machine's key")
-	}
-	key, err := sealKey(shared, ephPublic, own)
-	zero(shared)
-	if err != nil {
-		return nil, err
-	}
-	gcm, err := newGCM(key)
-	zero(key)
-	if err != nil {
-		return nil, err
-	}
-	plain, err := gcm.Open(nil, iv, sealed, nil)
-	if err != nil {
-		return nil, errors.New("the sealed part does not open with this machine's key: it was sealed to another, or changed on the way")
-	}
-	return plain, nil
-}
-
-func newGCM(key []byte) (cipher.AEAD, error) {
-	block, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, err
-	}
-	return cipher.NewGCM(block)
 }
 
 // copyExportSigned is the message S signs and T verifies: the domain, a
@@ -248,9 +122,8 @@ type copyBundleBody struct {
 	Issued       string `json:"issued"`
 	Expires      string `json:"expires"`
 	Sealed       string `json:"sealed"`
-	// Seal is CopySealXWing for a bundle sealed to the copy's X-Wing key
-	// (CopySealScope); absent for one an agent before 1.99.0 sealed to the
-	// copy's agent key itself (sealToAgentKey).
+	// Seal is CopySealXWing: the bundle is sealed to the copy's X-Wing key
+	// (CopySealScope). A bundle without it is refused.
 	Seal string `json:"seal,omitempty"`
 }
 

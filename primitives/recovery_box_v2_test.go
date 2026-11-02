@@ -22,15 +22,20 @@ func TestAVersionTwoRecoveryBoxOpensWithItsDekScopeKeyOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ct, eph, ok := recoveryBoxParts(sealed, "xwing")
-	if !ok || eph != "" || ct != base64.StdEncoding.EncodeToString(sealed[:xwing.CiphertextBytes]) {
-		t.Fatalf("a v2 box is not shown to the page as its ciphertext: %v %q", ok, eph)
+	ct, ok := recoveryBoxParts(sealed, "xwing")
+	if !ok || ct != base64.StdEncoding.EncodeToString(sealed[:xwing.CiphertextBytes]) {
+		t.Fatalf("a v2 box is not shown to the page as its ciphertext: %v", ok)
 	}
-	if _, _, ok := recoveryBoxParts(sealed, "something-else"); ok {
+	if _, ok := recoveryBoxParts(sealed, "something-else"); ok {
 		t.Fatal("a box naming an alg nobody knows was taken")
 	}
-	if _, eph, ok := recoveryBoxParts(sealed[:80], ""); !ok || eph == "" {
-		t.Fatal("a v1 box is not shown to the page as its ephemeral key")
+	// A recipient with no alg, a libsodium sealed box to an old X25519 key,
+	// is refused: nothing opens one.
+	if _, ok := recoveryBoxParts(sealed[:80], ""); ok {
+		t.Fatal("a box with no alg was shown to the page")
+	}
+	if _, ok := recoveryBoxParts(sealed, ""); ok {
+		t.Fatal("a box with no alg was shown to the page")
 	}
 
 	ss, _ := xwing.Decapsulate(seed, sealed[:xwing.CiphertextBytes])
@@ -38,6 +43,9 @@ func TestAVersionTwoRecoveryBoxOpensWithItsDekScopeKeyOnly(t *testing.T) {
 	opened, err := openRecoverySealed(sealed, dek, pub)
 	if err != nil || !bytes.Equal(opened, []byte("the chain's data key")) {
 		t.Fatalf("the dek-scope key does not open the box: %v", err)
+	}
+	if _, err := openRecoverySealed(sealed, dek, pub[:32]); err == nil {
+		t.Fatal("a 32-byte recipient key was taken")
 	}
 	if _, err := openRecoverySealed(sealed, ss, pub); err == nil {
 		t.Fatal("the X-Wing shared secret itself opened the box: a page could post it for any scope")

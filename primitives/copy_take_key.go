@@ -7,7 +7,7 @@ package primitives
 // source's owner approves on the source (copy_export, copy_import). With the
 // source dead there is no one to seal it, and the one other holder of the key
 // is the owner's backup recovery key: every chain's envelope carries the data
-// key sealed to it (a libsodium sealed box). So the owner opens it, on THIS
+// key sealed to it (the X-Wing v2 seal). So the owner opens it, on THIS
 // machine's own page, and the management node never sees the recovery key or
 // what it opens.
 //
@@ -17,11 +17,10 @@ package primitives
 //                  it to the job (copy_stored_manifest.go), stage the backup's
 //                  statement on this site's own page (the chain, its newest
 //                  run, when the provider stored it, its manifest hash, the
-//                  recovery key's fingerprint) and wait for the owner. Their browser imports
-//                  the recovery key and works out the one value that opens the
-//                  sealed box: the X25519 of the recovery key with the box's
-//                  ephemeral public key. The browser has no XSalsa20, so the
-//                  box is finished here (openRecoverySealed). That value opens
+//                  recovery key's fingerprint) and wait for the owner. Their browser
+//                  decapsulates the box's X-Wing ciphertext with the recovery
+//                  key and sends the box's dek-scope AES key; the box is
+//                  finished here (openRecoverySealed). That value opens
 //                  this one box and nothing else; the recovery key never leaves
 //                  the browser. The opened key is written as the chain's
 //                  chain.key and the stated manifest as the vouch, which is
@@ -60,32 +59,21 @@ import (
 	"time"
 
 	"joinery-agent/xwing"
-
-	"golang.org/x/crypto/blake2b"
-	"golang.org/x/crypto/nacl/box"
-	"golang.org/x/crypto/salsa20/salsa"
 )
 
 // copyTakeKeyMaxSealed bounds the sealed data key a request carries, raw and
 // as base64: a chain key is a 44-character passphrase, sealed with 1148 bytes
-// of overhead in a v2 box (48 in a v1 box).
+// of overhead in a v2 box.
 const copyTakeKeyMaxSealed = 2048
 
 // recoveryBoxParts is how the owner's page half-opens a box sealed to the
-// recovery key, by the manifest recipient's alg: a v2 box ("xwing") gives the
-// page its X-Wing ciphertext, a v1 box its ephemeral X25519 key. ok is false
-// when the box is not the shape its alg says.
-func recoveryBoxParts(sealed []byte, alg string) (ciphertext, ephemeral string, ok bool) {
-	if alg == "xwing" {
-		if len(sealed) <= xwing.Overhead {
-			return "", "", false
-		}
-		return base64.StdEncoding.EncodeToString(sealed[:xwing.CiphertextBytes]), "", true
+// recovery key: the box's X-Wing ciphertext. ok is false when the manifest
+// recipient's alg is not "xwing" or the box is not a v2 box's shape.
+func recoveryBoxParts(sealed []byte, alg string) (ciphertext string, ok bool) {
+	if alg != "xwing" || len(sealed) <= xwing.Overhead {
+		return "", false
 	}
-	if alg != "" || len(sealed) <= 32+box.Overhead {
-		return "", "", false
-	}
-	return "", base64.StdEncoding.EncodeToString(sealed[:32]), true
+	return base64.StdEncoding.EncodeToString(sealed[:xwing.CiphertextBytes]), true
 }
 
 // CopyKeyRequest is what the copy's own page shows its owner.
@@ -96,8 +84,7 @@ type CopyKeyRequest struct {
 	StoredTime          string `json:"stored_time"` // when the provider stored the manifest; "" when not checked
 	StoredAt            string `json:"stored_at"`   // the provider that says so; "" when not checked
 	RecoveryFingerprint string `json:"recovery_fingerprint"`
-	Ciphertext          string `json:"ciphertext,omitempty"`       // a v2 box's X-Wing ciphertext
-	EphemeralPublic     string `json:"ephemeral_public,omitempty"` // a v1 box's ephemeral key
+	Ciphertext          string `json:"ciphertext"` // the box's X-Wing ciphertext
 	Site                string `json:"site"`
 }
 
@@ -170,7 +157,7 @@ func copyTakeKeyRun(ctx context.Context, env *ExecEnv, params Params) (map[strin
 		return nil, refusedf("this machine cannot ask its owner on its own page (no site database), so it takes no key")
 	}
 	sealed, err := base64.StdEncoding.DecodeString(params.String("recovery_sealed"))
-	if err != nil || len(sealed) <= 32+box.Overhead || len(sealed) > copyTakeKeyMaxSealed {
+	if err != nil || len(sealed) <= xwing.Overhead || len(sealed) > copyTakeKeyMaxSealed {
 		return nil, refusedf("copy_take_key: the sealed chain key is not a sealed box")
 	}
 	chainID := params.String("chain_id")
@@ -191,7 +178,7 @@ func copyTakeKeyRun(ctx context.Context, env *ExecEnv, params Params) (map[strin
 	}
 	// The box's version is its manifest's word, read at the provider.
 	var shapeOK bool
-	req.Ciphertext, req.EphemeralPublic, shapeOK = recoveryBoxParts(sealed, stored.RecoveryAlg)
+	req.Ciphertext, shapeOK = recoveryBoxParts(sealed, stored.RecoveryAlg)
 	if !shapeOK {
 		return nil, refusedf("copy_take_key: the sealed chain key is not the shape its manifest says it is")
 	}
@@ -252,57 +239,16 @@ func OpenRecoverySealed(sealed, shared, recipientPublic []byte) ([]byte, error) 
 
 // openRecoverySealed finishes opening a box sealed to the recovery key with
 // the value the owner's browser worked out (VaultCrypto.halfOpenKeyBox). The
-// caller has already held recipientPublic to the box's fingerprint, so its
-// length is the box's version (specs/post_quantum_sealing.md R2):
-//
-//   - 1216 bytes, a v2 box: shared is the box's dek-scope AES key (never the
-//     X-Wing shared secret, which would key any scope's box), and the AES-GCM
-//     opens with it.
-//   - 32 bytes, a v1 libsodium sealed box (crypto_box_seal), a backup sealed to
-//     an old recovery key: shared is the X25519 of the recipient's private key
-//     with the box's ephemeral key. The rest is crypto_box's: the key is
-//     HSalsa20 of that secret, the nonce BLAKE2b-192 of the ephemeral and
-//     recipient public keys, and XSalsa20-Poly1305 authenticates and opens.
+// caller has already held recipientPublic to the box's fingerprint. shared is
+// the box's dek-scope AES key (never the X-Wing shared secret, which would key
+// any scope's box), and the AES-GCM opens with it.
 func openRecoverySealed(sealed, shared, recipientPublic []byte) ([]byte, error) {
-	if len(recipientPublic) == xwing.PublicKeyBytes {
-		if len(sealed) <= xwing.Overhead || len(shared) != 32 {
-			return nil, errors.New("the answer is not the shape the backup's key opens with")
-		}
-		opened, err := xwing.OpenWithKey(sealed, shared)
-		if err != nil {
-			return nil, errors.New("the value given does not open this backup's key")
-		}
-		return opened, nil
-	}
-	if len(sealed) <= 32+box.Overhead || len(shared) != 32 || len(recipientPublic) != 32 {
+	if len(recipientPublic) != xwing.PublicKeyBytes || len(sealed) <= xwing.Overhead || len(shared) != 32 {
 		return nil, errors.New("the answer is not the shape the backup's key opens with")
 	}
-	allZero := true
-	for _, b := range shared {
-		allZero = allZero && b == 0
-	}
-	if allZero {
-		return nil, errors.New("the answer is not the shape the backup's key opens with")
-	}
-	ephemeral := sealed[:32]
-	h, err := blake2b.New(24, nil)
+	opened, err := xwing.OpenWithKey(sealed, shared)
 	if err != nil {
-		return nil, err
-	}
-	h.Write(ephemeral)
-	h.Write(recipientPublic)
-	var nonce [24]byte
-	copy(nonce[:], h.Sum(nil))
-
-	var secret, key [32]byte
-	var zeros [16]byte
-	copy(secret[:], shared)
-	salsa.HSalsa20(&key, &zeros, &secret, &salsa.Sigma)
-	zero(secret[:])
-	opened, ok := box.OpenAfterPrecomputation(nil, sealed[32:], &nonce, &key)
-	zero(key[:])
-	if !ok {
-		return nil, errors.New("that answer does not open this backup's key: the recovery key does not match the one the backup was sealed to")
+		return nil, errors.New("the value given does not open this backup's key")
 	}
 	return opened, nil
 }

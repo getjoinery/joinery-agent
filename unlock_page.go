@@ -34,10 +34,8 @@ import (
 // has a certificate for, and never a self-signed one.
 //
 // THE KEY STAYS IN THE BROWSER. The page works like /copy-key
-// (VaultCrypto.halfOpenKeyBox): for a version-2 box (an X-Wing recovery key)
-// the browser decapsulates the box's ciphertext with the pasted seed and sends
-// the box's dek-scope AES key; for a version-1 box (an old X25519 key) it takes
-// the X25519 of the pasted key with the box's ephemeral key. Either is a
+// (VaultCrypto.halfOpenKeyBox): the browser decapsulates the box's X-Wing
+// ciphertext with the pasted seed and sends the box's dek-scope AES key, a
 // 32-byte value that opens the break-glass box and nothing else; this finishes
 // the opening. X-Wing in the browser is the platform's vendored module
 // (assets/vendor/noble/), embedded here and inlined into the page, since a
@@ -72,7 +70,6 @@ type unlockPage struct {
 	u            *dataRootUnlocker
 	host         string
 	sealed       []byte
-	alg          string // the recipient's: "xwing" for a version-2 box
 	recipientPub []byte
 	fingerprint  string
 	cf           []*net.IPNet
@@ -91,8 +88,7 @@ func newUnlockPage(u *dataRootUnlocker) (*unlockPage, error) {
 		return nil, errors.New("the break-glass copy is not readable")
 	}
 	sealed, err := base64.StdEncoding.DecodeString(env.Recipients[0].Sealed)
-	alg := env.Recipients[0].Alg
-	if err != nil || len(sealed) <= 32 || (alg == sidecarAlgXWing && len(sealed) <= xwing.Overhead) {
+	if err != nil || env.Recipients[0].Alg != sidecarAlgXWing || len(sealed) <= xwing.Overhead {
 		return nil, errors.New("the break-glass copy holds no sealed box")
 	}
 	pub, fpr, err := readRecipient(filepath.Join(filepath.Dir(dataRootConfPath), "data-root", "recovery_recipient"))
@@ -102,10 +98,7 @@ func newUnlockPage(u *dataRootUnlocker) (*unlockPage, error) {
 	if fpr != env.Recipients[0].Fingerprint {
 		return nil, fmt.Errorf("the break-glass copy is sealed to %s, and the recovery recipient here is %s", env.Recipients[0].Fingerprint, fpr)
 	}
-	if (alg == sidecarAlgXWing) != (len(pub) == xwing.PublicKeyBytes) {
-		return nil, errors.New("the break-glass copy and the recovery recipient here are not the same kind of key")
-	}
-	return &unlockPage{u: u, host: u.host, sealed: sealed, alg: alg, recipientPub: pub, fingerprint: fpr,
+	return &unlockPage{u: u, host: u.host, sealed: sealed, recipientPub: pub, fingerprint: fpr,
 		cf: cloudflareRanges(), fails: map[string][]time.Time{}}, nil
 }
 
@@ -358,14 +351,9 @@ func (s *siteCertificates) get(hello *tls.ClientHelloInfo) (*tls.Certificate, er
 }
 
 func (p *unlockPage) pageHTML() string {
-	box := map[string]string{"fingerprint": p.fingerprint, "post": unlockPagePost}
-	xw := ""
-	if p.alg == sidecarAlgXWing {
-		box["ciphertext"] = base64.StdEncoding.EncodeToString(p.sealed[:xwing.CiphertextBytes])
-		xw = "<script>" + embeddedXWing + "</script>\n"
-	} else {
-		box["ephemeralPublic"] = base64.StdEncoding.EncodeToString(p.sealed[:32])
-	}
+	box := map[string]string{"fingerprint": p.fingerprint, "post": unlockPagePost,
+		"ciphertext": base64.StdEncoding.EncodeToString(p.sealed[:xwing.CiphertextBytes])}
+	xw := "<script>" + embeddedXWing + "</script>\n"
 	cfg, _ := json.Marshal(box)
 	page := strings.Replace(unlockPageTemplate, "{{HOST}}", html.EscapeString(p.host), -1)
 	page = strings.Replace(page, "{{XWING}}", xw, 1)
@@ -399,33 +387,22 @@ button:disabled{opacity:.6}.s{margin-top:12px;font-size:.92rem}.bad{color:#b4231
 (function(){'use strict';
 var c={{CONFIG}};var subtle=window.crypto&&window.crypto.subtle;
 var k=document.getElementById('k'),b=document.getElementById('b'),s=document.getElementById('s');
-var PKCS8=[0x30,0x2e,0x02,0x01,0x00,0x30,0x05,0x06,0x03,0x2b,0x65,0x6e,0x04,0x22,0x04,0x20];
 function d(x){var t=atob(String(x).replace(/\s+/g,''));var o=new Uint8Array(t.length);for(var i=0;i<t.length;i++)o[i]=t.charCodeAt(i);return o;}
 function e(x){var t='';x=new Uint8Array(x);for(var i=0;i<x.length;i++)t+=String.fromCharCode(x[i]);return btoa(t);}
-function du(x){x=String(x).replace(/-/g,'+').replace(/_/g,'/');while(x.length%4)x+='=';return d(x);}
 function h(x){return Array.prototype.map.call(new Uint8Array(x),function(v){return('0'+v.toString(16)).slice(-2);}).join('');}
 function say(m,ok){s.textContent=m;s.className='s '+(ok?'ok':'bad');}
 async function work(p){
  if(!subtle)throw new Error('This browser has no WebCrypto. Use a current Chrome, Firefox or Safari.');
  var priv;try{priv=d(p);}catch(x){throw new Error('That is not a recovery key: it is one line of base64.');}
  if(priv.length!==32)throw new Error('That is not a recovery key: expected 32 bytes, got '+priv.length+'.');
- if(c.ciphertext){
-  var X=window.JoineryPQ&&window.JoineryPQ.xwing;if(!X){priv.fill(0);throw new Error('This page could not load its encryption code. Reload it.');}
-  var kp=X.keygen(priv),xp=new Uint8Array(kp.publicKey);if(kp.secretKey&&kp.secretKey!==priv)kp.secretKey.fill(0);
-  var xf=h(await subtle.digest('SHA-256',xp));
-  if(xf!==c.fingerprint){priv.fill(0);throw new Error('That recovery key has fingerprint '+xf.slice(0,16)+', and this server is sealed to '+c.fingerprint.slice(0,16)+'.');}
-  var ss=new Uint8Array(X.decapsulate(d(c.ciphertext),priv));priv.fill(0);
-  var hk=await subtle.importKey('raw',ss,'HKDF',false,['deriveBits']);ss.fill(0);
-  var dk=new Uint8Array(await subtle.deriveBits({name:'HKDF',hash:'SHA-256',salt:new Uint8Array(0),info:new TextEncoder().encode('joinery-seal:v2:dek')},hk,256));
-  var out={shared:e(dk),public_key:e(xp)};dk.fill(0);return out;}
- var pk=new Uint8Array(48);pk.set(PKCS8,0);pk.set(priv,16);priv.fill(0);var key;
- try{key=await subtle.importKey('pkcs8',pk,{name:'X25519'},true,['deriveBits']);}catch(x){throw new Error('This browser cannot do X25519. Use a current Chrome, Firefox or Safari.');}finally{pk.fill(0);}
- var j=await subtle.exportKey('jwk',key);var pub=du(j.x);j.d='';
- var fp=h(await subtle.digest('SHA-256',pub));
- if(fp!==c.fingerprint)throw new Error('That recovery key has fingerprint '+fp.slice(0,16)+', and this server is sealed to '+c.fingerprint.slice(0,16)+'.');
- var eph=await subtle.importKey('raw',d(c.ephemeralPublic),{name:'X25519'},false,[]);
- var sh=await subtle.deriveBits({name:'X25519',public:eph},key,256);
- return{shared:e(sh),public_key:e(pub)};}
+ var X=window.JoineryPQ&&window.JoineryPQ.xwing;if(!X){priv.fill(0);throw new Error('This page could not load its encryption code. Reload it.');}
+ var kp=X.keygen(priv),xp=new Uint8Array(kp.publicKey);if(kp.secretKey&&kp.secretKey!==priv)kp.secretKey.fill(0);
+ var xf=h(await subtle.digest('SHA-256',xp));
+ if(xf!==c.fingerprint){priv.fill(0);throw new Error('That recovery key has fingerprint '+xf.slice(0,16)+', and this server is sealed to '+c.fingerprint.slice(0,16)+'.');}
+ var ss=new Uint8Array(X.decapsulate(d(c.ciphertext),priv));priv.fill(0);
+ var hk=await subtle.importKey('raw',ss,'HKDF',false,['deriveBits']);ss.fill(0);
+ var dk=new Uint8Array(await subtle.deriveBits({name:'HKDF',hash:'SHA-256',salt:new Uint8Array(0),info:new TextEncoder().encode('joinery-seal:v2:dek')},hk,256));
+ var out={shared:e(dk),public_key:e(xp)};dk.fill(0);return out;}
 b.addEventListener('click',function(){var p=k.value.trim();if(!p){say('Paste the recovery key first.',false);return;}
  b.disabled=true;say('Working in this browser…',true);
  work(p).then(function(r){k.value='';return fetch(c.post,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(r)});})

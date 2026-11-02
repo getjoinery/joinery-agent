@@ -19,7 +19,7 @@ import (
 
 func keyRequest() primitives.CopyKeyRequest {
 	return primitives.CopyKeyRequest{ChainID: "chain-20261001_030000", ManifestSHA256: strings.Repeat("ab", 32),
-		RecoveryFingerprint: strings.Repeat("cd", 32), EphemeralPublic: base64.StdEncoding.EncodeToString(make([]byte, 32))}
+		RecoveryFingerprint: strings.Repeat("cd", 32), Ciphertext: base64.StdEncoding.EncodeToString(make([]byte, 1120))}
 }
 
 func answerRow(jobID int64, shared string, declined bool) string {

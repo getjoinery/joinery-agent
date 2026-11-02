@@ -569,12 +569,12 @@ func TestAKeyBoxIsOpenedWithTheApprovalAndOnlyThen(t *testing.T) {
 	var openErr error
 	st := testStatement()
 	st.KeyBox = &primitives.ApprovalKeyBox{
-		EphemeralPublic: base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{9}, 32)), RecoveryFingerprint: strings.Repeat("ab", 32),
+		Ciphertext: base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{9}, 1120)), RecoveryFingerprint: strings.Repeat("ab", 32),
 		Open: func(s, p []byte) error { gotShared, gotPublic = s, p; return openErr },
 	}
 	answerWith := func(withKey bool) func(req approvalRequest) string {
 		return func(req approvalRequest) string {
-			if req.KeyBox == nil || req.KeyBox.EphemeralPublic != st.KeyBox.EphemeralPublic ||
+			if req.KeyBox == nil || req.KeyBox.Ciphertext != st.KeyBox.Ciphertext ||
 				req.KeyBox.RecoveryFingerprint != st.KeyBox.RecoveryFingerprint {
 				t.Errorf("the page is not shown the box to open: %+v", req.KeyBox)
 			}
@@ -609,7 +609,7 @@ func TestAKeyBoxIsOpenedWithTheApprovalAndOnlyThen(t *testing.T) {
 	// The box is part of what the challenge is bound to: another box is another statement.
 	a, _ := json.Marshal(st)
 	other := st
-	other.KeyBox = &primitives.ApprovalKeyBox{EphemeralPublic: base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{8}, 32)),
+	other.KeyBox = &primitives.ApprovalKeyBox{Ciphertext: base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{8}, 1120)),
 		RecoveryFingerprint: st.KeyBox.RecoveryFingerprint}
 	b, _ := json.Marshal(other)
 	if sha256.Sum256(a) == sha256.Sum256(b) {

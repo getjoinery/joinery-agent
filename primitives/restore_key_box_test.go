@@ -12,8 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"golang.org/x/crypto/curve25519"
-	"golang.org/x/crypto/nacl/box"
+	"joinery-agent/xwing"
 )
 
 // keyBoxChain stages a chain another server made, as stage_chain leaves one:
@@ -25,7 +24,7 @@ type keyBoxChain struct {
 	recoveryPriv    []byte
 	recoveryPub     []byte
 	dataKey         string
-	ephemeral       []byte
+	ciphertext      []byte
 	withRecoveryBox bool
 }
 
@@ -37,21 +36,18 @@ func newKeyBoxChain(t *testing.T, withRecoveryBox bool) *keyBoxChain {
 	if err := os.MkdirAll(c.work, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	pub, priv, err := box.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	c.recoveryPriv, c.recoveryPub = priv[:], pub[:]
-	otherServer, _, _ := box.GenerateKey(rand.Reader)
+	seed, pub := newXWingKey(t)
+	c.recoveryPriv, c.recoveryPub = seed, pub
+	_, otherServer := newXWingKey(t)
 	c.dataKey = base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
-	forRecovery, _ := box.SealAnonymous(nil, []byte(c.dataKey), pub, rand.Reader)
-	forServer, _ := box.SealAnonymous(nil, []byte(c.dataKey), otherServer, rand.Reader)
-	c.ephemeral = forRecovery[:32]
-	fp := sha256.Sum256(pub[:])
-	recipients := []map[string]string{{"kind": "site", "fingerprint": strings.Repeat("0", 64),
+	forRecovery, _ := xwing.Seal([]byte(c.dataKey), pub, xwing.ScopeDEK)
+	forServer, _ := xwing.Seal([]byte(c.dataKey), otherServer, xwing.ScopeDEK)
+	c.ciphertext = forRecovery[:xwing.CiphertextBytes]
+	fp := sha256.Sum256(pub)
+	recipients := []map[string]string{{"kind": "site", "alg": "xwing", "fingerprint": strings.Repeat("0", 64),
 		"sealed": base64.StdEncoding.EncodeToString(forServer)}}
 	if withRecoveryBox {
-		recipients = append(recipients, map[string]string{"kind": "recovery", "fingerprint": hex.EncodeToString(fp[:]),
+		recipients = append(recipients, map[string]string{"kind": "recovery", "alg": "xwing", "fingerprint": hex.EncodeToString(fp[:]),
 			"sealed": base64.StdEncoding.EncodeToString(forRecovery)})
 	}
 	manifest, _ := json.Marshal(map[string]interface{}{"chain_id": id, "envelope": map[string]interface{}{"recipients": recipients}})
@@ -67,15 +63,33 @@ func newKeyBoxChain(t *testing.T, withRecoveryBox bool) *keyBoxChain {
 	return c
 }
 
-// share is the operator's browser: the X25519 of a recovery key with the
-// box's ephemeral key.
-func (c *keyBoxChain) share(t *testing.T, priv []byte) []byte {
+// newXWingKey is a fresh X-Wing seed and its public key.
+func newXWingKey(t *testing.T) ([]byte, []byte) {
 	t.Helper()
-	s, err := curve25519.X25519(priv, c.ephemeral)
+	seed, err := xwing.NewSeed()
 	if err != nil {
 		t.Fatal(err)
 	}
-	return s
+	pub, err := xwing.PublicKey(seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return seed, pub
+}
+
+// share is the operator's browser: the box's dek-scope key from decapsulating
+// its ciphertext with a recovery key's seed.
+func (c *keyBoxChain) share(t *testing.T, seed []byte) []byte {
+	t.Helper()
+	ss, err := xwing.Decapsulate(seed, c.ciphertext)
+	if err != nil {
+		t.Fatal(err)
+	}
+	k, err := xwing.Key(ss, xwing.ScopeDEK)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return k
 }
 
 func (c *keyBoxChain) describe(t *testing.T) (ApprovalStatement, error) {
@@ -99,7 +113,7 @@ func TestAChainAnotherServerMadeIsApprovedWithItsKeyOpened(t *testing.T) {
 	}
 	fp := sha256.Sum256(c.recoveryPub)
 	if st.KeyBox.RecoveryFingerprint != hex.EncodeToString(fp[:]) ||
-		st.KeyBox.EphemeralPublic != base64.StdEncoding.EncodeToString(c.ephemeral) {
+		st.KeyBox.Ciphertext != base64.StdEncoding.EncodeToString(c.ciphertext) {
 		t.Errorf("the key box names %+v", st.KeyBox)
 	}
 	facts := map[string]string{}
@@ -117,7 +131,7 @@ func TestAChainAnotherServerMadeIsApprovedWithItsKeyOpened(t *testing.T) {
 		KeyBox map[string]interface{} `json:"key_box"`
 	}
 	_ = json.Unmarshal(body, &bound)
-	if len(bound.KeyBox) != 2 || bound.KeyBox["ephemeral_public"] != st.KeyBox.EphemeralPublic ||
+	if len(bound.KeyBox) != 2 || bound.KeyBox["ciphertext"] != st.KeyBox.Ciphertext ||
 		bound.KeyBox["recovery_fingerprint"] != st.KeyBox.RecoveryFingerprint {
 		t.Errorf("the statement the challenge is bound to should carry the box and nothing else of it: %s", body)
 	}
@@ -147,8 +161,8 @@ func TestAKeyBoxOpensOnlyWithTheKeyItIsSealedTo(t *testing.T) {
 	if err != nil || st.KeyBox == nil {
 		t.Fatalf("no key box: %v", err)
 	}
-	otherPub, otherPriv, _ := box.GenerateKey(rand.Reader)
-	if err := st.KeyBox.Open(c.share(t, otherPriv[:]), otherPub[:]); err == nil || !strings.Contains(err.Error(), "fingerprint") {
+	otherPriv, otherPub := newXWingKey(t)
+	if err := st.KeyBox.Open(c.share(t, otherPriv), otherPub); err == nil || !strings.Contains(err.Error(), "fingerprint") {
 		t.Errorf("another recovery key was taken: %v", err)
 	}
 	random := make([]byte, 32)

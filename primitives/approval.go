@@ -98,17 +98,14 @@ type ApprovalStatement struct {
 // as the restore is approved. Such a chain is sealed to the key of the
 // server that made it, which never left that server, and to the site's
 // recovery key, which the operator is pasting to approve anyway. Their
-// browser works out the X25519 of the recovery key with the box's ephemeral
-// key, the one value that opens this box (copy_take_key's construction), and
-// sends it with the approval. The recovery key itself stays in the browser.
+// browser decapsulates the box's X-Wing ciphertext with the recovery key and
+// sends the box's dek-scope AES key, the one value that opens this box
+// (copy_take_key's construction), with the approval. The recovery key itself
+// stays in the browser.
 type ApprovalKeyBox struct {
-	// The box as the page needs it to half-open it, one of the two:
-	// Ciphertext, base64, the X-Wing ciphertext of a v2 box (a backup sealed to
-	// an X-Wing recovery key), for which the page posts the box's dek-scope key;
-	// EphemeralPublic, base64, the ephemeral X25519 key of a v1 sealed box (a
-	// backup sealed to an old recovery key), for which it posts the X25519.
-	Ciphertext      string `json:"ciphertext,omitempty"`
-	EphemeralPublic string `json:"ephemeral_public,omitempty"`
+	// Ciphertext, base64, the box's X-Wing ciphertext: what the page needs to
+	// half-open it.
+	Ciphertext string `json:"ciphertext"`
 	// RecoveryFingerprint is the SHA-256, hex, of the recovery public key the
 	// box is sealed to: the key the operator must paste.
 	RecoveryFingerprint string `json:"recovery_fingerprint"`

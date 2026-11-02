@@ -200,10 +200,6 @@ func (k nodeKey) SignDomain(domain string, message []byte) ([]byte, error) {
 	return ed25519.Sign(k.id.private, message), nil
 }
 
-func (k nodeKey) OpenSealed(blob []byte) ([]byte, error) {
-	return primitives.OpenSealedToAgentKey(k.id.private, blob)
-}
-
 func (k nodeKey) OpenKEMSealed(blob []byte, scope string) ([]byte, error) {
 	seed, err := base64.StdEncoding.DecodeString(k.id.KEMSeed)
 	if err != nil || len(seed) != xwing.SeedBytes {

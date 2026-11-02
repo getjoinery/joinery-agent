@@ -139,11 +139,6 @@ var pinnedVocabulary = map[string]Class{
 	// kind, never an address or a key. The relay itself is not asked.
 	"relay_status": ClassObserve,
 
-	// What this site still holds on an old X25519 key (v1_key_retirement,
-	// 2026-11-02). TEMPORARY: removed by the release that deletes v1.
-	// Observe, NO PARAMETERS: counts, ids and kinds, never a value.
-	"v1_census": ClassObserve,
-
 	// Whether the machine is dropping packets or connections
 	// (specs/slow_request_diagnosis_words.md WP2). Observe, NO PARAMETERS,
 	// counts only, never a remote address; refused inside a site container.

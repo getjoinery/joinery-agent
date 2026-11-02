@@ -17,9 +17,6 @@ import (
 	"strings"
 	"time"
 
-	"golang.org/x/crypto/curve25519"
-	"golang.org/x/crypto/nacl/box"
-
 	"joinery-agent/xwing"
 )
 
@@ -31,8 +28,8 @@ import (
 // root disk of every encrypted machine and needs nothing from the data root.
 //
 // THE BREAK-GLASS COPY is the volume key sealed to a recovery public key with
-// libsodium's crypto_box_seal, written in the same envelope a backup's data
-// key uses (BackupEnvelope.php, version 1). So the owner opens it with the
+// the X-Wing v2 seal, written in the same envelope a backup's data key uses
+// (BackupEnvelope.php, version 2). So the owner opens it with the
 // tool they already have, `backup_envelope.php open --sidecar ...
 // --private recovery.key`, and this binary opens it with the same recovery
 // key pasted at the console (unlock.go).
@@ -50,15 +47,12 @@ const (
 	dataRootOpenedByPath = "/run/joinery/data-root.opened-by"
 	// The TPM2 chip did not open the volume at this boot.
 	dataRootTPM2FailedPath = "/run/joinery/data-root.tpm2-failed"
-	// The envelope written: version 2, each recipient an X-Wing v2 seal with
-	// "alg": "xwing" (the platform's BackupEnvelope shape,
-	// specs/post_quantum_sealing.md R2). Version 1 (a libsodium sealed box to
-	// an old X25519 recovery key) is still read, never written.
-	sidecarVersion   = 2
-	sidecarVersionV1 = 1
-	sidecarAlgXWing  = "xwing"
-	sidecarArtifact  = "data-root"
-	sidecarCipher    = "luks2-volume-key"
+	// The envelope: version 2, each recipient an X-Wing v2 seal with
+	// "alg": "xwing" (the platform's BackupEnvelope shape).
+	sidecarVersion  = 2
+	sidecarAlgXWing = "xwing"
+	sidecarArtifact = "data-root"
+	sidecarCipher   = "luks2-volume-key"
 	// A LUKS2 volume key of the standard configuration: 512 bits.
 	volumeKeyBytes = 64
 )
@@ -153,16 +147,14 @@ func readDataRootConfig(path string) (dataRootConfig, error) {
 
 // readRecipient returns the raw recovery public key and its fingerprint from
 // the recipient file, refusing one whose fingerprint does not match it. The
-// key is an X-Wing one (1216 bytes), or an old X25519 one (32 bytes) that a
-// break-glass copy made before it may still be sealed to; nothing new is
-// sealed to that (sealKeyMaterial).
+// key is an X-Wing one (1216 bytes); any other length is refused.
 func readRecipient(path string) ([]byte, string, error) {
 	kv, err := readKeyValueFile(path)
 	if err != nil {
 		return nil, "", err
 	}
 	pub, err := base64.StdEncoding.DecodeString(kv["public_key"])
-	if err != nil || (len(pub) != xwing.PublicKeyBytes && len(pub) != 32) {
+	if err != nil || len(pub) != xwing.PublicKeyBytes {
 		return nil, "", fmt.Errorf("%s holds no recovery public key (one base64 line of a %d-byte key)", path, xwing.PublicKeyBytes)
 	}
 	fpr := keyFingerprint(pub)
@@ -194,9 +186,7 @@ func sealKeyMaterial(key, recipientPub []byte, now time.Time, artifact, cipher s
 		return nil, fmt.Errorf("what is sealed here is %d bytes; this is %d", volumeKeyBytes, len(key))
 	}
 	if len(recipientPub) != xwing.PublicKeyBytes {
-		return nil, errors.New("the recovery key this machine holds is an old X25519 key, which nothing seals to " +
-			"any more; its management node sends the new one (Rotate key on the site's Backups page), and the " +
-			"break-glass copy is sealed to that")
+		return nil, fmt.Errorf("a recovery public key is %d bytes (X-Wing); this one is %d", xwing.PublicKeyBytes, len(recipientPub))
 	}
 	sealed, err := xwing.Seal(key, recipientPub, xwing.ScopeDEK)
 	if err != nil {
@@ -221,25 +211,20 @@ func sealKeyMaterial(key, recipientPub []byte, now time.Time, artifact, cipher s
 	return append(out, '\n'), nil
 }
 
-// pastedRecoveryKey reads a recovery key as it is kept: the base64 secret
-// (44 characters: an X-Wing seed, or an old X25519 key), or the base64 keypair
-// libsodium writes for an old one (secret then public), with any whitespace a
-// paste brings. The secret alone cannot name its version; the recipient it
-// opens is matched by the fingerprint of each candidate public key.
+// pastedRecoveryKey reads a recovery key as it is kept: the base64 X-Wing
+// seed (44 characters), with any whitespace a paste brings.
 func pastedRecoveryKey(pasted string) ([]byte, error) {
 	raw, derr := base64.StdEncoding.DecodeString(strings.Join(strings.Fields(pasted), ""))
-	if derr != nil || (len(raw) != 32 && len(raw) != 64) {
+	if derr != nil || len(raw) != 32 {
+		zero(raw)
 		return nil, errors.New("that is not a recovery key: it is one line of 44 base64 characters")
 	}
-	secret := append([]byte(nil), raw[:32]...)
-	zero(raw)
-	return secret, nil
+	return raw, nil
 }
 
 // openSidecar returns the volume key from the envelope at path, opened with
-// the pasted recovery key: a version-2 recipient with the X-Wing key the seed
-// makes, a version-1 one with the X25519 key the same 32 bytes make, whichever
-// the recipient's fingerprint names. A public key pasted by mistake is named
+// the pasted recovery key: the recipient whose fingerprint names the X-Wing key
+// the seed makes. A public key pasted by mistake is named
 // as such, since its fix is the opposite of a wrong private key's.
 func openSidecar(path, pasted string) ([]byte, error) {
 	data, err := os.ReadFile(path)
@@ -247,12 +232,12 @@ func openSidecar(path, pasted string) ([]byte, error) {
 		return nil, fmt.Errorf("the break-glass copy cannot be read: %v", err)
 	}
 	var env sidecarEnvelope
-	if err := json.Unmarshal(data, &env); err != nil || (env.Version != sidecarVersion && env.Version != sidecarVersionV1) ||
+	if err := json.Unmarshal(data, &env); err != nil || env.Version != sidecarVersion ||
 		len(env.Recipients) == 0 {
 		return nil, fmt.Errorf("%s is not a break-glass copy this agent reads", path)
 	}
 	if raw, derr := base64.StdEncoding.DecodeString(strings.Join(strings.Fields(pasted), "")); derr == nil &&
-		(len(raw) == 32 || len(raw) == xwing.PublicKeyBytes) {
+		len(raw) == xwing.PublicKeyBytes {
 		for _, r := range env.Recipients {
 			if r.Fingerprint == keyFingerprint(raw) {
 				return nil, errors.New("that is the recovery key's PUBLIC half; paste the private key you saved")
@@ -268,33 +253,16 @@ func openSidecar(path, pasted string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	v1Pub, err := curve25519.X25519(secret, curve25519.Basepoint)
-	if err != nil {
-		return nil, errors.New("that is not a recovery key")
-	}
 	for _, r := range env.Recipients {
 		sealed, derr := base64.StdEncoding.DecodeString(r.Sealed)
 		if derr != nil {
 			continue
 		}
-		var key []byte
-		switch {
-		case r.Alg == sidecarAlgXWing && r.Fingerprint == keyFingerprint(xwPub):
-			key, err = xwing.Open(sealed, secret, xwing.ScopeDEK)
-			if err != nil {
-				continue
-			}
-		case r.Alg == "" && r.Fingerprint == keyFingerprint(v1Pub):
-			var priv, pub [32]byte
-			copy(priv[:], secret)
-			copy(pub[:], v1Pub)
-			opened, ok := box.OpenAnonymous(nil, sealed, &pub, &priv)
-			zero(priv[:])
-			if !ok {
-				continue
-			}
-			key = opened
-		default:
+		if r.Alg != sidecarAlgXWing || r.Fingerprint != keyFingerprint(xwPub) {
+			continue
+		}
+		key, err := xwing.Open(sealed, secret, xwing.ScopeDEK)
+		if err != nil {
 			continue
 		}
 		if len(key) != volumeKeyBytes {

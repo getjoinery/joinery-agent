@@ -68,14 +68,13 @@ func chainKeyBox(work string) (*ApprovalKeyBox, error) {
 		if err != nil || len(sealed) > copyTakeKeyMaxSealed {
 			continue
 		}
-		ciphertext, ephemeral, ok := recoveryBoxParts(sealed, r.Alg)
+		ciphertext, ok := recoveryBoxParts(sealed, r.Alg)
 		if !ok {
 			continue
 		}
 		fingerprint := r.Fingerprint
 		return &ApprovalKeyBox{
 			Ciphertext:          ciphertext,
-			EphemeralPublic:     ephemeral,
 			RecoveryFingerprint: fingerprint,
 			Open: func(shared, recoveryPublic []byte) error {
 				sum := sha256.Sum256(recoveryPublic)

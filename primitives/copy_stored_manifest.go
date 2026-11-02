@@ -99,8 +99,8 @@ var storedManifestClient = &http.Client{
 // StoredManifest is what the copy learned from the manifest it read.
 type StoredManifest struct {
 	NewestRun time.Time // the manifest's newest run
-	// RecoveryAlg is the recovery recipient's alg: "xwing" for a v2 box, "" for
-	// a v1 sealed box (BackupEnvelope's recipient shape).
+	// RecoveryAlg is the recovery recipient's alg: "xwing" (BackupEnvelope's
+	// recipient shape); a box of any other alg is refused.
 	RecoveryAlg string
 	StoredTime  time.Time // the provider's Last-Modified; zero when not checked
 	StoredAt    string    // the provider's name; "" when the date could not be checked

@@ -72,20 +72,12 @@ import (
 	"strings"
 	"time"
 
-	"golang.org/x/crypto/nacl/box"
-
 	"joinery-agent/xwing"
 )
 
 // siteKeyFile is this machine's backup key, under config/: base64 of its
-// 32-byte X-Wing seed (BackupEnvelope::SITE_KEY_FILE). siteKeyRetiredFile is
-// the old X25519 keypair the converger moved aside when it minted the seed
-// (base64 of the 32-byte secret then the 32-byte public key): chains begun
-// before that are sealed to it (specs/post_quantum_sealing.md R7).
-const (
-	siteKeyFile        = "backup_site_key"
-	siteKeyRetiredFile = "backup_site_key.retired"
-)
+// 32-byte X-Wing seed (BackupEnvelope::SITE_KEY_FILE).
+const siteKeyFile = "backup_site_key"
 
 func init() {
 	Register(Primitive{
@@ -326,11 +318,9 @@ func copyExportRun(ctx context.Context, env *ExecEnv, params Params) (map[string
 }
 
 // openChainDataKey opens the chain data key from a manifest's envelope with
-// this machine's own backup key (BackupEnvelope::build): a version-2
-// recipient ("alg": "xwing") with the X-Wing seed in backup_site_key, a
-// version-1 one (a libsodium sealed box) with the retired X25519 keypair, or
-// with a backup_site_key that is still a keypair on a machine not converged
-// since. Each recipient is matched by its fingerprint, never tried blind.
+// this machine's own backup key (BackupEnvelope::build): the recipient
+// ("alg": "xwing") whose fingerprint is the X-Wing key the seed in
+// backup_site_key makes, never tried blind.
 func openChainDataKey(env *ExecEnv, manifest string) (string, error) {
 	config := filepath.Join(strings.TrimRight(env.SiteRoot, "/"), "config")
 	current, err := readSiteKey(filepath.Join(config, siteKeyFile))
@@ -338,38 +328,16 @@ func openChainDataKey(env *ExecEnv, manifest string) (string, error) {
 		return "", fmt.Errorf("this machine's backup key cannot be read: %v", err)
 	}
 	defer zero(current)
-	retired, _ := readSiteKey(filepath.Join(config, siteKeyRetiredFile))
-	defer zero(retired)
-
-	var seed, pair []byte
-	for _, k := range [][]byte{current, retired} {
-		switch len(k) {
-		case xwing.SeedBytes:
-			if seed == nil {
-				seed = k
-			}
-		case 64:
-			if pair == nil {
-				pair = k
-			}
-		}
+	if len(current) != xwing.SeedBytes {
+		return "", errors.New("this machine's backup key is not an X-Wing seed")
 	}
-	if seed == nil && pair == nil {
-		return "", errors.New("this machine's backup key is neither an X-Wing seed nor a keypair")
+	seed := current
+	pub, err := xwing.PublicKey(seed)
+	if err != nil {
+		return "", err
 	}
-	var xwFpr, v1Fpr string
-	if seed != nil {
-		pub, err := xwing.PublicKey(seed)
-		if err != nil {
-			return "", err
-		}
-		sum := sha256.Sum256(pub)
-		xwFpr = hex.EncodeToString(sum[:])
-	}
-	if pair != nil {
-		sum := sha256.Sum256(pair[32:])
-		v1Fpr = hex.EncodeToString(sum[:])
-	}
+	sum := sha256.Sum256(pub)
+	xwFpr := hex.EncodeToString(sum[:])
 
 	body, err := os.ReadFile(manifest)
 	if err != nil {
@@ -393,20 +361,11 @@ func openChainDataKey(env *ExecEnv, manifest string) (string, error) {
 		if err != nil {
 			continue
 		}
-		switch {
-		case r.Alg == "xwing" && xwFpr != "" && r.Fingerprint == xwFpr:
-			if opened, err := xwing.Open(blob, seed, xwing.ScopeDEK); err == nil {
-				return string(opened), nil
-			}
-		case r.Alg == "" && v1Fpr != "" && r.Fingerprint == v1Fpr:
-			var priv, pub [32]byte
-			copy(priv[:], pair[:32])
-			copy(pub[:], pair[32:])
-			opened, ok := box.OpenAnonymous(nil, blob, &pub, &priv)
-			zero(priv[:])
-			if ok {
-				return string(opened), nil
-			}
+		if r.Alg != "xwing" || r.Fingerprint != xwFpr {
+			continue
+		}
+		if opened, err := xwing.Open(blob, seed, xwing.ScopeDEK); err == nil {
+			return string(opened), nil
 		}
 	}
 	return "", errors.New("no recipient of the chain's envelope is this machine's key")

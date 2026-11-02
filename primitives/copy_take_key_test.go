@@ -2,7 +2,6 @@ package primitives
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -16,45 +15,52 @@ import (
 	"testing"
 	"time"
 
-	"golang.org/x/crypto/curve25519"
-	"golang.org/x/crypto/nacl/box"
+	"joinery-agent/xwing"
 )
 
 // A copy from backups (specs/site_copy.md WP10): the chain key, sealed to the
-// owner's recovery key in a libsodium sealed box, is opened here from the one
-// value the owner's browser works out with WebCrypto (X25519 of the recovery
-// key with the box's ephemeral key), and written as copy_import would have
+// owner's X-Wing recovery key, is opened here from the one value the owner's
+// browser works out (the box's dek-scope AES key, from decapsulating its
+// ciphertext with the recovery key), and written as copy_import would have
 // written it.
 
 type recoveryFixture struct {
-	pub, priv *[32]byte
+	pub, seed []byte
 	sealed    []byte
 	dataKey   string
 }
 
 func newRecoveryFixture(t *testing.T) recoveryFixture {
 	t.Helper()
-	pub, priv, err := box.GenerateKey(rand.Reader)
+	seed, err := xwing.NewSeed()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub, err := xwing.PublicKey(seed)
 	if err != nil {
 		t.Fatal(err)
 	}
 	dataKey := base64.StdEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
-	sealed, err := box.SealAnonymous(nil, []byte(dataKey), pub, rand.Reader)
+	sealed, err := xwing.Seal([]byte(dataKey), pub, xwing.ScopeDEK)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return recoveryFixture{pub: pub, priv: priv, sealed: sealed, dataKey: dataKey}
+	return recoveryFixture{pub: pub, seed: seed, sealed: sealed, dataKey: dataKey}
 }
 
-// browserShare is what the owner's browser computes: X25519(recovery private,
-// the box's ephemeral public).
+// browserShare is what the owner's browser computes: the box's dek-scope key
+// from the X-Wing shared secret its ciphertext decapsulates to.
 func (r recoveryFixture) browserShare(t *testing.T) []byte {
 	t.Helper()
-	shared, err := curve25519.X25519(r.priv[:], r.sealed[:32])
+	ss, err := xwing.Decapsulate(r.seed, r.sealed[:xwing.CiphertextBytes])
 	if err != nil {
 		t.Fatal(err)
 	}
-	return shared
+	key, err := xwing.Key(ss, xwing.ScopeDEK)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return key
 }
 
 func (r recoveryFixture) fingerprint() string {
@@ -73,11 +79,8 @@ func TestTheBrowserShareOpensTheSealedBox(t *testing.T) {
 	if _, err := openRecoverySealed(r.sealed, other.browserShare(t), r.pub[:]); err == nil {
 		t.Error("another box's share opened this one")
 	}
-	if _, err := openRecoverySealed(r.sealed, r.browserShare(t), other.pub[:]); err == nil {
-		t.Error("the share opened with the wrong recipient key in the nonce")
-	}
 	if _, err := openRecoverySealed(r.sealed, make([]byte, 32), r.pub[:]); err == nil {
-		t.Error("an all-zero share was taken")
+		t.Error("an all-zero key opened the box")
 	}
 	tampered := append([]byte{}, r.sealed...)
 	tampered[len(tampered)-1] ^= 1
@@ -124,7 +127,7 @@ func manifestBody(t *testing.T, chainID, runTime string, r recoveryFixture) []by
 		"version":  3,
 		"chain_id": chainID,
 		"envelope": map[string]interface{}{"recipients": []map[string]string{
-			{"kind": "recovery", "fingerprint": r.fingerprint(), "sealed": base64.StdEncoding.EncodeToString(r.sealed)},
+			{"kind": "recovery", "alg": "xwing", "fingerprint": r.fingerprint(), "sealed": base64.StdEncoding.EncodeToString(r.sealed)},
 			{"kind": "site", "fingerprint": strings.Repeat("cd", 32), "sealed": "c2l0ZQ=="},
 		}},
 		"runs": []map[string]interface{}{{"seq": 0, "time": "2026-09-30T03:00:00Z"}, {"seq": 1, "time": runTime}},
@@ -197,7 +200,7 @@ func TestCopyTakeKeyWritesWhatCopyImportWould(t *testing.T) {
 	if err != nil {
 		t.Fatalf("copy_take_key: %v", err)
 	}
-	if h.jobID != 9001 || h.staged.ChainID != exportChainID || h.staged.EphemeralPublic != base64.StdEncoding.EncodeToString(r.sealed[:32]) {
+	if h.jobID != 9001 || h.staged.ChainID != exportChainID || h.staged.Ciphertext != base64.StdEncoding.EncodeToString(r.sealed[:xwing.CiphertextBytes]) {
 		t.Errorf("staged %+v for job %d", h.staged, h.jobID)
 	}
 	if len(h.refused) != 1 || !strings.Contains(h.refused[0], "fingerprint") {
@@ -254,27 +257,6 @@ func TestCopyLookReportsThePath(t *testing.T) {
 	out, err := copyLookRun(context.Background(), f.tEnv, Params{})
 	if err != nil || out["look_path"] != "/.joinery-look/"+strings.Repeat("a1", 16) {
 		t.Errorf("look %v, %v", out, err)
-	}
-}
-
-// A box sealed by PHP's libsodium (sodium_crypto_box_seal), as every backup
-// envelope is, opened from the X25519 share PHP's sodium_crypto_scalarmult
-// computes (the browser's WebCrypto deriveBits gives the same bytes). Pins
-// the construction to the one the backups actually use, not only to Go's.
-func TestALibsodiumSealedBoxOpens(t *testing.T) {
-	dec := func(s string) []byte {
-		b, err := base64.StdEncoding.DecodeString(s)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return b
-	}
-	opened, err := openRecoverySealed(
-		dec("rlvXlqNslUhw5d1VXk7ZiN/7PkHKVnpzBhTT2kmUbXUbf0lVJT39f5A6u5A0Qr6OrzBXbNfXm3l3yQsKIU3v9v5mua7HyiOSm1rNTqvYtUUOz1Tbz+XOtHmYRQQ="),
-		dec("/NjKx5dkDq+czEO4GKnrOkBM5+32eMxtyHxVon2hQiM="),
-		dec("1AE/yfyjLvav97MztrVb9Y6azrE/t2bb0TidVIXgiUU="))
-	if err != nil || string(opened) != "5S1zsUQmyOfNSxo847p9+4EgHCGocYnGr5WepneRz9A=" {
-		t.Fatalf("opened %q, %v", opened, err)
 	}
 }
 

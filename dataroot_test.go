@@ -11,16 +11,14 @@ import (
 	"testing"
 	"time"
 
-	"golang.org/x/crypto/nacl/box"
-
 	"joinery-agent/xwing"
 )
 
 // The encrypted data root's key material (dataroot.go): the break-glass copy
 // is the backup envelope's format, version 2 (X-Wing), so the owner's
 // backup_envelope.php opens what this seals and this opens what PHP seals; a
-// version-1 copy (an old X25519 recovery key) still opens and nothing new is
-// sealed to one; the recipient file is refused when its fingerprint is not its
+// version-1 copy (an old X25519 recovery key) is not read and nothing is
+// sealed to a 32-byte key; the recipient file is refused when its fingerprint is not its
 // key's; and the slots are read from the header's own metadata.
 
 func testKeypair(t *testing.T) (secretB64 string, pub []byte) {
@@ -87,35 +85,28 @@ func TestDataRootSealOpensWithTheRecoveryKey(t *testing.T) {
 	}
 }
 
-// A copy sealed before the X-Wing upgrade, to an old X25519 key, still opens
-// with that key, in either form libsodium keeps it; nothing new is sealed to it.
-func TestDataRootVersionOneStillOpens(t *testing.T) {
+// A 32-byte (X25519) key is refused everywhere: nothing is sealed to one, a
+// recipient file holding one is not read, and a version-1 copy is not a
+// break-glass copy this agent reads.
+func TestDataRootRefusesAnX25519Key(t *testing.T) {
 	dir := t.TempDir()
-	p, s, err := box.GenerateKey(rand.Reader)
-	if err != nil {
+	old := make([]byte, 32)
+	if _, err := rand.Read(old); err != nil {
 		t.Fatal(err)
 	}
-	sealed, err := box.SealAnonymous(nil, volumeKey(), p, rand.Reader)
-	if err != nil {
-		t.Fatal(err)
+	if _, err := sealVolumeKey(volumeKey(), old, time.Now()); err == nil {
+		t.Fatal("a volume key was sealed to a 32-byte key")
+	}
+	if _, _, err := readRecipient(writeRecipient(t, dir, old, keyFingerprint(old))); err == nil {
+		t.Fatal("a recipient file with a 32-byte key was read")
 	}
 	env := sidecarEnvelope{Version: 1, Artifact: "data-root", Cipher: "luks2-volume-key", Created: "2026-10-11T00:00:00Z",
-		Recipients: []sidecarRecipient{{Kind: "recovery", Fingerprint: keyFingerprint(p[:]), Sealed: base64.StdEncoding.EncodeToString(sealed)}}}
+		Recipients: []sidecarRecipient{{Kind: "recovery", Fingerprint: keyFingerprint(old), Sealed: base64.StdEncoding.EncodeToString(make([]byte, 112))}}}
 	body, _ := json.Marshal(env)
 	sidecar := filepath.Join(dir, "old.recovery")
 	os.WriteFile(sidecar, body, 0600)
-	if key, err := openSidecar(sidecar, base64.StdEncoding.EncodeToString(s[:])); err != nil || !bytes.Equal(key, volumeKey()) {
-		t.Fatalf("an old copy does not open with its key: %v", err)
-	}
-	pair := base64.StdEncoding.EncodeToString(append(append([]byte{}, s[:]...), p[:]...))
-	if key, err := openSidecar(sidecar, pair); err != nil || !bytes.Equal(key, volumeKey()) {
-		t.Fatalf("the keypair form: %v", err)
-	}
-	if _, err := sealVolumeKey(volumeKey(), p[:], time.Now()); err == nil || !strings.Contains(err.Error(), "old X25519") {
-		t.Fatalf("a volume key was sealed to an old key: %v", err)
-	}
-	if _, _, err := readRecipient(writeRecipient(t, dir, p[:], keyFingerprint(p[:]))); err != nil {
-		t.Fatalf("an old recipient file is no longer read: %v", err)
+	if _, err := openSidecar(sidecar, base64.StdEncoding.EncodeToString(old)); err == nil {
+		t.Fatal("a version-1 copy was opened")
 	}
 }
 
@@ -153,7 +144,6 @@ func TestDataRootOpensWhatPHPSealed(t *testing.T) {
 	}
 	for file, secret := range map[string]string{
 		"testdata/data_root_sidecar_php_v2.json": kv["secret_v2"],
-		"testdata/data_root_sidecar_php.json":    kv["secret"],
 	} {
 		key, err := openSidecar(file, secret)
 		if err != nil {

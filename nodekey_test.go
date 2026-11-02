@@ -32,11 +32,6 @@ func TestTheLentKeyNeverSignsARequest(t *testing.T) {
 	if err != nil || !ed25519.Verify(priv.Public().(ed25519.PublicKey), msg, sig) {
 		t.Fatalf("did not sign its own domain: %v", err)
 	}
-
-	blob, err := primitives.OpenSealedToAgentKey(priv, []byte("short"))
-	if err == nil || blob != nil {
-		t.Fatal("opened a short seal")
-	}
 }
 
 // The export scope is its own: its rows and context differ from every other

@@ -17,9 +17,6 @@ import (
 	"testing"
 	"time"
 
-	"golang.org/x/crypto/curve25519"
-	"golang.org/x/crypto/nacl/box"
-
 	"joinery-agent/xwing"
 )
 
@@ -66,7 +63,6 @@ func (k testKey) SignDomain(domain string, msg []byte) ([]byte, error) {
 	}
 	return ed25519.Sign(k.priv, msg), nil
 }
-func (k testKey) OpenSealed(blob []byte) ([]byte, error) { return OpenSealedToAgentKey(k.priv, blob) }
 func (k testKey) OpenKEMSealed(blob []byte, scope string) ([]byte, error) {
 	return xwing.Open(blob, k.kem, scope)
 }
@@ -268,50 +264,6 @@ func (f *exportFixture) importBundle(t *testing.T, bundle string) (map[string]in
 	CopyLetsEncryptDir, CopyDKIMDir = f.tLE, f.tDKIM
 	defer func() { CopyLetsEncryptDir, CopyDKIMDir = oldLE, oldDKIM }()
 	return copyImportRun(context.Background(), f.tEnv, validParams(t, "copy_import", map[string]interface{}{"bundle": bundle}))
-}
-
-func TestTheX25519FormsOfAnAgentKeyAreOneKeypair(t *testing.T) {
-	for i := 0; i < 50; i++ {
-		k := newTestKey(t)
-		pub, err := ed25519PublicToX25519(k.PublicKey())
-		if err != nil {
-			t.Fatal(err)
-		}
-		derived, err := curve25519.X25519(ed25519PrivateToX25519(k.priv), curve25519.Basepoint)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if hex.EncodeToString(pub) != hex.EncodeToString(derived) {
-			t.Fatalf("key %d: the public map and the private scalar disagree", i)
-		}
-	}
-}
-
-func TestASealOpensOnlyWithItsKeyAndOnlyUnchanged(t *testing.T) {
-	a, b := newTestKey(t), newTestKey(t)
-	blob, err := sealToAgentKey(a.PublicKey(), []byte("the chain key"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got, err := OpenSealedToAgentKey(a.priv, blob); err != nil || string(got) != "the chain key" {
-		t.Fatalf("the recipient could not open it: %v", err)
-	}
-	if _, err := OpenSealedToAgentKey(b.priv, blob); err == nil {
-		t.Fatal("another key opened it")
-	}
-	blob[len(blob)-1] ^= 1
-	if _, err := OpenSealedToAgentKey(a.priv, blob); err == nil {
-		t.Fatal("a changed seal opened")
-	}
-}
-
-func TestALowOrderTargetKeyIsRefused(t *testing.T) {
-	// y = 1 is the Edwards identity: its X25519 counterpart has no inverse.
-	identity := make([]byte, 32)
-	identity[0] = 1
-	if _, err := sealToAgentKey(ed25519.PublicKey(identity), []byte("x")); err == nil {
-		t.Fatal("sealed to the identity point")
-	}
 }
 
 func TestAnExportOpensOnTheCopyAndWritesWhatTheOtherWordsRead(t *testing.T) {
@@ -626,7 +578,11 @@ func (f *exportFixture) bundleOf(t *testing.T, p copyPayload, issued time.Time) 
 func (f *exportFixture) sealPayload(t *testing.T, p copyPayload, issued, expires time.Time) string {
 	t.Helper()
 	payload, _ := json.Marshal(p)
-	sealed, err := sealToAgentKey(f.target.PublicKey(), gzipBytes(t, payload))
+	kemPub, err := xwing.PublicKey(f.target.kem)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed, err := xwing.Seal(gzipBytes(t, payload), kemPub, CopySealScope)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -635,7 +591,7 @@ func (f *exportFixture) sealPayload(t *testing.T, p copyPayload, issued, expires
 		SourceKey: base64.StdEncoding.EncodeToString(f.source.PublicKey()),
 		TargetKey: base64.StdEncoding.EncodeToString(f.target.PublicKey()),
 		Issued:    issued.Format(time.RFC3339Nano), Expires: expires.Format(time.RFC3339Nano),
-		Sealed: base64.StdEncoding.EncodeToString(sealed),
+		Sealed: base64.StdEncoding.EncodeToString(sealed), Seal: CopySealXWing,
 	}, func(m []byte) ([]byte, error) { return f.source.SignDomain(CopyExportDomain, m) })
 	if err != nil {
 		t.Fatal(err)
@@ -826,29 +782,23 @@ func TestSignDomainMessagesAreNeverRequestSignatures(t *testing.T) {
 	}
 }
 
-// A chain begun before the site key became an X-Wing seed is sealed to the
-// old keypair the converger moved to backup_site_key.retired: its data key
-// still opens, from that file, by its fingerprint.
-func TestAChainSealedToTheRetiredSiteKeyStillOpens(t *testing.T) {
+// A chain sealed to anything but this machine's X-Wing key does not open: an
+// old keypair beside the seed is never read.
+func TestAChainSealedToAnotherKeyDoesNotOpen(t *testing.T) {
 	root := t.TempDir()
 	seed, _ := xwing.NewSeed()
 	mustWrite(t, filepath.Join(root, "config", siteKeyFile), base64.StdEncoding.EncodeToString(seed), 0o640)
-	oldPub, oldPriv, err := box.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
-	mustWrite(t, filepath.Join(root, "config", siteKeyRetiredFile),
-		base64.StdEncoding.EncodeToString(append(append([]byte{}, oldPriv[:]...), oldPub[:]...)), 0o640)
-	sealed, _ := box.SealAnonymous(nil, []byte("the old chain's key"), oldPub, rand.Reader)
-	fpr := sha256.Sum256(oldPub[:])
-	manifest, _ := json.Marshal(map[string]interface{}{"envelope": map[string]interface{}{"version": 1, "recipients": []map[string]string{
-		{"kind": "site", "fingerprint": hex.EncodeToString(fpr[:]), "sealed": base64.StdEncoding.EncodeToString(sealed)},
+	other, _ := xwing.NewSeed()
+	otherPub, _ := xwing.PublicKey(other)
+	sealed, _ := xwing.Seal([]byte("another machine's chain key"), otherPub, xwing.ScopeDEK)
+	fpr := sha256.Sum256(otherPub)
+	manifest, _ := json.Marshal(map[string]interface{}{"envelope": map[string]interface{}{"version": 2, "recipients": []map[string]string{
+		{"kind": "site", "alg": "xwing", "fingerprint": hex.EncodeToString(fpr[:]), "sealed": base64.StdEncoding.EncodeToString(sealed)},
 	}}})
 	path := filepath.Join(root, "manifest.json")
 	mustWrite(t, path, string(manifest), 0o600)
-	got, err := openChainDataKey(&ExecEnv{SiteRoot: root}, path)
-	if err != nil || got != "the old chain's key" {
-		t.Fatalf("a chain sealed to the retired key does not open: %q %v", got, err)
+	if got, err := openChainDataKey(&ExecEnv{SiteRoot: root}, path); err == nil {
+		t.Fatalf("a chain sealed to another key opened: %q", got)
 	}
 }
 

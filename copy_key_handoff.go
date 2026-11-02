@@ -17,9 +17,9 @@ import (
 // why that surface).
 //
 // What travels: the backup's statement (chain, newest run, manifest hash, the
-// recovery key's fingerprint, the sealed box's ephemeral public key), and back
-// the X25519 value the owner's browser worked out with the recovery key, with
-// the recovery public key. That value opens one sealed box, the chain key this
+// recovery key's fingerprint, the sealed box's X-Wing ciphertext), and back
+// the box's dek-scope AES key the owner's browser worked out with the recovery
+// key, with the recovery public key. That value opens one sealed box, the chain key this
 // machine is about to write anyway; the recovery key itself never leaves the
 // browser. The management node is in neither direction.
 //

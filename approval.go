@@ -42,11 +42,11 @@ import (
 // proving possession of it is at least as strong an authority over a restore as
 // anything that could be invented.
 //
-// WHY A SEALED SECRET AND NOT A SIGNATURE. The recovery key is X25519, which
-// cannot produce a signature at all — so "sign this challenge" was never an
-// option to decline. The construction is the one the browser already knows how
-// to open, from the possession ceremony: ephemeral X25519, HKDF-SHA256, then
-// AES-256-GCM. What is sealed is a one-time secret bound to this job and to this
+// WHY A SEALED SECRET AND NOT A SIGNATURE. The recovery key is an X-Wing KEM
+// key, which cannot produce a signature at all — so "sign this challenge" was
+// never an option to decline. The construction is the one the browser already
+// knows how to open, from the possession ceremony: the v2 seal (X-Wing,
+// HKDF-SHA256, AES-256-GCM). What is sealed is a one-time secret bound to this job and to this
 // node's own statement of what it would do, so an answer recovered for one job
 // can never satisfy another.
 //
@@ -270,14 +270,14 @@ type approvalRequest struct {
 	IssuedTime   string                    `json:"issued_time"`
 	ExpiresTime  string                    `json:"expires_time"`
 	// KeyBox is a backup's key the page opens with the same pasted key: its
-	// box's ephemeral public key and the recovery key's fingerprint.
+	// box's X-Wing ciphertext and the recovery key's fingerprint.
 	KeyBox *primitives.ApprovalKeyBox `json:"key_box,omitempty"`
 }
 
 // approvalAnswer is what the node's own admin page writes back. Shared and
 // PublicKey, base64, are what the page worked out for a request's KeyBox:
-// the X25519 of the pasted key with the box's ephemeral key, and that key's
-// public half.
+// the box's dek-scope AES key, from decapsulating its ciphertext with the
+// pasted key, and that key's public half.
 type approvalAnswer struct {
 	JobID     int64  `json:"job_id"`
 	Answer    string `json:"answer"`
@@ -489,7 +489,7 @@ func (a *SettingsApproval) await(ctx context.Context, jobID int64, expected stri
 func openApprovalKeyBox(keyBox *primitives.ApprovalKeyBox, answer approvalAnswer) error {
 	shared, err1 := base64.StdEncoding.DecodeString(strings.TrimSpace(answer.Shared))
 	public, err2 := base64.StdEncoding.DecodeString(strings.TrimSpace(answer.PublicKey))
-	if err1 != nil || err2 != nil || len(shared) != 32 || (len(public) != 32 && len(public) != xwing.PublicKeyBytes) {
+	if err1 != nil || err2 != nil || len(shared) != 32 || len(public) != xwing.PublicKeyBytes {
 		return fmt.Errorf("the approval did not carry what opens it (the page that answered may be older than " +
 			"this agent: reload it and approve again)")
 	}
@@ -524,12 +524,9 @@ func (a *SettingsApproval) provenRecoveryKey() ([]byte, error) {
 				"key that opens its backups"}
 	}
 	if len(raw) != xwing.PublicKeyBytes {
-		// A 32-byte key is an old X25519 one: the browser opens only an X-Wing
-		// challenge, so a challenge sealed to it could never be answered.
 		return nil, &primitives.RefusalError{
-			Reason: scope.party + "'s recovery key is an old X25519 key, which nothing seals to any more, so " +
-				"a " + scope.act + " cannot be approved with it. Rotate it on its own Backups page (Recovery " +
-				"key, Actions, Rotate key) first"}
+			Reason: scope.party + "'s recovery key setting is not an X-Wing public key, so a challenge " +
+				"sealed to it could never be answered. Set the key up again on its own Backups page first"}
 	}
 
 	proof, _ := a.store.Read(settingRecoveryProof)

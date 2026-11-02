@@ -150,12 +150,11 @@ func copyImportRun(ctx context.Context, env *ExecEnv, params Params) (map[string
 	if err != nil {
 		return nil, refusedf("copy_import refused: the sealed part is not readable")
 	}
-	var opened []byte
-	if body.Seal == CopySealXWing {
-		opened, err = key.OpenKEMSealed(sealed, CopySealScope)
-	} else {
-		opened, err = key.OpenSealed(sealed)
+	if body.Seal != CopySealXWing {
+		return nil, refusedf("copy_import refused: the bundle is not sealed to this copy's post-quantum key; " +
+			"make the export again from a source agent of 1.99.0 or later")
 	}
+	opened, err := key.OpenKEMSealed(sealed, CopySealScope)
 	if err != nil {
 		return nil, refusedf("copy_import refused: %v", err)
 	}
