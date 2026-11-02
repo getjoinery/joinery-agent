@@ -10,13 +10,13 @@ import (
 
 // The four words of specs/agent_recipes_and_vocabulary.md's running list
 // (listening_sockets, reboot_machine, spam_learning_status,
-// container_inventory), relay_status, and check_status's
+// container_inventory), relay_status, v1_census, and check_status's
 // plugin list. Each review rests on the same things: the word cannot be
 // pointed anywhere, it runs the one script it names, and its class is the one
 // the review argued for.
 
 func TestRunningListWordsAskForNothing(t *testing.T) {
-	for _, name := range []string{"listening_sockets", "reboot_machine", "spam_learning_status", "container_inventory", "relay_status"} {
+	for _, name := range []string{"listening_sockets", "reboot_machine", "spam_learning_status", "container_inventory", "relay_status", "v1_census"} {
 		p, ok := Lookup(name)
 		if !ok {
 			t.Fatalf("%s should be registered", name)
@@ -59,6 +59,7 @@ func TestRunningListWordsRunTheirOwnScripts(t *testing.T) {
 		"reboot_machine":       {rebootMachineScript, "/bin/bash", ClassOperate, true},
 		"spam_learning_status": {spamLearningStatusScript, "/usr/bin/php", ClassObserve, false},
 		"relay_status":         {relayStatusScript, "/usr/bin/php", ClassObserve, false},
+		"v1_census":            {v1CensusScript, "/usr/bin/php", ClassObserve, false},
 	} {
 		p, _ := Lookup(name)
 		if p.Script.ScriptPath != want.script || p.Script.Interpreter != want.interpreter {
