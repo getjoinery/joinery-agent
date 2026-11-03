@@ -75,10 +75,10 @@ var agentSupervision = liveSupervision
 // of the live machine, and returns the restore. Tests only: the recipe's
 // end-to-end test in the recipes package needs a supervised and an
 // unsupervised machine on demand, and nothing else may reach these paths.
-func SetAgentSupervisionForTests(unitFile, cronFile, supervisePath, enabledMarker, invocationID string) func() {
+func SetAgentSupervisionForTests(unitFile, cronFile, supervisePath, invocationID string) func() {
 	prev := agentSupervision
 	agentSupervision = func() supervision {
-		return supervision{UnitFile: unitFile, CronFile: cronFile, SupervisePath: supervisePath, EnabledMarker: enabledMarker, InvocationID: invocationID}
+		return supervision{UnitFile: unitFile, CronFile: cronFile, SupervisePath: supervisePath, InvocationID: invocationID}
 	}
 	return func() { agentSupervision = prev }
 }
@@ -94,10 +94,10 @@ func SetAliveFileForTests(path string) func() {
 
 // SetAgentSupervisionBootLinkForTests is SetAgentSupervisionForTests with the
 // unit's boot link checked too.
-func SetAgentSupervisionBootLinkForTests(unitFile, cronFile, supervisePath, enabledMarker, invocationID, bootLink string) func() {
+func SetAgentSupervisionBootLinkForTests(unitFile, cronFile, supervisePath, invocationID, bootLink string) func() {
 	prev := agentSupervision
 	agentSupervision = func() supervision {
-		return supervision{UnitFile: unitFile, CronFile: cronFile, SupervisePath: supervisePath, EnabledMarker: enabledMarker, InvocationID: invocationID, BootLink: bootLink}
+		return supervision{UnitFile: unitFile, CronFile: cronFile, SupervisePath: supervisePath, InvocationID: invocationID, BootLink: bootLink}
 	}
 	return func() { agentSupervision = prev }
 }

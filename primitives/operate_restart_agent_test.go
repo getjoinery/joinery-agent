@@ -20,7 +20,6 @@ func supervisionIn(t *testing.T) supervision {
 		UnitFile:      filepath.Join(dir, "joinery-agent.service"),
 		CronFile:      filepath.Join(dir, "cron.d-joinery-agent"),
 		SupervisePath: filepath.Join(dir, "joinery-agent-supervise"),
-		EnabledMarker: filepath.Join(dir, "enabled"),
 	}
 }
 
@@ -134,58 +133,6 @@ func TestTheCronKeepaliveCountsAsSupervision(t *testing.T) {
 	by, _ := result["restarted_by"].([]string)
 	if len(by) != 1 {
 		t.Fatalf("exactly one restarter should have been found, got %v", by)
-	}
-}
-
-func TestTheMarkerRuleMatchesTheKeepaliveScriptExactly(t *testing.T) {
-	// This function predicts what another program will do. A prediction that
-	// disagrees with the program is how a node goes dark while a check says it
-	// will not — so the cases below are the script's own conditional, not a
-	// reasonable-looking approximation of it:
-	//
-	//   if [ -f marker ] && [ "$(cat marker)" != "1" ]; then exit 0; fi
-	cases := []struct {
-		name    string
-		marker  string // "" means do not create the file
-		present bool
-		want    bool
-	}{
-		{"absent reads as on, for agents older than the marker", "", false, true},
-		{"on", "1", true, true},
-		{"on, with the trailing newline printf writes", "1\n", true, true},
-		{"switched off", "0", true, false},
-		{"switched off, newline", "0\n", true, false},
-		{"anything that is not 1 is off", "yes", true, false},
-		{"empty is not 1", "", true, false},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			clearRestartRequest(t)
-			s := withKeepalive(t, supervisionIn(t))
-			if tc.present {
-				writeSupervisionFile(t, s.EnabledMarker, tc.marker, 0o644)
-			}
-
-			if got := s.keepaliveWillRestart(); got != tc.want {
-				t.Errorf("marker %q (present=%v): keepalive would restart = %v, want %v",
-					tc.marker, tc.present, got, tc.want)
-			}
-		})
-	}
-}
-
-func TestAnAgentSwitchedOffWillNotBeRestartedSoItRefuses(t *testing.T) {
-	// The genuinely dark case, and the reason the marker is read at all: the
-	// keepalive is installed and would run, but the machine is switched off, so
-	// it will decline to start the agent. Exiting here is permanent.
-	clearRestartRequest(t)
-
-	s := withKeepalive(t, supervisionIn(t))
-	writeSupervisionFile(t, s.EnabledMarker, "0\n", 0o644)
-
-	if _, err := restartAgentUnder(context.Background(), s); err == nil {
-		t.Fatal("a switched-off node has no restarter; the agent must keep running")
 	}
 }
 
@@ -306,7 +253,7 @@ func TestTheKeepaliveStartsAtBootByItsRebootLine(t *testing.T) {
 func TestAgentReportSaysWhetherItStartsAtBoot(t *testing.T) {
 	s := withSystemd(t, supervisionIn(t), "always")
 	link := filepath.Join(filepath.Dir(s.UnitFile), "wants-link")
-	restore := SetAgentSupervisionBootLinkForTests(s.UnitFile, s.CronFile, s.SupervisePath, s.EnabledMarker, s.InvocationID, link)
+	restore := SetAgentSupervisionBootLinkForTests(s.UnitFile, s.CronFile, s.SupervisePath, s.InvocationID, link)
 	defer restore()
 	out, err := runAgentReport(context.Background(), nil, Params{})
 	if err != nil {

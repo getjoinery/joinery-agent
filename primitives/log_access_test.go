@@ -70,7 +70,7 @@ func TestLogAccessFallsBackToTheMarkerWhenTheDatabaseIsDown(t *testing.T) {
 		t.Fatalf("db down + marker on: got on=%v source=%s", on, src)
 	}
 	if data, _ := os.ReadFile(filepath.Join(dir, "log_access")); string(data) != "1\n" {
-		t.Fatalf("marker shape should match the run switch's, got %q", data)
+		t.Fatalf("marker should read 1 and a newline, got %q", data)
 	}
 }
 

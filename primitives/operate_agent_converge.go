@@ -6,7 +6,7 @@ package primitives
 // Operate, no parameters, and the argv is one compiled constant: the runner's
 // single-installer mode naming install_agent.sh. That installer is the one
 // definition of "this agent is supervised" on a release — the unit file, the
-// cron keepalive, the enabled switch — and running it converges those and
+// cron keepalive — and running it converges those and
 // nothing else while a job marker is set: it writes supervision, and it
 // defers any swap or restart of the running agent to the agent's own signed
 // self-update (install_agent.sh 2.7). A recipe attempt always holds the

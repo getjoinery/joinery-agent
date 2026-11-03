@@ -24,7 +24,7 @@ import (
 // must stay ABOVE 1.1.0 forever - install_agent.sh's downgrade guard sorts
 // with sort -V and refuses to replace a "newer" binary, so anything below
 // 1.1.0 strands those agents permanently.
-var version = "1.104.0"
+var version = "1.106.0"
 
 // How often the idle loop looks at the shipped agent_dist manifest. Update
 // checks never run while a job is executing.
@@ -593,11 +593,9 @@ func main() {
 	// root is not encrypted and enrolled.
 	go (&EscrowReportWatcher{}).Run(context.Background())
 
-	// The run switch. Projects the setting into the marker the supervisor reads,
-	// and stops this process when an operator turns the agent off — saying so to
-	// the management node first, when there is one to tell.
-	switcher := &SwitchWatcher{db: db, jobLock: &jobLock, identity: pairedIdentity}
-	go switcher.Run(context.Background())
+	// The owner's log-access switch, projected into the marker the log words
+	// read, so they can be gated when the database cannot be read.
+	go (&LogAccessWatcher{db: db}).Run(context.Background())
 
 	// Signal handling
 	sigCh := make(chan os.Signal, 1)

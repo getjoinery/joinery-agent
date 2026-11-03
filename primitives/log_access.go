@@ -19,14 +19,12 @@ import (
 //	neither exists.
 //
 // The marker is the setting projected one way into a root-owned file by the
-// agent's switch watcher, on the same cadence as the run switch's marker. It
+// agent's log-access watcher, every few seconds. It
 // exists because the error log is wanted most when the database is down, and a
 // word that had to ask the database for permission to read the error log would
 // be refused at exactly that moment.
 //
-// A MISSING marker reads OFF, not on. The run switch's marker reads
-// missing-as-on for an upgrade-safety reason (stopping working agents at
-// upgrade) that does not apply here: a node upgraded to this agent projects the
+// A MISSING marker reads OFF: a node upgraded to this agent projects the
 // marker within seconds of its database being up, and a node whose database has
 // never been up since the upgrade has nothing a log word should be reading on a
 // plane's say-so. Fail closed on missing proof (vocabulary rule 3).
@@ -36,7 +34,7 @@ const (
 	SettingLogAccess = "agent_log_access"
 
 	// logAccessMarkerName is the marker file's name inside the agent's state
-	// directory, beside the run switch's "enabled".
+	// directory.
 	logAccessMarkerName = "log_access"
 
 	// LogAccessRefusal is the reason every log word gives when the switch is
@@ -47,7 +45,7 @@ const (
 
 // LogAccessMarkerPath is where the projected switch lives: the agent's state
 // directory (AGENT_STATE_DIR in tests, /etc/joinery-agent on a machine), the
-// same directory the run switch's marker uses, resolved the same way.
+// resolved the same way as the agent's other state files.
 func LogAccessMarkerPath() string {
 	dir := os.Getenv("AGENT_STATE_DIR")
 	if dir == "" {
@@ -57,9 +55,9 @@ func LogAccessMarkerPath() string {
 }
 
 // SettingOn reads a stored on/off setting value with the spellings every other
-// reader of such a setting uses (the run switch, install_agent.sh, the admin
-// page). One setting read two ways is how a machine disagrees with the page
-// that configured it; the parent package pins its reader equal to this one.
+// reader of such a setting uses (the admin page reads them the same way). One
+// setting read two ways is how a machine disagrees with the page that
+// configured it.
 func SettingOn(value string) bool {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "1", "true", "yes", "on":

@@ -41,16 +41,11 @@ func TestAgentReportSaysWhatRestartAgentWouldFind(t *testing.T) {
 			return s
 		}, false},
 		{"systemd supervising with Restart=no", func(t *testing.T) supervision { return withSystemd(t, supervisionIn(t), "no") }, false},
-		{"the cron keepalive, switch absent", func(t *testing.T) supervision { return withKeepalive(t, supervisionIn(t)) }, true},
-		{"the cron keepalive, switched off", func(t *testing.T) supervision {
-			s := withKeepalive(t, supervisionIn(t))
-			writeSupervisionFile(t, s.EnabledMarker, "0\n", 0o644)
-			return s
-		}, false},
+		{"the cron keepalive", func(t *testing.T) supervision { return withKeepalive(t, supervisionIn(t)) }, true},
 	}
 	for _, row := range rows {
 		s := row.build(t)
-		restore := SetAgentSupervisionForTests(s.UnitFile, s.CronFile, s.SupervisePath, s.EnabledMarker, s.InvocationID)
+		restore := SetAgentSupervisionForTests(s.UnitFile, s.CronFile, s.SupervisePath, s.InvocationID)
 		result, err := runAgentReport(context.Background(), nil, Params{})
 		restore()
 		if err != nil {

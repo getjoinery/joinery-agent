@@ -45,7 +45,7 @@ func TestSupervisionVerdicts(t *testing.T) {
 }
 
 func TestAgentConvergeOutcomeReadsTheInstallerLine(t *testing.T) {
-	ok := "core installers: running install_agent.sh\nagent installer: agent_enabled is on - v1.34.0 already running\ncore installers: install_agent.sh: ok\n"
+	ok := "core installers: running install_agent.sh\nagent installer: v1.34.0 already running\ncore installers: install_agent.sh: ok\n"
 	if d, err := agentConvergeOutcome(map[string]interface{}{"output": ok}, nil); err != nil || d != "install_agent.sh: ok" {
 		t.Errorf("the ok line is a repair that ran: %q %v", d, err)
 	}
@@ -78,7 +78,7 @@ func TestTheAgentSupervisionRecipeRepairsThroughItsTwoWords(t *testing.T) {
 	}
 	supervise := filepath.Join(sup, "joinery-agent-supervise")
 	cron := filepath.Join(sup, "cron.d-joinery-agent")
-	restore := primitives.SetAgentSupervisionForTests(filepath.Join(sup, "unit"), cron, supervise, filepath.Join(sup, "enabled"), "")
+	restore := primitives.SetAgentSupervisionForTests(filepath.Join(sup, "unit"), cron, supervise, "")
 	// A running agent's heartbeat, written now, so the verdict turns on supervision alone.
 	alive := filepath.Join(sup, "alive")
 	if err := os.WriteFile(alive, []byte("1\n"), 0644); err != nil {

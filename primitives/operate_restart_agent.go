@@ -46,7 +46,6 @@ const (
 	systemdUnitPath   = "/etc/systemd/system/joinery-agent.service"
 	cronKeepalivePath = "/etc/cron.d/joinery-agent"
 	supervisePath     = "/usr/local/bin/joinery-agent-supervise"
-	enabledMarkerPath = "/etc/joinery-agent/enabled"
 	// The link `systemctl enable` makes: without it systemd restarts the agent
 	// after a crash but never starts it after a reboot.
 	systemdBootLinkPath = "/etc/systemd/system/multi-user.target.wants/joinery-agent.service"
@@ -59,7 +58,6 @@ type supervision struct {
 	UnitFile      string
 	CronFile      string
 	SupervisePath string
-	EnabledMarker string
 
 	// InvocationID is systemd's INVOCATION_ID for this process. Set only when
 	// systemd started us as a service, which is the difference between "a unit
@@ -76,7 +74,6 @@ func liveSupervision() supervision {
 		UnitFile:      systemdUnitPath,
 		CronFile:      cronKeepalivePath,
 		SupervisePath: supervisePath,
-		EnabledMarker: enabledMarkerPath,
 		InvocationID:  os.Getenv("INVOCATION_ID"),
 		BootLink:      systemdBootLinkPath,
 	}
@@ -146,33 +143,14 @@ func (s supervision) systemdWillRestart() bool {
 }
 
 // keepaliveWillRestart reports whether the cron keepalive will start the agent
-// on its next minute.
-//
-// The marker rule below MIRRORS the keepalive script's own rule exactly, and
-// that exactness is the point rather than pedantry: this function is a
-// prediction of what another program will do, and a prediction that disagrees
-// with the program is how a node goes dark while a check says it will not.
-// The script reads:
-//
-//	if [ -f marker ] && [ "$(cat marker)" != "1" ]; then exit 0; fi
-//
-// So an ABSENT marker means it runs — an agent installed before the marker
-// existed is running legitimately — and only a present marker holding something
-// other than "1" stops it.
+// on its next minute: its script is installed and executable, and its cron
+// file is in place.
 func (s supervision) keepaliveWillRestart() bool {
 	if !isExecutableFile(s.SupervisePath) {
 		return false
 	}
-	if _, err := os.Stat(s.CronFile); err != nil {
-		return false
-	}
-
-	body, err := os.ReadFile(s.EnabledMarker)
-	if err != nil {
-		// Absent, or unreadable. Absent reads as on, per the script.
-		return os.IsNotExist(err)
-	}
-	return strings.TrimSpace(string(body)) == "1"
+	_, err := os.Stat(s.CronFile)
+	return err == nil
 }
 
 func isExecutableFile(path string) bool {
@@ -196,7 +174,7 @@ func restartAgentUnder(_ context.Context, s supervision) (map[string]interface{}
 		return nil, refusedf(
 			"this agent will not stop itself: nothing on this node would start it again. " +
 				"systemd is not supervising this process (or its unit does not restart it), and the cron " +
-				"keepalive is not installed, not executable, or switched off at /etc/joinery-agent/enabled. " +
+				"keepalive is not installed or not executable. " +
 				"Exiting here would take the node off the channel with no way back")
 	}
 

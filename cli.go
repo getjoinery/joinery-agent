@@ -7,7 +7,6 @@ import (
 	"io"
 	"log"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 )
@@ -66,10 +65,6 @@ func runCLI(args []string) (handled bool, exit int) {
 		return true, cliStatus()
 	case "leave":
 		return true, cliLeave()
-	case "enable":
-		return true, cliSwitch(true)
-	case "disable":
-		return true, cliSwitch(false)
 	case "unlock":
 		return true, cliUnlock(args[2:])
 	case "data-root":
@@ -93,7 +88,6 @@ func cliUsage(w *os.File) {
         [--no-wait]                          return once the ask is lodged; the running agent finishes the join
   joinery-agent status                       what this machine is connected to, and its key fingerprint
   joinery-agent leave                        disconnect from the management node and delete the credential
-  joinery-agent enable | disable             turn the agent on or off on this machine
   joinery-agent unlock [--close]             open this machine's encrypted data root (its boot unit runs this)
   joinery-agent data-root VERB                the encrypted data root's key material and its escrow holder
                                              (joinery_data_root.sh runs these): seal, unseal, reseal,
@@ -279,18 +273,8 @@ func finishJoin(planeURL string, staged *stagedIdentity, status *joinStatusRespo
 
 	fmt.Printf("Approved. This machine is node #%d (%s) of %s.\n", status.NodeID, status.NodeSlug, planeURL)
 	fmt.Printf("Credential stored at %s (fingerprint %s).\n", IdentityPath(), fingerprint)
-	if cfg := cliConfig(); cfg.Siteless {
-		fmt.Printf("\nStart the agent if it is not already running: joinery-agent enable\n")
-	} else {
-		fmt.Printf("\nThe agent runs while the site's own switch is on (Admin > System > Management Node); "+
-			"switched on, it starts at the next upgrade or installer run, or now with: sudo bash %s\n", siteAgentInstaller(cfg))
-	}
+	fmt.Printf("\nThe running agent picks up the credential within seconds.\n")
 	return 0
-}
-
-// siteAgentInstaller is the root command that installs and starts a site's agent.
-func siteAgentInstaller(cfg *Config) string {
-	return filepath.Join(cfg.SiteRoot, "maintenance_scripts", "install_tools", "install_agent.sh") + " " + filepath.Base(cfg.SiteRoot)
 }
 
 func cliStatus() int {
@@ -300,12 +284,6 @@ func cliStatus() int {
 		fmt.Printf("Posture:      machine (no Joinery site on this box)\n")
 	} else {
 		fmt.Printf("Posture:      node (site at %s)\n", cfg.SiteRoot)
-	}
-
-	if markerSaysRun() {
-		fmt.Printf("Switch:       on\n")
-	} else {
-		fmt.Printf("Switch:       off\n")
 	}
 
 	identity, err := LoadIdentity(IdentityPath())
@@ -354,41 +332,6 @@ func cliLeave() int {
 		return cliError("could not remove the local credential at %s: %v", IdentityPath(), err)
 	}
 	fmt.Printf("Disconnected from %s. The local credential is gone; the running agent restarts without it within seconds.\n", identity.PlaneURL)
-	return 0
-}
-
-// cliSwitch writes the run marker directly.
-//
-// On a node the marker is a one-way projection of the agent_enabled setting,
-// and the setting is the operator-facing truth. A siteless machine has no
-// settings table, so here the marker IS the truth — which is why this writes it
-// rather than asking a database that does not exist. On a machine that does
-// have a site, the next projection from the setting overwrites this, and that
-// is correct: the setting still wins where there is one.
-func cliSwitch(on bool) int {
-	return switchFor(cliConfig(), on)
-}
-
-// switchFor refuses on a machine with a site: there the site's own setting
-// decides, and the next installer run would overwrite a marker written here.
-func switchFor(cfg *Config, on bool) int {
-	if !cfg.Siteless {
-		word := "on"
-		if !on {
-			word = "off"
-		}
-		return cliError("this machine has a site (%s), and its own setting switches the agent: "+
-			"turn it %s on the site's page, Admin > System > Management Node. It takes effect at the next "+
-			"upgrade or installer run, or now with: sudo bash %s", cfg.SiteRoot, word, siteAgentInstaller(cfg))
-	}
-	if err := projectSwitch(on); err != nil {
-		return cliError("could not write the run switch at %s: %v", markerPath(), err)
-	}
-	if on {
-		fmt.Printf("Agent switched on. The supervisor starts it within a minute; `joinery-agent status` confirms.\n")
-	} else {
-		fmt.Printf("Agent switched off. A running agent finishes its current job and stops.\n")
-	}
 	return 0
 }
 

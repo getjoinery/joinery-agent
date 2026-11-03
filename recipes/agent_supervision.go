@@ -12,7 +12,7 @@ import (
 // Recipe 2 of specs/agent_tier1_recipes.md. The check is agent_report
 // (observe, no parameters): the supervision facts restart_agent proves before
 // it will exit — systemd supervising this process with a unit that restarts,
-// or the cron keepalive installed, executable and switched on. The repair is
+// or the cron keepalive installed and executable. The repair is
 // agent_converge (operate, no parameters): install_agent.sh through the host
 // runner, the installer that defines what a supervised agent is on this
 // release. Under the job marker a recipe attempt always sets, that installer
@@ -91,7 +91,7 @@ func supervisionVerdict(result map[string]interface{}, err error) Verdict {
 		return Verdict{Unknown, "agent_report did not say whether the agent is supervised"}
 	}
 	if !supervised {
-		return Verdict{Fail, "nothing would restart this agent if it stopped: systemd is not supervising this process with a restarting unit, and the cron keepalive is not installed or is switched off"}
+		return Verdict{Fail, "nothing would restart this agent if it stopped: systemd is not supervising this process with a restarting unit, and the cron keepalive is not installed"}
 	}
 	// Absent from an agent before 1.87.0, which did not check: no verdict on
 	// what it never said.
