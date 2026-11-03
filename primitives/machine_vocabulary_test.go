@@ -38,6 +38,7 @@ var pinnedMachineWords = []string{
 	"move_to_plane",
 	"moved_site_check",
 	"net_health",
+	"never_do_check",
 	"outbound_limits",
 	"provision_certificate",
 	"reboot_machine",

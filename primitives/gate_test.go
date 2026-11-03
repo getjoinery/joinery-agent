@@ -103,6 +103,11 @@ var pinnedVocabulary = map[string]Class{
 	// walked and no file is opened.
 	"largest_files": ClassObserve,
 
+	// The never-do list (specs/node_unexplained_root.md § 5.1). Observe, NO
+	// PARAMETERS: fingerprints, paths, hashes, ports and sizes, never content.
+	// The management node keeps the baseline; the machine keeps none.
+	"never_do_check": ClassObserve,
+
 	// Where the disk went (§ 11 of the same spec). Observe, NO PARAMETERS, and
 	// sizes only: a directory name and a byte count, never a file name, a
 	// count, a time or an owner. It carries no owner switch because it reads
