@@ -111,8 +111,12 @@ type Updater struct {
 	checked           bool
 	unloggedSince     time.Time // when the verdict on the version on offer became unlogged
 	failedManifestSum string    // backoff: a release that failed verification is not retried until it changes
-	failedState       string    // the verdict the backoff holds
-	warned            map[string]bool
+	recordedSum       string    // the release on offer whose set recordRunningTrust has settled, recorded or not
+	// runningPath is the file holding the binary this process runs, read to
+	// check it is the release's own. /proc/self/exe when empty; tests set it.
+	runningPath string
+	failedState string // the verdict the backoff holds
+	warned      map[string]bool
 }
 
 // NewUpdater builds the production updater. Returns a disabled-but-harmless
@@ -451,6 +455,9 @@ func (u *Updater) CheckAndApply() bool {
 
 	if m.Version == "" || m.Version == u.running {
 		u.setState(m.Version, updateStateCurrent)
+		if m.Version != "" {
+			u.recordRunningTrust(raw, m)
+		}
 		return false
 	}
 
@@ -618,6 +625,98 @@ func (u *Updater) CheckAndApply() bool {
 	u.setState(m.Version, updateStatePending)
 	log.Printf("=== Self-update === installed v%s (was v%s); exiting for supervisor restart", m.Version, u.running)
 	return true
+}
+
+// recordRunningTrust records the trusted set of the release this agent is
+// running, when it arrived by any way but its own self-update: a first
+// install, or install_agent.sh at an upgrade's root moment, which swaps the
+// binary before the self-update looks and so leaves no record (specs/
+// release_key_rotation.md, rehearsal 2026-11-04 B1). It is the agent's half
+// of the site's rule that a set not written is written by root's next verify
+// of the live code (F15): the release on offer is this version, the binary
+// this process runs is that release's binary byte for byte, and its
+// statement and signature pass the same checks a self-update makes. Only
+// then is its set written, as a self-update would have written it. Never
+// while a self-update is on trial, whose binary may still be rolled back.
+// Each release on offer is checked once.
+func (u *Updater) recordRunningTrust(raw []byte, m distManifest) {
+	if u.keyDir == "" || u.OnTrial() {
+		return
+	}
+	held := u.heldLogKeys()
+	if !held.holds() {
+		return
+	}
+	entry, ok := m.Binaries[u.platform]
+	if !ok {
+		return
+	}
+	statement, err := u.source.Statement()
+	if err != nil {
+		return
+	}
+	releaseSum := fmt.Sprintf("%x", sha256.Sum256(append(append(append([]byte{}, raw...), 0), statement...)))
+	u.mu.Lock()
+	seen := u.recordedSum == releaseSum
+	u.mu.Unlock()
+	if seen {
+		return
+	}
+	done := func() {
+		u.mu.Lock()
+		u.recordedSum = releaseSum
+		u.mu.Unlock()
+	}
+	path := u.runningPath
+	if path == "" {
+		path = "/proc/self/exe"
+	}
+	binary, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	sum := sha256.Sum256(binary)
+	if hex.EncodeToString(sum[:]) != strings.ToLower(entry.Sha256) {
+		// Not the shipped binary: nothing here says which keys it came with.
+		done()
+		return
+	}
+	trust := heldReleaseTrust(u.keyDir, u.releaseKeys, held.statement)
+	logged, err := verifyReleaseStatementTrust(statement, "agent/"+u.platform, entry.Sha256, held, trust)
+	if err != nil {
+		done()
+		u.warnOnce("record-"+releaseSum, "release keys: v%s, which this agent runs, is not shown to be in the public log (%v); its set is not recorded", m.Version, err)
+		return
+	}
+	sig, err := base64.StdEncoding.DecodeString(entry.Signature)
+	signer := signerOf(logged.releaseKeys(), binary, sig)
+	if err != nil || signer == nil {
+		done()
+		u.warnOnce("record-"+releaseSum, "release keys: the binary this agent runs (v%s) is not signed by a key this machine trusts%s; its set is not recorded", m.Version, retiredNote(u.keyDir, binary, sig))
+		return
+	}
+	settled, err := logged.settle(signer)
+	if err != nil {
+		done()
+		u.warnOnce("record-"+releaseSum, "release keys: v%s, which this agent runs, changes the trusted set without the authority to: %v; its set is not recorded", m.Version, err)
+		return
+	}
+	keep := releaseLogKeys{log: held.clone().log}
+	keep.merge(releaseLogKeys{log: logged.proven.log})
+	added, err := persistReleaseLogKeys(u.keyDir, keep)
+	if err == nil {
+		var set []string
+		set, err = persistReleaseTrust(u.keyDir, settled, u.bakedLogKeys, u.releaseKeys)
+		added = append(added, set...)
+	}
+	if err != nil {
+		log.Printf("release keys: the set of v%s, which this agent runs, could not be recorded in %s: %v — will retry", m.Version, u.keyDir, err)
+		return
+	}
+	done()
+	for _, line := range added {
+		log.Printf("release keys: recorded for the running v%s (release %s): %s", m.Version, logged.version, line)
+	}
 }
 
 // refuse holds a verdict on a release until it changes.

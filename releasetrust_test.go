@@ -512,3 +512,67 @@ func TestARefusalNamesTheRetiredKey(t *testing.T) {
 		t.Fatal("a tree whose manifest the retired key signed is named the same way")
 	}
 }
+
+// The release this agent runs, installed by something other than its own
+// self-update (install_agent.sh at an upgrade, a first install), has its set
+// recorded once the running binary is shown to be that release's, signed and
+// logged (rehearsal 2026-11-04 B1). A binary that is not the shipped one, or
+// one signed by a key not trusted here, records nothing.
+func TestTheRunningReleaseIsRecordedWhenSomethingElseInstalledIt(t *testing.T) {
+	k := newRotationKeys(t)
+	nBin := []byte("N-BINARY")
+	g, m, n, _ := k.ceremony(t, nBin)
+
+	e := requiredUpdaterEnv(t, k.oldStatement, k.log)
+	e.u.running = "1.65.0"
+	e.u.releaseKeys = releaseKeysOf(k.oldRelease, k.newRelease)
+	e.u.runningPath = e.install
+	if err := os.WriteFile(e.install, nBin, 0755); err != nil {
+		t.Fatal(err)
+	}
+	e.priv = k.oldReleasePriv
+	e.writeDist(t, "1.65.0", nBin, nil)
+	e.writeStatement(t, n.doc(t, g, m))
+	if e.u.CheckAndApply() {
+		t.Fatal("the version already running was installed again")
+	}
+	rec, _ := readReleaseTrust(e.u.keyDir)
+	if rec == nil {
+		t.Fatal("N's set was not recorded for the agent that runs N")
+	}
+	wantSet(t, "the running N", *rec, []ed25519.PublicKey{k.oldRelease, k.newRelease},
+		[]testStatementKey{k.oldStatement, k.newStatement}, []ed25519.PublicKey{k.newRelease})
+	if rec.setBy != "0.9.3" {
+		t.Fatalf("set_by = %q, want 0.9.3", rec.setBy)
+	}
+
+	// Another binary on disk than the shipped one: nothing is recorded.
+	e2 := requiredUpdaterEnv(t, k.oldStatement, k.log)
+	e2.u.running = "1.65.0"
+	e2.u.releaseKeys = releaseKeysOf(k.oldRelease, k.newRelease)
+	e2.u.runningPath = e2.install // still OLD-BINARY
+	e2.priv = k.oldReleasePriv
+	e2.writeDist(t, "1.65.0", nBin, nil)
+	e2.writeStatement(t, n.doc(t, g, m))
+	e2.u.CheckAndApply()
+	if rec, _ := readReleaseTrust(e2.u.keyDir); rec != nil {
+		t.Fatal("a set was recorded for a binary that is not the release's")
+	}
+
+	// Shipped and running, but signed by a key this machine does not trust.
+	e3 := requiredUpdaterEnv(t, k.oldStatement, k.log)
+	e3.u.running = "1.65.0"
+	e3.u.releaseKeys = releaseKeysOf(k.oldRelease, k.newRelease)
+	e3.u.runningPath = e3.install
+	if err := os.WriteFile(e3.install, nBin, 0755); err != nil {
+		t.Fatal(err)
+	}
+	_, stranger, _ := ed25519.GenerateKey(rand.Reader)
+	e3.priv = stranger
+	e3.writeDist(t, "1.65.0", nBin, nil)
+	e3.writeStatement(t, n.doc(t, g, m))
+	e3.u.CheckAndApply()
+	if rec, _ := readReleaseTrust(e3.u.keyDir); rec != nil {
+		t.Fatal("a set was recorded for a binary no trusted key signed")
+	}
+}
