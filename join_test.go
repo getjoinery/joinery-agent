@@ -149,3 +149,20 @@ func TestTheJoinNamesTheWebRoot(t *testing.T) {
 		t.Fatalf("a siteless machine's join carries web_root = %v", body["web_root"])
 	}
 }
+
+// A connected report is what an unpaired machine clears; every other state
+// (waiting, error, empty, junk) is left for the page and the join to own.
+func TestJoinStateClaimsConnection(t *testing.T) {
+	cases := map[string]bool{
+		`{"status":"connected","url":"https://dev.getjoinery.com","node_id":24776}`: true,
+		`{"status":"waiting","url":"https://plane.example"}`:                        false,
+		`{"status":"error","error":"x"}`:                                            false,
+		``:                                                                          false,
+		`not json`:                                                                  false,
+	}
+	for raw, want := range cases {
+		if got := joinStateClaimsConnection(raw); got != want {
+			t.Errorf("joinStateClaimsConnection(%q) = %v, want %v", raw, got, want)
+		}
+	}
+}

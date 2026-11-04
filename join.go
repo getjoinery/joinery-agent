@@ -129,8 +129,12 @@ func (w *JoinWatcher) Run(ctx context.Context) {
 		// watcher stores the credential and starts the source. This watcher
 		// then has nothing left to do, and must not answer a later ask from
 		// the admin page by joining a second plane over a live credential.
-		if identity, err := LoadIdentity(IdentityPath()); err == nil && identity != nil {
+		identity, err := LoadIdentity(IdentityPath())
+		if err == nil && identity != nil {
 			return
+		}
+		if err == nil {
+			clearUnbackedConnection(w.db)
 		}
 
 		request := w.readJoinRequest()
@@ -142,6 +146,35 @@ func (w *JoinWatcher) Run(ctx context.Context) {
 			return
 		}
 	}
+}
+
+// clearUnbackedConnection empties a "connected" join state on a machine that
+// holds no credential. The Management Node page renders that state as this
+// site's connection, and only a connected agent keeps it true
+// (keepConnectionReported); a machine with no identity file is connected to
+// nothing, so such a report arrived with a copied or restored database and
+// names another machine's connection. It is cleared the way the page's own
+// Cancel clears it. Called only when the identity file is absent, never when
+// it exists but cannot be read, which is a fault to show, not a disconnection.
+func clearUnbackedConnection(db *DB) bool {
+	current, err := readAgentSetting(db, settingJoinState)
+	if err != nil || !joinStateClaimsConnection(current) {
+		return false
+	}
+	if writeAgentSetting(db, settingJoinState, "") != nil {
+		return false
+	}
+	log.Printf("join: cleared a connected report this machine holds no credential for: %s", current)
+	return true
+}
+
+// joinStateClaimsConnection: the recorded join state says connected.
+func joinStateClaimsConnection(raw string) bool {
+	var st map[string]interface{}
+	if json.Unmarshal([]byte(raw), &st) != nil {
+		return false
+	}
+	return st["status"] == "connected"
 }
 
 type joinRequest struct {
