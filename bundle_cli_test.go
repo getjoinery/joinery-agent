@@ -195,3 +195,16 @@ func TestAHeldInstallLockIsARetryAndInstallsNothing(t *testing.T) {
 		t.Fatal("once the lock is free the install must go through")
 	}
 }
+
+func TestBytesUnderAnotherHashAreARetry(t *testing.T) {
+	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
+	raw := signedBundle(t, priv, map[string]string{"a.sh": "x"}, nil)
+	b := fileBundleSync(t, pub)
+	_, err := b.installFrom(bytes.NewReader(raw), strings.Repeat("0", 64), func() ([]byte, error) { return nil, nil })
+	if !errors.Is(err, errBundleRetry) {
+		t.Fatalf("bytes under another hash (a fetch across a publish's swap) must be a retry, never a verdict that stops the bundle on offer being fetched again: %v", err)
+	}
+	if _, err := os.Stat(BundleRoot()); !os.IsNotExist(err) {
+		t.Fatalf("nothing may be installed from bytes that do not match their hash: %v", err)
+	}
+}

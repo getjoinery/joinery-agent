@@ -346,7 +346,11 @@ func (b *BundleSync) installFrom(body io.Reader, wantSha string, fetchStatement 
 	got := hex.EncodeToString(hasher.Sum(nil))
 	if wantSha != "" && !strings.EqualFold(got, wantSha) {
 		removeTree(staging)
-		return "", fmt.Errorf("the bytes that arrived do not match the hash they were offered under")
+		// A retry, never a verdict on the bundle on offer: a publish swaps the
+		// bundle and then its record, so a fetch across the swap carries one
+		// release's bytes under the other's hash. Held as a verdict, the
+		// machine would never fetch that bundle again.
+		return "", fmt.Errorf("%w: the bytes that arrived do not match the hash they were offered under", errBundleRetry)
 	}
 	if wantSha == "" {
 		wantSha = got
