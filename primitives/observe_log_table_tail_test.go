@@ -30,9 +30,11 @@ func TestLogTableTailTakesOnlyTheClosedList(t *testing.T) {
 			t.Errorf("a job carrying %q must be refused; there is no pass-through", key)
 		}
 	}
-	if _, err := Validate(p.Params, map[string]interface{}{"table": "logins", "rows": 201}); err == nil {
+	if _, err := Validate(p.Params, map[string]interface{}{"table": "logins", "rows": 1001}); err == nil {
 		t.Error("rows above the cap must be refused")
 	}
+	// 201 to 1000 pass validation and are refused at run time without an
+	// event (TestLogTableTailEventRead).
 	if _, err := Validate(p.Params, nil); err == nil {
 		t.Error("table is required")
 	}
@@ -188,5 +190,101 @@ func TestLogTableTailNeedsTheDatabase(t *testing.T) {
 		// The switch rule falls back to the marker, which says on; the failure
 		// is then the database itself, and it must read as that.
 		t.Fatalf("a down database is a failure, not a refusal: %v", err)
+	}
+}
+
+// event and hours (specs/agent_event_log_filter.md).
+
+func TestLogTableTailEventAndHoursAreClosed(t *testing.T) {
+	p, _ := Lookup("log_table_tail")
+	for _, bad := range []interface{}{"login", "vault_window", "vault_windows'; --", ""} {
+		if _, err := Validate(p.Params, map[string]interface{}{"table": "events", "event": bad}); err == nil {
+			t.Errorf("event=%v must be refused by the enum", bad)
+		}
+	}
+	for _, bad := range []interface{}{0, 169, -1} {
+		if _, err := Validate(p.Params, map[string]interface{}{"table": "events", "hours": bad}); err == nil {
+			t.Errorf("hours=%v must be refused", bad)
+		}
+	}
+	if _, err := Validate(p.Params, map[string]interface{}{"table": "events", "event": "vault_windows", "rows": 1001}); err == nil {
+		t.Error("rows above the event ceiling must be refused")
+	}
+	if len(logEventNames) != len(logEvents) {
+		t.Fatalf("event enum has %d words, map has %d", len(logEventNames), len(logEvents))
+	}
+}
+
+func TestLogTableTailEventQueries(t *testing.T) {
+	for _, event := range logEventNames {
+		for _, hours := range []bool{false, true} {
+			query, _, ok := logTableQueryFor("events", event, hours)
+			if !ok {
+				t.Fatalf("no query for event %s", event)
+			}
+			for _, name := range logEvents[event] {
+				if !strings.Contains(query, "'"+name+"'") {
+					t.Errorf("%s query does not select %s: %s", event, name, query)
+				}
+			}
+			want := 1
+			if hours {
+				want = 2
+				if !strings.Contains(query, "evl_create_time >= now() - make_interval(hours => $2::int)") {
+					t.Errorf("hours must bound the time column with $2: %s", query)
+				}
+			}
+			if strings.Count(query, "$") != want || !strings.HasSuffix(query, "LIMIT $1") {
+				t.Errorf("%s (hours %v) must carry %d placeholders, the limit last: %s", event, hours, want, query)
+			}
+			for _, excluded := range logTableExcludedColumns {
+				if strings.Contains(query, excluded) {
+					t.Errorf("%s query names excluded column %s", event, excluded)
+				}
+			}
+		}
+	}
+	if _, _, ok := logTableQueryFor("logins", "vault_windows", false); ok {
+		t.Error("an event narrows table=events only")
+	}
+	if q, _, ok := logTableQueryFor("logins", "", true); !ok || !strings.Contains(q, "log_login_time >= now()") {
+		t.Errorf("hours bounds any table by its own time column: %s", q)
+	}
+}
+
+func TestLogTableTailEventRead(t *testing.T) {
+	when := time.Date(2026, 11, 6, 9, 14, 0, 0, time.UTC)
+	rows := make([][]driver.Value, 0, 600)
+	for i := 0; i < 600; i++ {
+		rows = append(rows, []driver.Value{int64(5000 - i), "vault_window_closed", int64(7), when, true,
+			"scope=user reason=explicit_lock session=3f9a1c0b7d2e open_seconds=120 unwraps=14"})
+	}
+	env := logTableEnv(t, "1", map[string]fakeRows{
+		"evl_event IN ('vault_window_opened', 'vault_window_closed')": {columns: logTables["events"].columns, rows: rows},
+	})
+	res, err := runLogTableTail(context.Background(), env, mustValidate(t, "log_table_tail",
+		map[string]interface{}{"table": "events", "event": "vault_windows", "hours": 24, "rows": 600}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res["rows_returned"] != 600 || res["truncated"] != false {
+		t.Fatalf("600 vault rows fit an event read: %v rows, truncated %v", res["rows_returned"], res["truncated"])
+	}
+	if res["event"] != "vault_windows" || res["hours"] != int64(24) {
+		t.Errorf("event and hours are echoed: %v %v", res["event"], res["hours"])
+	}
+	first := res["rows"].([]interface{})[0].(map[string]interface{})
+	if !strings.Contains(first["evl_note"].(string), "session=3f9a1c0b7d2e") {
+		t.Errorf("the session handle must survive redaction, for pairing: %v", first["evl_note"])
+	}
+
+	// Without an event, the ceiling stays 200; an event off table=events is refused.
+	if _, err := runLogTableTail(context.Background(), env, mustValidate(t, "log_table_tail",
+		map[string]interface{}{"table": "events", "rows": 201})); err == nil || !Refused(err) {
+		t.Errorf("rows above 200 without an event must be refused, got %v", err)
+	}
+	if _, err := runLogTableTail(context.Background(), env, mustValidate(t, "log_table_tail",
+		map[string]interface{}{"table": "logins", "event": "vault_windows"})); err == nil || !Refused(err) {
+		t.Errorf("an event on another table must be refused, got %v", err)
 	}
 }

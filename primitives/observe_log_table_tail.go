@@ -35,17 +35,32 @@ import (
 //     test pins that none of those names appears in any query here.
 //   - Read without the owner's leave. The switch is checked FIRST; this word
 //     needs the database, so it reads the setting and nothing else.
-//   - Flood the plane. At most 200 rows and 48 KiB of encoded rows.
-//   - Change anything. One SELECT; observe, and a policy that accepts only
-//     observe words can trust that.
+//   - Flood the plane. At most 200 rows and 48 KiB of encoded rows; 1000 rows
+//     and 160 KiB for an `event` read, under the 256 KiB result cap.
+//   - Change anything.
+//
+// `event` and `hours` (specs/agent_event_log_filter.md). `event` narrows
+// table=events to a compiled set of event names, named by a word from a
+// compiled list; the names are literals in the query, never bound from the
+// wire. `hours` bounds any table's read to its last 1 to 168 hours, a bound
+// int. With event=vault_windows the worst the plane reads is a week of when
+// each member of one site unlocked their vault, how (passkey, recovery code,
+// phrase) and when each window ended: account activity of the kind
+// table=logins already returns behind the same switch. VaultAudit writes no
+// key, wrapping, sealed content or session id into those rows (its session
+// field is a truncated one-way digest). One SELECT; observe, and a policy that accepts only
+//
+//	observe words can trust that.
 func init() {
 	Register(Primitive{
 		Name:        "log_table_tail",
 		Class:       ClassObserve,
-		Description: "The newest rows of one of the site's own log tables (logins, requests, events, form_errors, webhooks) from a compiled column list, redacted on the node; refused unless the site's owner allows log access.",
+		Description: "The newest rows of one of the site's own log tables (logins, requests, events, form_errors, webhooks) from a compiled column list, redacted on the node, optionally only the last hours and, for events, only one compiled kind of event (the vault's window rows); refused unless the site's owner allows log access.",
 		Params: []ParamSpec{
 			{Name: "table", Type: ParamEnum, Required: true, Values: logTableNames},
-			{Name: "rows", Type: ParamInt, Min: 1, Max: logTableMaxRows},
+			{Name: "rows", Type: ParamInt, Min: 1, Max: logEventMaxRows},
+			{Name: "event", Type: ParamEnum, Values: logEventNames},
+			{Name: "hours", Type: ParamInt, Min: 1, Max: logTableMaxHours},
 		},
 		RequiresLogAccess: true,
 		Run:               runLogTableTail,
@@ -59,7 +74,25 @@ const (
 	// logTableMaxBytes bounds the encoded rows. Under the framework's 64 KiB
 	// cap with room for the envelope.
 	logTableMaxBytes = 48 * 1024
+
+	// An event read is one kind of row, so it may go further back: 1000 rows
+	// in 160 KiB, under the 256 KiB result cap (agentMaxResultBody).
+	logEventMaxRows  = 1000
+	logEventMaxBytes = 160 * 1024
+	// hours goes back at most a week.
+	logTableMaxHours = 168
 )
+
+// logEvents is the closed list of `event` words, each naming the evl_event
+// values it selects. The values are compiled literals in the query.
+var logEvents = map[string][]string{
+	"vault_window_opened": {"vault_window_opened"},
+	"vault_window_closed": {"vault_window_closed"},
+	"vault_windows":       {"vault_window_opened", "vault_window_closed"},
+}
+
+// logEventNames is the enum, in a fixed order.
+var logEventNames = []string{"vault_window_opened", "vault_window_closed", "vault_windows"}
 
 // logTable is one entry of the compiled list: the enum word, the columns
 // returned in order, and the time column the tail is ordered by.
@@ -117,12 +150,38 @@ var logTableExcludedColumns = []string{
 // logTableQuery is the one query string per enum word. The only placeholder is
 // the limit.
 func logTableQuery(word string) (string, logTable, bool) {
+	return logTableQueryFor(word, "", false)
+}
+
+// logTableQueryFor is the query for a table, narrowed to an event word (table
+// events only) and to the last hours when withHours: $1 is the limit, $2 the
+// hours. Every name in it is compiled; only the two ints are bound.
+func logTableQueryFor(word, event string, withHours bool) (string, logTable, bool) {
 	t, ok := logTables[word]
 	if !ok {
 		return "", logTable{}, false
 	}
-	return fmt.Sprintf("SELECT %s FROM %s ORDER BY %s DESC LIMIT $1",
-		strings.Join(t.columns, ", "), t.table, t.timeColumn), t, true
+	var where []string
+	if event != "" {
+		names, ok := logEvents[event]
+		if !ok || word != "events" {
+			return "", logTable{}, false
+		}
+		quoted := make([]string, len(names))
+		for i, n := range names {
+			quoted[i] = "'" + n + "'"
+		}
+		where = append(where, "evl_event IN ("+strings.Join(quoted, ", ")+")")
+	}
+	if withHours {
+		where = append(where, t.timeColumn+" >= now() - make_interval(hours => $2::int)")
+	}
+	clause := ""
+	if len(where) > 0 {
+		clause = " WHERE " + strings.Join(where, " AND ")
+	}
+	return fmt.Sprintf("SELECT %s FROM %s%s ORDER BY %s DESC LIMIT $1",
+		strings.Join(t.columns, ", "), t.table, clause, t.timeColumn), t, true
 }
 
 func runLogTableTail(ctx context.Context, env *ExecEnv, p Params) (map[string]interface{}, error) {
@@ -131,11 +190,29 @@ func runLogTableTail(ctx context.Context, env *ExecEnv, p Params) (map[string]in
 	if !p.Has("rows") {
 		limit = logTableDefaultRows
 	}
-	query, spec, ok := logTableQuery(word)
+	event := ""
+	if p.Has("event") {
+		event = p.String("event")
+		if word != "events" {
+			return nil, refusedf("event narrows table=events only, not %s", word)
+		}
+	}
+	if event == "" && limit > logTableMaxRows {
+		return nil, refusedf("rows above %d need an event: an unfiltered read stops at %d", logTableMaxRows, logTableMaxRows)
+	}
+	query, spec, ok := logTableQueryFor(word, event, p.Has("hours"))
 	if !ok {
-		// Validate already refused anything outside the enum; this is a
+		// Validate already refused anything outside the enums; this is a
 		// build mistake, not a bad job.
 		return nil, fmt.Errorf("log_table_tail has no query for %q", word)
+	}
+	args := []interface{}{limit}
+	if p.Has("hours") {
+		args = append(args, p.Int("hours"))
+	}
+	maxBytes := logTableMaxBytes
+	if event != "" {
+		maxBytes = logEventMaxBytes
 	}
 	if env == nil || env.DB == nil {
 		return nil, fmt.Errorf("this machine has no site database to read %s from", spec.table)
@@ -144,13 +221,13 @@ func runLogTableTail(ctx context.Context, env *ExecEnv, p Params) (map[string]in
 	if err != nil {
 		return nil, fmt.Errorf("the site database is not answering: %v", err)
 	}
-	rows, err := db.QueryContext(ctx, query, limit)
+	rows, err := db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("reading %s: %v", spec.table, err)
 	}
 	defer rows.Close()
 
-	shaped, truncated, err := shapeRows(rows, spec.columns, logTableMaxBytes)
+	shaped, truncated, err := shapeRows(rows, spec.columns, maxBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -160,6 +237,12 @@ func runLogTableTail(ctx context.Context, env *ExecEnv, p Params) (map[string]in
 		"columns":       stringsAsInterfaces(spec.columns),
 		"rows":          shaped,
 		"truncated":     truncated,
+	}
+	if event != "" {
+		result["event"] = event
+	}
+	if p.Has("hours") {
+		result["hours"] = p.Int("hours")
 	}
 	redact.Fields(result)
 	return result, nil

@@ -55,7 +55,7 @@ func (s *fakeStmt) Query(args []driver.Value) (driver.Rows, error) {
 		if strings.Contains(s.query, key) {
 			rows := answer.rows
 			// Honour a LIMIT $1 the way the real database would.
-			if len(args) == 1 {
+			if len(args) >= 1 {
 				if n, ok := args[0].(int64); ok && int(n) < len(rows) {
 					rows = rows[:n]
 				}
