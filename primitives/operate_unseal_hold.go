@@ -30,7 +30,7 @@ import "time"
 // What it cannot do:
 //
 //   - Lift a hold. There is deliberately no lift word: lifting is root's
-//     alone (joinery-unseal-launch lift --all), so a compromised plane cannot
+//     alone (/var/lib/joinery-unseal/KEY/launch lift --all), so a compromised plane cannot
 //     undo the sentinel's hold during the case that set it.
 //   - Read or write a key. The daemon's answer to SIGUSR1 is to zero every
 //     key it holds; nothing comes back.

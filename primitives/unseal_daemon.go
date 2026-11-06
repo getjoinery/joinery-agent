@@ -12,7 +12,7 @@ package primitives
 //
 //	absent      no install record: the installer has not run here
 //	held        the sentinel's hold is on: no Private vault opens until root lifts it
-//	previous    the launcher moved to the previous build after three crashes in a minute
+//	previous    the launcher moved to the previous build after four starts with no run lasting five minutes
 //	restarting  not running, it started or stopped within the last minute, and
 //	            fewer than three crashes in the last ten minutes
 //	down        not running, and nothing has happened for a minute, or three
