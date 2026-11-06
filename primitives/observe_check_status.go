@@ -37,7 +37,7 @@ func init() {
 		Name:        "check_status",
 		Class:       ClassObserve,
 		Machine:     true,
-		Description: "The site's web root and domain, disk, memory, load, uptime, PostgreSQL liveness, Joinery version, database list, whether Server Manager is active, the site's plugins with their versions, the site's recorded plugin checks, the release keys the agent and the site trust, the PHP packages installed and whether each php-fpm runs the binary installed, and the packages a package run left half done.",
+		Description: "The site's web root and domain, disk, memory, load, uptime, PostgreSQL liveness, Joinery version, database list, whether Server Manager is active, the site's plugins with their versions, the site's recorded plugin checks, the release keys the agent and the site trust, the PHP packages installed and whether each php-fpm runs the binary installed, the packages a package run left half done, and the state of the site's unseal daemon.",
 		Params:      nil, // takes none, so any param at all is refused
 		Run:         runCheckStatus,
 	})
@@ -340,6 +340,12 @@ func collectDatabase(ctx context.Context, env *ExecEnv, result map[string]interf
 	// apply's transcript (the running list, 2026-09-17).
 	if plugins, ok := collectPlugins(ctx, db); ok {
 		result["plugins"] = plugins
+	}
+
+	// The site's unseal daemon: the poll's word, and its crashes in the last
+	// hour from the launcher's event log (unseal_daemon.go).
+	if word, crashes := unsealDaemonFacts(env); word != "" {
+		result["unseal_daemon"] = map[string]interface{}{"state": word, "crashes_last_hour": crashes}
 	}
 
 	// Whether this site is a management node, as a boolean either way; an

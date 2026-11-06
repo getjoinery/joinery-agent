@@ -198,6 +198,11 @@ var pinnedVocabulary = map[string]Class{
 	// removed, or started again. Operate: the container and its volumes stay.
 	"hold_container": ClassOperate,
 
+	// The sentinel's drop and hold (specs/unseal_daemon.md): every vault window
+	// on the node zeroed and every Private unlock refused until root lifts it.
+	// Operate; no parameters, and no lift word.
+	"unseal_hold": ClassOperate,
+
 	// A site's container replaced on a fresh image of its host's base, the
 	// previous image put back when the new one does not come up. Operate:
 	// the site's volumes, run spec and code stay.

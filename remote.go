@@ -542,6 +542,13 @@ func (r *RemoteSource) claim(ctx context.Context) (*RemoteJob, error) {
 		if v := primitives.RootAccessReport(ctx, r.env); v != "" {
 			claimBody["root_access"] = v
 		}
+		// The site's unseal daemon in one word (specs/unseal_daemon.md, Managed
+		// nodes): absent, running, restarting, down, previous, held, unlocked.
+		// Read from the files root left and the process table, never the
+		// socket. Empty on a machine with no site.
+		if v := primitives.UnsealDaemonReport(r.env); v != "" {
+			claimBody["unseal_daemon"] = v
+		}
 		// Whether this node can verify the scripts it would run as root.
 		//
 		// The plane can already work this out from a refusal, but only for a
