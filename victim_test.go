@@ -312,11 +312,10 @@ func TestVictimConfigRefusesWhatTheSitePlanted(t *testing.T) {
 	}
 }
 
-// TestVictimDBHostIsTheEnginesBinding: the database is dialed where the engine
-// says it published it (B16: scrolldaddy publishes on a private address for its
-// resolvers), on install.sh's port only; loopback wins when the site has it, a
-// wildcard is dialed on loopback, and a binding on any other port, or none, is
-// a refusal that names what the engine said.
+// TestVictimDBHostIsTheEnginesBinding: the database is dialed on loopback,
+// on install.sh's port only, as the engine published it; a database published
+// only on another address (scrolldaddy's 192.168.206.198:9087 from before the
+// loopback rule, B16) is named with the rebuild that fixes it, never dialed.
 func TestVictimDBHostIsTheEnginesBinding(t *testing.T) {
 	saved := victimDBPorts
 	defer func() { victimDBPorts = saved }()
@@ -324,13 +323,13 @@ func TestVictimDBHostIsTheEnginesBinding(t *testing.T) {
 		name, out, want, errHas string
 	}{
 		{"loopback", "127.0.0.1:9087\n", "127.0.0.1", ""},
-		{"private address", "192.168.206.198:9087\n", "192.168.206.198", ""},
-		{"loopback wins", "192.168.206.198:9087\n127.0.0.1:9087\n", "127.0.0.1", ""},
+		{"loopback beside another", "192.168.206.198:9087\n127.0.0.1:9087\n", "127.0.0.1", ""},
 		{"ipv6 loopback", "[::1]:9087\n", "::1", ""},
 		{"wildcard v4", "0.0.0.0:9087\n[::]:9087\n", "127.0.0.1", ""},
 		{"wildcard v6", "[::]:9087\n", "::1", ""},
-		{"other port only", "127.0.0.1:5999\n", "", "not on port 9087"},
-		{"a name, not an address", "db.example.com:9087\n", "", "not on port 9087"},
+		{"private address only", "192.168.206.198:9087\n", "", "192.168.206.198:9087, not on this host's loopback"},
+		{"other port only", "127.0.0.1:5999\n", "", "not on this host's loopback at port 9087"},
+		{"a name, not an address", "db.example.com:9087\n", "", "not on this host's loopback"},
 		{"nothing published", "\n", "", "publishes no database port"},
 	}
 	for _, c := range cases {

@@ -12,9 +12,9 @@ package main
 //     HOST, never writable from inside the container. Its ProxyPass line names
 //     the container's published web port, and install.sh publishes the
 //     container's Postgres at web port + 1000 (both allocations are
-//     install.sh's own; see do_site_docker). The address it is published on
-//     is the engine's answer (engine port SITE 5432/tcp): loopback for most
-//     sites, a private address for one whose database other machines read.
+//     install.sh's own; see do_site_docker), on loopback. The binding is the
+//     engine's answer (engine port SITE 5432/tcp), so a database published
+//     anywhere else is named in the refusal rather than missed.
 //   - <Docker root>/volumes/<site>_config/_data/Globalvars_site.php — the
 //     config volume's host-side path. Read from the host filesystem, NEVER
 //     via docker exec: a teardown must not execute a binary inside a
@@ -175,18 +175,19 @@ var victimDBPorts = func(ctx context.Context, site string) (string, error) {
 	return string(out), nil
 }
 
-// victimDBHost is the address to dial for the site's database: the engine's
-// binding of 5432 whose port is install.sh's (web port + 1000), so a binding
-// the allocation rule did not make is never followed. Loopback is preferred
-// when the site has one; a wildcard binding is dialed on loopback; otherwise
-// the one address the engine names, which must be an IP literal.
+// victimDBHost is the loopback address to dial for the site's database: the
+// engine's binding of 5432 on install.sh's port (web port + 1000). A site's
+// database answers only its own machine (127.0.0.1, or ::1; a wildcard binding
+// is reached there too), and its pg_hba admits nothing else. A database
+// published only on another address is a binding from before that rule, which
+// the next rebuild drops (rebase_site_container.sh); it is named, never dialed.
 func victimDBHost(ctx context.Context, site string, dbPort int) (string, error) {
 	out, err := victimDBPorts(ctx, site)
 	if err != nil {
 		return "", err
 	}
-	var hosts []string
 	var seen []string
+	host := ""
 	for _, line := range strings.Split(out, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
@@ -194,35 +195,25 @@ func victimDBHost(ctx context.Context, site string, dbPort int) (string, error) 
 		}
 		seen = append(seen, line)
 		h, p, err := net.SplitHostPort(line)
-		if err != nil || p != strconv.Itoa(dbPort) {
-			continue
-		}
 		ip := net.ParseIP(h)
-		if ip == nil {
+		if err != nil || p != strconv.Itoa(dbPort) || ip == nil {
 			continue
 		}
 		switch {
-		case ip.IsUnspecified() && ip.To4() != nil:
-			h = "127.0.0.1"
-		case ip.IsUnspecified():
-			h = "::1"
-		default:
-			h = ip.String()
-		}
-		hosts = append(hosts, h)
-	}
-	for _, h := range hosts {
-		if ip := net.ParseIP(h); ip.IsLoopback() {
-			return h, nil
+		case ip.Equal(net.IPv4(127, 0, 0, 1)), ip.IsUnspecified() && ip.To4() != nil:
+			return "127.0.0.1", nil
+		case ip.Equal(net.IPv6loopback), ip.IsUnspecified():
+			host = "::1"
 		}
 	}
-	if len(hosts) > 0 {
-		return hosts[0], nil
+	if host != "" {
+		return host, nil
 	}
 	if len(seen) == 0 {
 		return "", fmt.Errorf("the container engine says %s publishes no database port", site)
 	}
-	return "", fmt.Errorf("the container engine publishes %s's database at %s, not on port %d as this host allocated it",
+	return "", fmt.Errorf("the container engine publishes %s's database at %s, not on this host's loopback at port %d, "+
+		"where a site's database answers; its next rebuild (rebase_site_container.sh) publishes it there",
 		site, displaySafe(strings.Join(seen, ", "), 200), dbPort)
 }
 
