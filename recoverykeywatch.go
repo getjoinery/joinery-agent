@@ -86,8 +86,7 @@ func (w *RecoveryKeyWatcher) tick(ctx context.Context) error {
 	statement := primitives.ApprovalStatement{
 		Primitive: "recovery_key_change",
 		Summary: "This site's backup recovery key has changed. Restores and copies of this site wait until the new " +
-			"key is confirmed with the previous one. If this follows a restore of an older database, decline, then " +
-			"set your current key again on this page.",
+			"key is confirmed with the previous one.",
 		Facts: []primitives.ApprovalFact{
 			{Label: "Previous key", Value: shortFingerprint(pin.Fingerprint) + ", recorded " + pin.PinnedTime + " (" + pin.How + ")"},
 			{Label: "New key", Value: shortFingerprint(fpr)},
