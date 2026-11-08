@@ -807,6 +807,9 @@ func TestPrimitiveExecutionEnvIsExplicit(t *testing.T) {
 		// check_status to report (specs/release_key_rotation.md R6). Names of
 		// public keys, read only: nothing secret, and nothing it can change.
 		"ReleaseTrust": true,
+		// Root's record of the recovery key, reported: a fact, it grants
+		// nothing (recoverykeypin.go).
+		"RecoveryKeyRecord": true,
 	}
 
 	fset := token.NewFileSet()

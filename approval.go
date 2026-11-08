@@ -190,13 +190,27 @@ var exportScope = approvalScope{
 	page:           "this machine's own Backups page",
 }
 
+// rekeyScope confirms a change of this site's recovery key: the
+// operator opens a challenge sealed to the PREVIOUS key, the one root
+// recorded, and the agent then records the new one (recoverykeypin.go).
+// Mirrored by ApprovalChallenge::SCOPES on the PHP side.
+var rekeyScope = approvalScope{
+	requestSetting: "recovery_key_change_approval_request",
+	answerSetting:  "recovery_key_change_approval_answer",
+	infoPrefix:     "joinery-recovery-key-change-approval:",
+	plaintextTag:   "joinery-recovery-key-change-approval",
+	act:            "recovery key change",
+	party:          "this machine",
+	page:           "this machine's own Backups page",
+}
+
 // NewExportApproval builds the gate for this machine's own copy exports. A nil
 // DB refuses at Require, as NewSettingsApproval's does.
 func NewExportApproval(db *DB) *SettingsApproval {
 	if db == nil {
 		return &SettingsApproval{scope: exportScope}
 	}
-	return &SettingsApproval{store: dbSettings{db: db}, scope: exportScope}
+	return &SettingsApproval{store: dbSettings{db: db}, scope: exportScope, pin: &recoveryKeyPinner{}}
 }
 
 // SettingsApproval asks an operator to approve a destructive job through a
@@ -213,6 +227,17 @@ type SettingsApproval struct {
 	// tests substitute one. Nil means the job source's (planeJobWithdrawn),
 	// which is nil itself on a machine with no management node.
 	withdrawn func(ctx context.Context, jobID int64) (bool, error)
+	// pin holds the approval to root's record of the site's recovery key
+	// (recoverykeypin.go): set for this machine's own restores and exports,
+	// nil for a victim's removal, whose key the host has no record of.
+	pin *recoveryKeyPinner
+	// fixedRecipient, when set, is the key the challenge is sealed to in
+	// place of the site's: the recovery-key scope seals to the PREVIOUS key.
+	fixedRecipient []byte
+	// declined is set when the operator declined, so a caller that must
+	// remember a decline (the recovery-key watcher) can tell it from an
+	// expiry.
+	declined bool
 }
 
 // NewSettingsApproval builds the gate for this machine's own restores. A nil
@@ -223,7 +248,7 @@ func NewSettingsApproval(db *DB) *SettingsApproval {
 	if db == nil {
 		return &SettingsApproval{scope: restoreScope}
 	}
-	return &SettingsApproval{store: dbSettings{db: db}, scope: restoreScope}
+	return &SettingsApproval{store: dbSettings{db: db}, scope: restoreScope, pin: &recoveryKeyPinner{}}
 }
 
 // newScopedApproval builds the gate over an explicit store and scope — the
@@ -299,7 +324,7 @@ func (a *SettingsApproval) Require(ctx context.Context, jobID int64, statement p
 	}
 	scope := a.scoped()
 
-	recipient, err := a.provenRecoveryKey()
+	recipient, err := a.sealRecipient()
 	if err != nil {
 		return err
 	}
@@ -421,6 +446,7 @@ func (a *SettingsApproval) await(ctx context.Context, jobID int64, expected stri
 			var answer approvalAnswer
 			if json.Unmarshal([]byte(raw), &answer) == nil && answer.JobID == jobID {
 				if answer.Declined {
+					a.declined = true
 					return &primitives.RefusalError{
 						Reason: "the operator of " + scope.party + " declined this " + scope.act +
 							" on its own admin page"}
@@ -497,6 +523,27 @@ func openApprovalKeyBox(keyBox *primitives.ApprovalKeyBox, answer approvalAnswer
 		return fmt.Errorf("this agent cannot open it")
 	}
 	return keyBox.Open(shared, public)
+}
+
+// sealRecipient is the key this approval's challenge is sealed to: the fixed
+// one when the scope names it, else the site's proven key, held to root's
+// record of it when the gate has one.
+func (a *SettingsApproval) sealRecipient() ([]byte, error) {
+	if a.fixedRecipient != nil {
+		return a.fixedRecipient, nil
+	}
+	raw, err := a.provenRecoveryKey()
+	if err != nil {
+		return nil, err
+	}
+	if a.pin == nil {
+		return raw, nil
+	}
+	recorded, err := a.pin.recipient(raw)
+	if err != nil {
+		return nil, &primitives.RefusalError{Reason: err.Error() + ". The " + a.scoped().act + " was not run"}
+	}
+	return recorded, nil
 }
 
 // provenRecoveryKey reads this machine's recovery public key and refuses unless

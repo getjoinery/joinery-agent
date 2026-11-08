@@ -41,6 +41,9 @@ type ExecEnv struct {
 	// (specs/release_key_rotation.md R6). The trusted set is the agent's own
 	// state, so the agent supplies the reader. Nil reports none.
 	ReleaseTrust func() map[string]interface{}
+	// RecoveryKeyRecord reports root's record of the site's recovery key
+	// beside the site's own (check_status's recovery_key). Nil reports none.
+	RecoveryKeyRecord func() map[string]interface{}
 	// DB resolves the node's own database, for collectors that read local
 	// state. Nil when the node has no Joinery database at all.
 	//

@@ -71,6 +71,8 @@ func runCLI(args []string) (handled bool, exit int) {
 		return true, cliDataRoot(args[2:])
 	case "bundle":
 		return true, cliBundle(args[2:])
+	case "recovery-key":
+		return true, cliRecoveryKey(args[2:])
 	case "help", "--help", "-h":
 		cliUsage(os.Stdout)
 		return true, 0
@@ -98,6 +100,9 @@ func cliUsage(w *os.File) {
                                              install a support bundle from a file (install.sh docker
                                              hands it the release's own), held to the same checks as one
                                              from a management node; then converge the host
+  joinery-agent recovery-key [accept]        root's record of the site's backup recovery key beside the
+                                             site's own; accept (as root) records the site's current key,
+                                             for a previous key that is lost
   joinery-agent --version
 
 Joining prints a key fingerprint. Approve the request on the management node

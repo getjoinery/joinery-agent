@@ -76,6 +76,14 @@ func runCheckStatus(ctx context.Context, env *ExecEnv, _ Params) (map[string]int
 	}
 	// The release keys this machine's agent and site trust, so each step of a
 	// key rotation is a check on every node (specs/release_key_rotation.md R6).
+	// Root's record of the site's recovery key beside the site's own key, so
+	// the management node can show both: the record is otherwise readable
+	// only as root at the machine.
+	if env.RecoveryKeyRecord != nil {
+		if rec := env.RecoveryKeyRecord(); len(rec) > 0 {
+			result["recovery_key"] = rec
+		}
+	}
 	if env.ReleaseTrust != nil {
 		if trust := env.ReleaseTrust(); len(trust) > 0 {
 			result["release_trust"] = trust

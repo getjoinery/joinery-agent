@@ -45,6 +45,11 @@ func TestGroupWritablePolicyFileRefusesEverything(t *testing.T) {
 	if err := os.WriteFile(path, []byte(`{"accept":["observe","operate"]}`), 0o664); err != nil {
 		t.Fatal(err)
 	}
+	// WriteFile's mode passes through the umask, which would leave the file
+	// 0644 under a 022 umask and test the owner check instead.
+	if err := os.Chmod(path, 0o664); err != nil {
+		t.Fatal(err)
+	}
 	p, err := LoadPolicy(path)
 	if err != nil {
 		t.Fatal(err)

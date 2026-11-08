@@ -24,7 +24,7 @@ import (
 // must stay ABOVE 1.1.0 forever - install_agent.sh's downgrade guard sorts
 // with sort -V and refuses to replace a "newer" binary, so anything below
 // 1.1.0 strands those agents permanently.
-var version = "1.115.0"
+var version = "1.116.0"
 
 // How often the idle loop looks at the shipped agent_dist manifest. Update
 // checks never run while a job is executing.
@@ -270,6 +270,12 @@ func execEnvFor(cfg *Config, db *DB) *primitives.ExecEnv {
 		DB:         dbForPrimitives,
 		// The release keys the agent and the site trust, which check_status
 		// reports (specs/release_key_rotation.md R6).
+		RecoveryKeyRecord: func() map[string]interface{} {
+			if cfg.Siteless || db == nil {
+				return nil
+			}
+			return reportRecoveryKeyRecord(dbSettings{db: db}, RecoveryKeyPinPath())
+		},
 		ReleaseTrust: func() map[string]interface{} {
 			if cfg.Siteless {
 				return reportReleaseTrust("")
@@ -596,6 +602,11 @@ func main() {
 	// The owner's log-access switch, projected into the marker the log words
 	// read, so they can be gated when the database cannot be read.
 	go (&LogAccessWatcher{db: db}).Run(context.Background())
+	// Root's own record of the site's recovery key, which every approval on
+	// this machine is sealed to (recoverykeypin.go).
+	if !cfg.Siteless {
+		go (&RecoveryKeyWatcher{store: dbSettings{db: db}}).Run(context.Background())
+	}
 
 	// Signal handling
 	sigCh := make(chan os.Signal, 1)

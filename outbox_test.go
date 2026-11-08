@@ -24,6 +24,8 @@ func TestMain(m *testing.M) {
 	resultOutboxDir = filepath.Join(dir, "outbox")
 	dataRootOutboxDir = filepath.Join(dir, "data-root-outbox")
 	outboxDataRootConf = filepath.Join(dir, "no-data-root")
+	// No test may read or write root's real record of the recovery key.
+	os.Setenv("AGENT_RECOVERY_KEY_PIN_PATH", filepath.Join(dir, "recovery_key.json"))
 	// No test may ask the real systemd what the machine is doing.
 	detachedWorkRunning = func(context.Context) bool { return false }
 	code := m.Run()
