@@ -181,7 +181,9 @@ func runSiteLog(ctx context.Context, env *ExecEnv, p Params) (map[string]interfa
 	}
 
 	path := siteLogPath(env.SiteRoot, name, previous)
-	f, err := os.Open(path)
+	// logs/ is the web user's: the file is opened only as a regular file, and
+	// never through a link (openPlainFile).
+	f, err := openPlainFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return result, nil

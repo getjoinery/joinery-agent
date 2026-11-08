@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -371,12 +370,11 @@ const (
 // from it (specs/agent_tier1_recipes.md, Q3 "Unpaired"). Written whole
 // through a temp file and a rename, so a reader never sees half a record.
 func writeOutwardCase(recipe string, c Case, body *CaseBody, paired bool, now time.Time) {
-	if OutwardDir == "" {
+	d := openOutward()
+	if d == nil {
 		return
 	}
-	if err := os.MkdirAll(OutwardDir, 0o755); err != nil {
-		return
-	}
+	defer d.close()
 	c.Body = body
 	rec := renderedCase{Case: c, Delivery: DeliveryLocal, Rendered: wireTime(now)}
 	if paired {
@@ -386,12 +384,7 @@ func writeOutwardCase(recipe string, c Case, body *CaseBody, paired bool, now ti
 	if err != nil {
 		return
 	}
-	path := OutwardCasePath(recipe)
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, append(raw, '\n'), 0o644); err != nil {
-		return
-	}
-	_ = os.Rename(tmp, path)
+	d.writeWhole(filepath.Base(OutwardCasePath(recipe)), append(raw, '\n'), 0o644)
 }
 
 // OutwardCasePath is where a recipe's rendered case lands.

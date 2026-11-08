@@ -311,3 +311,68 @@ func TestVictimConfigRefusesWhatTheSitePlanted(t *testing.T) {
 		t.Fatalf("an ordinary config file still reads: %v %+v", err, cfg)
 	}
 }
+
+// TestVictimDBHostIsTheEnginesBinding: the database is dialed where the engine
+// says it published it (B16: scrolldaddy publishes on a private address for its
+// resolvers), on install.sh's port only; loopback wins when the site has it, a
+// wildcard is dialed on loopback, and a binding on any other port, or none, is
+// a refusal that names what the engine said.
+func TestVictimDBHostIsTheEnginesBinding(t *testing.T) {
+	saved := victimDBPorts
+	defer func() { victimDBPorts = saved }()
+	cases := []struct {
+		name, out, want, errHas string
+	}{
+		{"loopback", "127.0.0.1:9087\n", "127.0.0.1", ""},
+		{"private address", "192.168.206.198:9087\n", "192.168.206.198", ""},
+		{"loopback wins", "192.168.206.198:9087\n127.0.0.1:9087\n", "127.0.0.1", ""},
+		{"ipv6 loopback", "[::1]:9087\n", "::1", ""},
+		{"wildcard v4", "0.0.0.0:9087\n[::]:9087\n", "127.0.0.1", ""},
+		{"wildcard v6", "[::]:9087\n", "::1", ""},
+		{"other port only", "127.0.0.1:5999\n", "", "not on port 9087"},
+		{"a name, not an address", "db.example.com:9087\n", "", "not on port 9087"},
+		{"nothing published", "\n", "", "publishes no database port"},
+	}
+	for _, c := range cases {
+		out := c.out
+		victimDBPorts = func(context.Context, string) (string, error) { return out, nil }
+		got, err := victimDBHost(context.Background(), "s", 9087)
+		if c.errHas != "" {
+			if err == nil || !strings.Contains(err.Error(), c.errHas) {
+				t.Errorf("%s: want an error naming %q, got %q %v", c.name, c.errHas, got, err)
+			}
+			continue
+		}
+		if err != nil || got != c.want {
+			t.Errorf("%s: want %q, got %q %v", c.name, c.want, got, err)
+		}
+	}
+
+	victimDBPorts = func(context.Context, string) (string, error) { return "", errors.New("no such container") }
+	if _, err := victimDBHost(context.Background(), "s", 9087); err == nil || !strings.Contains(err.Error(), "no such container") {
+		t.Fatalf("an engine that cannot answer is a refusal with its words: %v", err)
+	}
+}
+
+// TestVictimDBPortsAsksTheEngine: the binding is asked of the host's engine as
+// port SITE 5432/tcp, and the engine's own words come back when it fails.
+func TestVictimDBPortsAsksTheEngine(t *testing.T) {
+	dir := t.TempDir()
+	stub := "#!/bin/sh\n" +
+		`[ "$1 $2 $3" = 'port scrolldaddy 5432/tcp' ] && { echo 192.168.206.198:9087; exit 0; }` + "\n" +
+		"echo 'Error: No such container: '\"$2\" >&2\nexit 1\n"
+	if err := os.WriteFile(filepath.Join(dir, "docker"), []byte(stub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	savedCurrent := siteEngineCurrent
+	defer func() { siteEngineCurrent = savedCurrent }()
+	siteEngineCurrent = filepath.Join(dir, "no-site-engine")
+	out, err := victimDBPorts(context.Background(), "scrolldaddy")
+	if err != nil || strings.TrimSpace(out) != "192.168.206.198:9087" {
+		t.Fatalf("the engine's binding was not read: %q %v", out, err)
+	}
+	if _, err := victimDBPorts(context.Background(), "gone"); err == nil || !strings.Contains(err.Error(), "No such container") {
+		t.Fatalf("the engine's own words must come back: %v", err)
+	}
+}

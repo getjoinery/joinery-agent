@@ -11,8 +11,10 @@ package main
 //   - /etc/apache2/sites-available/<site>.conf — written by install.sh ON THE
 //     HOST, never writable from inside the container. Its ProxyPass line names
 //     the container's published web port, and install.sh publishes the
-//     container's Postgres on 127.0.0.1 at web port + 1000 (both allocations
-//     are install.sh's own; see do_site_docker).
+//     container's Postgres at web port + 1000 (both allocations are
+//     install.sh's own; see do_site_docker). The address it is published on
+//     is the engine's answer (engine port SITE 5432/tcp): loopback for most
+//     sites, a private address for one whose database other machines read.
 //   - <Docker root>/volumes/<site>_config/_data/Globalvars_site.php — the
 //     config volume's host-side path. Read from the host filesystem, NEVER
 //     via docker exec: a teardown must not execute a binary inside a
@@ -36,6 +38,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -57,7 +60,7 @@ const (
 	victimConfigPattern = "%s/volumes/%s_config/_data/Globalvars_site.php"
 
 	// victimDBPortOffset is install.sh's own allocation rule: the container
-	// publishes Postgres on 127.0.0.1 at web port + 1000 (do_site_docker,
+	// publishes Postgres at web port + 1000 (do_site_docker,
 	// DB_PORT=$((PORT + 1000))). If a container was ever run outside that
 	// rule the connection fails and the job refuses — never guesses.
 	victimDBPortOffset = 1000
@@ -121,8 +124,14 @@ func openVictimDB(ctx context.Context, site, why string) (*sql.DB, map[string]st
 	}
 
 	dbPort := webPort + victimDBPortOffset
-	dsn := fmt.Sprintf("host=127.0.0.1 port=%d dbname=%s user=%s password=%s sslmode=disable connect_timeout=10",
-		dbPort, quoteDSNValue(cfg["dbname"]), quoteDSNValue(cfg["dbusername"]), quoteDSNValue(cfg["dbpassword"]))
+	host, err := victimDBHost(ctx, site, dbPort)
+	if err != nil {
+		return nil, nil, &primitives.RefusalError{Reason: fmt.Sprintf(
+			"the site %s's database address could not be found, so %s: %v", site, why, err)}
+	}
+	addr := net.JoinHostPort(host, strconv.Itoa(dbPort))
+	dsn := fmt.Sprintf("host=%s port=%d dbname=%s user=%s password=%s sslmode=disable connect_timeout=10",
+		quoteDSNValue(host), dbPort, quoteDSNValue(cfg["dbname"]), quoteDSNValue(cfg["dbusername"]), quoteDSNValue(cfg["dbpassword"]))
 	db, err := sql.Open("postgres", dsn)
 	if err != nil {
 		return nil, nil, &primitives.RefusalError{Reason: fmt.Sprintf(
@@ -138,9 +147,83 @@ func openVictimDB(ctx context.Context, site, why string) (*sql.DB, map[string]st
 		// role and the database, never the password, which travels only in
 		// the DSN and is not part of any error.
 		return nil, nil, &primitives.RefusalError{Reason: fmt.Sprintf(
-			"the site %s's database did not answer on its published port (127.0.0.1:%d), so %s (%v)", site, dbPort, why, err)}
+			"the site %s's database did not answer on its published port (%s), so %s (%v)", site, addr, why, err)}
 	}
 	return db, cfg, nil
+}
+
+// victimDBPorts lists the container's host bindings for its Postgres, one
+// address:port per line, from the host's engine (docker or the site container
+// engine; both answer port NAME 5432/tcp the same way). The engine is the
+// host's record of what it published, which the container cannot change. A
+// var so a test can answer for the engine.
+var victimDBPorts = func(ctx context.Context, site string) (string, error) {
+	name, bin, err := siteEngine()
+	if err != nil {
+		return "", err
+	}
+	ctx, cancel := context.WithTimeout(ctx, victimDialTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, bin, "port", site, "5432/tcp").Output()
+	if err != nil {
+		var ee *exec.ExitError
+		if errors.As(err, &ee) && len(ee.Stderr) > 0 {
+			return "", fmt.Errorf("%s port: %v: %s", name, err, displaySafe(strings.TrimSpace(string(ee.Stderr)), 200))
+		}
+		return "", fmt.Errorf("%s port: %v", name, err)
+	}
+	return string(out), nil
+}
+
+// victimDBHost is the address to dial for the site's database: the engine's
+// binding of 5432 whose port is install.sh's (web port + 1000), so a binding
+// the allocation rule did not make is never followed. Loopback is preferred
+// when the site has one; a wildcard binding is dialed on loopback; otherwise
+// the one address the engine names, which must be an IP literal.
+func victimDBHost(ctx context.Context, site string, dbPort int) (string, error) {
+	out, err := victimDBPorts(ctx, site)
+	if err != nil {
+		return "", err
+	}
+	var hosts []string
+	var seen []string
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		seen = append(seen, line)
+		h, p, err := net.SplitHostPort(line)
+		if err != nil || p != strconv.Itoa(dbPort) {
+			continue
+		}
+		ip := net.ParseIP(h)
+		if ip == nil {
+			continue
+		}
+		switch {
+		case ip.IsUnspecified() && ip.To4() != nil:
+			h = "127.0.0.1"
+		case ip.IsUnspecified():
+			h = "::1"
+		default:
+			h = ip.String()
+		}
+		hosts = append(hosts, h)
+	}
+	for _, h := range hosts {
+		if ip := net.ParseIP(h); ip.IsLoopback() {
+			return h, nil
+		}
+	}
+	if len(hosts) > 0 {
+		return hosts[0], nil
+	}
+	if len(seen) == 0 {
+		return "", fmt.Errorf("the container engine says %s publishes no database port", site)
+	}
+	return "", fmt.Errorf("the container engine publishes %s's database at %s, not on port %d as this host allocated it",
+		site, displaySafe(strings.Join(seen, ", "), 200), dbPort)
 }
 
 // victimWebPort reads the container's published web port out of the host-owned

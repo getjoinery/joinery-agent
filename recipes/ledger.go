@@ -392,10 +392,9 @@ func (l *AttemptLedger) write(e Entry) {
 	line = append(line, '\n')
 
 	appendCapped(l.path, line, 0o600)
-	if OutwardDir != "" {
-		if err := os.MkdirAll(OutwardDir, 0o755); err == nil {
-			appendCapped(filepath.Join(OutwardDir, l.recipe+".jsonl"), line, 0o644)
-		}
+	if d := openOutward(); d != nil {
+		d.appendCapped(l.recipe+".jsonl", line, 0o644)
+		d.close()
 	}
 }
 

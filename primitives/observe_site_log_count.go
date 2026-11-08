@@ -172,7 +172,9 @@ func siteLogCount(ctx context.Context, env *ExecEnv, since time.Time, loc *time.
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
-		f, err := os.Open(path)
+		// logs/ is the web user's: only a regular file, never through a link
+		// (openPlainFile).
+		f, err := openPlainFile(path)
 		if err != nil {
 			if os.IsNotExist(err) {
 				if len(filesRead) == 0 && path == filepath.Join(env.SiteRoot, "logs", "error.log") {
