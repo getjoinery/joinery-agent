@@ -28,6 +28,19 @@ func copyEnv(t *testing.T, state string, vouch []string) (*ExecEnv, string) {
 	if err := os.MkdirAll(site, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	// A copy's key is root's, kept in the site's state (chainkey.go), never
+	// in the web user's backups folder.
+	staged := filepath.Join(env.SiteRoot, work, chainKeyFile)
+	key, err := os.ReadFile(staged)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeChainKey(context.Background(), env, copyChainID, key); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(staged); err != nil {
+		t.Fatal(err)
+	}
 	if state != "" {
 		if err := os.WriteFile(filepath.Join(site, "state"), []byte(state+"\n"), 0o644); err != nil {
 			t.Fatal(err)
@@ -85,7 +98,7 @@ func TestACopyRestoreRunsTheChainRestoreWithTheSourcesKeyAndNoCertificate(t *tes
 	want := []string{
 		restoreFixtureProject,
 		"--artifacts", work,
-		"--key-file", filepath.Join(work, chainKeyFile),
+		"--key-file", chainKeyPath(env, copyChainID),
 		"--force",
 		"--adopt-secret-key",
 		"--skip-ssl",

@@ -277,11 +277,11 @@ func TestAnExportOpensOnTheCopyAndWritesWhatTheOtherWordsRead(t *testing.T) {
 	}
 
 	work := chainWorkspace(context.Background(), f.tEnv, exportChainID)
-	key, err := os.ReadFile(filepath.Join(work, chainKeyFile))
+	key, err := os.ReadFile(chainKeyPath(f.tEnv, exportChainID))
 	if err != nil || string(key) != f.dataKey {
 		t.Errorf("chain.key is %q (%v), want the chain's data key", key, err)
 	}
-	if info, _ := os.Stat(filepath.Join(work, chainKeyFile)); info == nil || info.Mode().Perm() != 0o600 {
+	if info, _ := os.Stat(chainKeyPath(f.tEnv, exportChainID)); info == nil || info.Mode().Perm() != 0o600 {
 		t.Errorf("chain.key is not 0600")
 	}
 	vouched, err := vouchedManifests(f.tEnv, exportChainID)

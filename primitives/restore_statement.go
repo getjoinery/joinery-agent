@@ -173,7 +173,7 @@ func describeRestoreChain(ctx context.Context, env *ExecEnv, params Params) (App
 	if err := requireStagedManifest(env, work); err != nil {
 		return ApprovalStatement{}, err
 	}
-	keyBox, err := chainKeyBox(work)
+	keyBox, err := chainKeyBox(ctx, env, chainID, work)
 	if err != nil {
 		return ApprovalStatement{}, err
 	}

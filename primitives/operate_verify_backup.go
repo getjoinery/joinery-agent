@@ -106,8 +106,11 @@ func init() {
 		Script: &ScriptSpec{
 			Interpreter: "/usr/bin/php",
 			ScriptPath:  "public_html/utils/verify_backup.php",
-			Args:        nil,
-			StdinFrom:   verifyBackupConfig,
+			// It works only in backups/ and the site's own folders, all the web
+			// user's (chainkey.go), so it never runs as root.
+			AsSiteUser: true,
+			Args:       nil,
+			StdinFrom:  verifyBackupConfig,
 		},
 		// A whole chain's transfer (stage_chain's budget) plus reading every
 		// byte of it, plus — at level 3 — a replay and a database load. Three

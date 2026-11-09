@@ -86,8 +86,11 @@ func init() {
 		Script: &ScriptSpec{
 			Interpreter: "/usr/bin/php",
 			ScriptPath:  "public_html/utils/restore_objects.php",
-			Args:        nil,
-			StdinFrom:   restoreObjectsConfig,
+			// It works only in backups/ and the site's own folders, all the web
+			// user's (chainkey.go), so it never runs as root.
+			AsSiteUser: true,
+			Args:       nil,
+			StdinFrom:  restoreObjectsConfig,
 		},
 		// A page is at most a job's worth of links, fetched and decrypted one
 		// at a time; a survey is one index and a HEAD per offloaded file. Two

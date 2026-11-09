@@ -37,8 +37,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -66,6 +64,8 @@ func init() {
 			ScriptPath:  copyStageScript,
 			ArgsFrom:    copyStageArgs,
 			StdinFrom:   copyStageConfig,
+			// It writes only into backups/, the web user's folder (chainkey.go).
+			AsSiteUser: true,
 		},
 		Timeout:     2*time.Hour + 20*time.Minute,
 		Quiet:       QuietCopy,
@@ -95,9 +95,9 @@ func copyStageArgs(ctx context.Context, env *ExecEnv, params Params) ([]string, 
 			"Export it from the source and import it here first", chainID)
 	}
 	work := chainWorkspace(ctx, env, chainID)
-	if info, err := os.Stat(filepath.Join(work, chainKeyFile)); err != nil || !info.Mode().IsRegular() {
+	if !haveChainKey(env, chainID) {
 		return nil, refusedf("chain %s has no key here yet (%s): it is written when the source's export is "+
-			"imported (copy_import), which comes first", chainID, filepath.Join(work, chainKeyFile))
+			"imported (copy_import), which comes first", chainID, chainKeyPath(env, chainID))
 	}
 	argv := []string{"--workspace", work}
 	for _, v := range vouched {

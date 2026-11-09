@@ -16,7 +16,7 @@ import (
 // chains, same envelope, same restore semantics. What changes is everything
 // around it. The plane no longer composes a shell command; it names a primitive
 // and supplies declared, bounded parameters. The node verifies the script
-// against the signed release manifest before running it as root. And the
+// against the signed release manifest before running it as the site's web user. And the
 // parameter list below is the whole vocabulary — anything else is refused here,
 // not passed through.
 //
@@ -99,7 +99,11 @@ func init() {
 		Script: &ScriptSpec{
 			Interpreter: "/usr/bin/php",
 			ScriptPath:  "public_html/utils/run_backup.php",
-			Args:        []string{"--profile=manager"},
+			// It writes only into backups/, the web user's folder (chainkey.go),
+			// and no archive carries a root-only file (_backup_root_only_files.sh),
+			// so it never runs as root.
+			AsSiteUser: true,
+			Args:       []string{"--profile=manager"},
 			// The engine's config, composed here from validated parameters.
 			StdinFrom: backupRunConfig,
 		},

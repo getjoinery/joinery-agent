@@ -39,7 +39,9 @@ func TestARestoreChainJobComposesTheEnginesArgv(t *testing.T) {
 	want := []string{
 		"jeremytunnell",
 		"--artifacts", work,
-		"--key-file", filepath.Join(work, chainKeyFile),
+		// Root's own copy: the workspace's key, taken out of the web user's
+		// folder before the restore reads it (chainkey.go).
+		"--key-file", adoptedKeyPath(env, "chain-20260807_231507"),
 		"--force",
 	}
 	if strings.Join(argv, "\x00") != strings.Join(want, "\x00") {

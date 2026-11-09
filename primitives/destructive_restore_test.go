@@ -68,6 +68,7 @@ const restoreFixtureProject = "jeremytunnell"
 
 func restoreEnv(t *testing.T, files ...string) *ExecEnv {
 	t.Helper()
+	isolateSiteState(t)
 	root := filepath.Join(t.TempDir(), restoreFixtureProject)
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		t.Fatal(err)
@@ -628,7 +629,7 @@ func TestABackupDuringTheApprovalWindowDoesNotRefuseTheRestore(t *testing.T) {
 	rewriteLedgerEntry(t, env, ProfileManager, chainID+"/"+chainManifestFile,
 		hex.EncodeToString(grown[:]), staged)
 
-	if err := requireStagedChain(env, filepath.Join(env.SiteRoot, work)); err != nil {
+	if err := requireStagedChain(context.Background(), env, chainID, filepath.Join(env.SiteRoot, work)); err != nil {
 		t.Fatalf("a chain staged before the chain grew must still restore: %v", err)
 	}
 
@@ -648,7 +649,7 @@ func TestABackupDuringTheApprovalWindowDoesNotRefuseTheRestore(t *testing.T) {
 	if err := os.WriteFile(manifest, []byte("a manifest this machine never wrote"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	err = requireStagedChain(env, filepath.Join(env.SiteRoot, work))
+	err = requireStagedChain(context.Background(), env, chainID, filepath.Join(env.SiteRoot, work))
 	if !Refused(err) || !strings.Contains(err.Error(), "not one this node uploaded") {
 		t.Fatalf("an unrecorded manifest must still be refused, got %v", err)
 	}
@@ -677,4 +678,13 @@ func rewriteLedgerEntry(t *testing.T, env *ExecEnv, profile BackupProfile, relna
 	if err := os.WriteFile(ledgerPath(env, profile), body, 0o600); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// isolateSiteState gives one test its own root state folder, so a chain key
+// one test keeps there is not found by the next.
+func isolateSiteState(t *testing.T) {
+	t.Helper()
+	old := SiteStateDir
+	SiteStateDir = t.TempDir()
+	t.Cleanup(func() { SiteStateDir = old })
 }

@@ -2,9 +2,10 @@ package primitives
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
-	"path/filepath"
 	"regexp"
 )
 
@@ -78,8 +79,35 @@ func init() {
 }
 
 func runDeleteBackup(ctx context.Context, env *ExecEnv, params Params) (map[string]interface{}, error) {
-	dir := backupDirFor(ctx, env, BackupProfile(params.String("profile")))
-	return runDeleteBackupIn(ctx, dir, params.String("filename"))
+	filename := params.String("filename")
+	r, err := openBackupRoot(ctx, env)
+	if errors.Is(err, fs.ErrNotExist) {
+		return noSuchBackup(filename), nil
+	}
+	if err != nil {
+		return nil, refusedf("this node's backup folder cannot be opened safely: %v", err)
+	}
+	defer r.Close()
+	if BackupProfile(params.String("profile")) == ProfileManager {
+		sub, err := r.OpenRoot(managerSubdir)
+		if errors.Is(err, fs.ErrNotExist) {
+			return noSuchBackup(filename), nil
+		}
+		if err != nil {
+			return nil, refusedf("this node's %s backup folder cannot be opened safely: %v", managerSubdir, err)
+		}
+		defer sub.Close()
+		r = sub
+	}
+	return runDeleteBackupInRoot(r, filename)
+}
+
+func noSuchBackup(filename string) map[string]interface{} {
+	return map[string]interface{}{
+		"filename": filename,
+		"deleted":  false,
+		"detail":   "no such backup on this node; nothing to delete",
+	}
 }
 
 // runDeleteBackupIn is the body, with the directory as an argument so it can be
@@ -88,15 +116,30 @@ func runDeleteBackup(ctx context.Context, env *ExecEnv, params Params) (map[stri
 // location for the named profile (backupdirs.go); the job supplies the profile
 // name, never a path.
 func runDeleteBackupIn(_ context.Context, dir, filename string) (map[string]interface{}, error) {
+	r, err := os.OpenRoot(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return noSuchBackup(filename), nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer r.Close()
+	return runDeleteBackupInRoot(r, filename)
+}
+
+// runDeleteBackupInRoot deletes inside r, an os.Root on the backup folder:
+// the folder is the site web user's, and os.Root keeps a link planted there
+// from sending root's unlink anywhere else.
+func runDeleteBackupInRoot(r *os.Root, filename string) (map[string]interface{}, error) {
 	if !isBackupArtifact(filename) {
 		return nil, refusedf("%q is not the name of a backup artifact, so this node will not delete it", filename)
 	}
 
-	path := filepath.Join(dir, filename)
+	path := filename
 
 	// Lstat, not Stat: a symlink is inspected as a symlink. Removing one would
 	// only unlink the link, but a link is not what was asked for either.
-	info, err := os.Lstat(path)
+	info, err := r.Lstat(path)
 	if os.IsNotExist(err) {
 		// Already gone. The end state holds; say what is true about the node
 		// rather than reporting a failure the operator cannot act on.
@@ -117,7 +160,7 @@ func runDeleteBackupIn(_ context.Context, dir, filename string) (map[string]inte
 	}
 
 	size := info.Size()
-	if err := os.Remove(path); err != nil {
+	if err := r.Remove(path); err != nil {
 		// Losing the race with another deleter still leaves the end state we
 		// were asked for.
 		if os.IsNotExist(err) {

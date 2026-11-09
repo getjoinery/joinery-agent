@@ -238,8 +238,7 @@ func copyTakeVouchRun(ctx context.Context, env *ExecEnv, params Params) (map[str
 			issued.Format(time.RFC3339Nano), last.Format(time.RFC3339Nano))
 	}
 
-	work := chainWorkspace(ctx, env, body.ChainID)
-	if info, err := os.Stat(filepath.Join(work, chainKeyFile)); err != nil || !info.Mode().IsRegular() {
+	if !haveChainKey(env, body.ChainID) {
 		return nil, refusedf("copy_take_vouch refused: this copy holds no key for chain %s. Its key arrives only in "+
 			"an export the source's owner approves: copy again before switching over", body.ChainID)
 	}

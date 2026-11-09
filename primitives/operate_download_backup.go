@@ -93,6 +93,9 @@ func init() {
 		Script: &ScriptSpec{
 			Interpreter: "/usr/bin/php",
 			ScriptPath:  "public_html/utils/download_backup.php",
+			// It works only in backups/ and the site's own folders, all the web
+			// user's (chainkey.go), so it never runs as root.
+			AsSiteUser: true,
 			// No argv at all, the same discipline upload_backup keeps: `ps` on
 			// a node discloses that a download is running and not one thing
 			// about which object, which bucket, or which signature.

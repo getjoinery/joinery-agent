@@ -53,8 +53,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -209,12 +207,7 @@ func copyTakeKeyRun(ctx context.Context, env *ExecEnv, params Params) (map[strin
 	}
 	defer zero(dataKey)
 
-	work := chainWorkspace(ctx, env, chainID)
-	if err := os.MkdirAll(work, 0o700); err != nil {
-		return nil, fmt.Errorf("could not make chain %s's workspace: %w", chainID, err)
-	}
-	_ = os.Chmod(work, 0o700)
-	if err := writeFileAtomic(filepath.Join(work, chainKeyFile), dataKey, 0o600); err != nil {
+	if err := writeChainKey(ctx, env, chainID, dataKey); err != nil {
 		return nil, fmt.Errorf("could not write chain %s's key: %w", chainID, err)
 	}
 	if err := writeStateFile(env, copyVouchedFile, []byte(manifest+" "+chainID+"\n")); err != nil {

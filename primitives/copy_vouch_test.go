@@ -98,7 +98,7 @@ func TestAVouchMovesTheCopyToTheFinalRunWithNoSecret(t *testing.T) {
 		t.Errorf("vouched %v (%v), want only the final manifest", vouched, err)
 	}
 	// The chain key the approved export wrote is untouched.
-	key, _ := os.ReadFile(filepath.Join(chainWorkspace(context.Background(), f.tEnv, exportChainID), chainKeyFile))
+	key, _ := os.ReadFile(chainKeyPath(f.tEnv, exportChainID))
 	if string(key) != f.dataKey {
 		t.Errorf("chain.key changed to %q", key)
 	}

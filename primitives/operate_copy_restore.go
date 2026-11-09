@@ -97,7 +97,7 @@ func copyRestoreArgs(ctx context.Context, env *ExecEnv, params Params) ([]string
 
 	chainID := params.String("chain_id")
 	work := chainWorkspace(ctx, env, chainID)
-	if err := requireChainFiles(work,
+	if err := requireChainFiles(work, haveChainKey(env, chainID),
 		"a copy's chain is downloaded under its source's name, and its data key opened from the source's sealed export"); err != nil {
 		return nil, err
 	}
@@ -112,7 +112,7 @@ func copyRestoreArgs(ctx context.Context, env *ExecEnv, params Params) ([]string
 	argv := []string{
 		project,
 		"--artifacts", work,
-		"--key-file", filepath.Join(work, chainKeyFile),
+		"--key-file", chainKeyPath(env, chainID),
 		"--force",
 		"--adopt-secret-key",
 		"--skip-ssl",

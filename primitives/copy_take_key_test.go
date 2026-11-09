@@ -213,7 +213,7 @@ func TestCopyTakeKeyWritesWhatCopyImportWould(t *testing.T) {
 	if out["chain_id"] != exportChainID || out["stored_time"] != "2026-10-01T03:20:00Z" {
 		t.Errorf("result %v", out)
 	}
-	key, err := os.ReadFile(filepath.Join(chainWorkspace(ctx, f.tEnv, exportChainID), chainKeyFile))
+	key, err := os.ReadFile(chainKeyPath(f.tEnv, exportChainID))
 	if err != nil || string(key) != r.dataKey {
 		t.Errorf("chain.key holds %q, %v", key, err)
 	}

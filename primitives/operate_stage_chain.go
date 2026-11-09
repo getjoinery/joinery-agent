@@ -105,6 +105,8 @@ func init() {
 			ScriptPath:  "public_html/utils/stage_chain.php",
 			Args:        nil,
 			StdinFrom:   stageChainConfig,
+			// It writes only into backups/, the web user's folder (chainkey.go).
+			AsSiteUser: true,
 		},
 		// A chain is a full plus every incremental, so this is the largest
 		// transfer in the vocabulary — more than one archive, each of them

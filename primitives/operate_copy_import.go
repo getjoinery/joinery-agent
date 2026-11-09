@@ -169,12 +169,7 @@ func copyImportRun(ctx context.Context, env *ExecEnv, params Params) (map[string
 	var vouch strings.Builder
 	var chains []string
 	for _, c := range payload.Chains {
-		work := chainWorkspace(ctx, env, c.ChainID)
-		if err := os.MkdirAll(work, 0o700); err != nil {
-			return nil, fmt.Errorf("could not make chain %s's workspace: %w", c.ChainID, err)
-		}
-		_ = os.Chmod(work, 0o700)
-		if err := writeFileAtomic(filepath.Join(work, chainKeyFile), []byte(c.DataKey), 0o600); err != nil {
+		if err := writeChainKey(ctx, env, c.ChainID, []byte(c.DataKey)); err != nil {
 			return nil, fmt.Errorf("could not write chain %s's key: %w", c.ChainID, err)
 		}
 		for _, m := range c.Manifests {

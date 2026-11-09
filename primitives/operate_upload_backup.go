@@ -106,6 +106,9 @@ func init() {
 		Script: &ScriptSpec{
 			Interpreter: "/usr/bin/php",
 			ScriptPath:  "public_html/utils/upload_backup.php",
+			// It works only in backups/ and the site's own folders, all the web
+			// user's (chainkey.go), so it never runs as root.
+			AsSiteUser: true,
 			// No arguments at all. run_backup.php carries --profile=manager and
 			// its header explains why argv is dangerous; this script needs
 			// nothing there, so `ps` on a node discloses that an upload is

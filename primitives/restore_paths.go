@@ -143,8 +143,9 @@ func resolveBackupFile(ctx context.Context, env *ExecEnv, params Params, suffixe
 // same checks before the operator is shown anything. An approval screen for a
 // restore that would refuse the instant it was approved is worse than no screen:
 // it spends the one moment of the operator's attention this design gets.
-func requireStagedChain(env *ExecEnv, work string) error {
-	if err := requireChainFiles(work, stageChainDoes); err != nil {
+func requireStagedChain(ctx context.Context, env *ExecEnv, chainID, work string) error {
+	haveKey := haveChainKey(env, chainID) || workspaceHasKey(ctx, env, chainID)
+	if err := requireChainFiles(work, haveKey, stageChainDoes); err != nil {
 		return err
 	}
 	return requireLedgeredManifest(env, work)
@@ -208,20 +209,20 @@ func requireLedgeredManifest(env *ExecEnv, work string) error {
 	return noRecord
 }
 
-// requireChainFiles refuses unless a chain workspace holds the two things
-// staging leaves behind: the manifest and the recovered data key. Shared by
+// requireChainFiles refuses unless a chain workspace holds its manifest and
+// the chain's data key is held (haveKey: root's own copy, or for a chain
+// staged with this machine's key, the workspace's; chainkey.go). Shared by
 // restore_chain and copy_restore, which stage differently (stagedBy says how)
 // and then trust the manifest for different reasons: this machine's upload
 // ledger, or its source's vouch (operate_copy_restore.go).
-func requireChainFiles(work, stagedBy string) error {
+func requireChainFiles(work string, haveKey bool, stagedBy string) error {
 	manifest := filepath.Join(work, chainManifestFile)
 	if info, err := os.Stat(manifest); err != nil || !info.Mode().IsRegular() {
 		return refusedf("this node has no downloaded chain at %s: %s is missing. "+
 			"Stage the chain first (%s)", work, chainManifestFile, stagedBy)
 	}
 
-	key := filepath.Join(work, chainKeyFile)
-	if info, err := os.Stat(key); err != nil || !info.Mode().IsRegular() {
+	if !haveKey {
 		return refusedf("the chain at %s has no recovered data key (%s). "+
 			"It is recovered on this node when the chain is staged (%s). "+
 			"No key may be sent to it: a key on the wire is a key in every stored job",

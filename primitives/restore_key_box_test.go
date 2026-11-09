@@ -143,11 +143,11 @@ func TestAChainAnotherServerMadeIsApprovedWithItsKeyOpened(t *testing.T) {
 	if err := st.KeyBox.Open(c.share(t, c.recoveryPriv), c.recoveryPub); err != nil {
 		t.Fatalf("the recovery key's value did not open the box: %v", err)
 	}
-	key, err := os.ReadFile(filepath.Join(c.work, chainKeyFile))
+	key, err := os.ReadFile(chainKeyPath(c.env, "chain-20260807_231507"))
 	if err != nil || string(key) != c.dataKey {
 		t.Fatalf("chain.key is %q (%v), want the chain's data key", key, err)
 	}
-	if info, _ := os.Stat(filepath.Join(c.work, chainKeyFile)); info == nil || info.Mode().Perm() != 0o600 {
+	if info, _ := os.Stat(chainKeyPath(c.env, "chain-20260807_231507")); info == nil || info.Mode().Perm() != 0o600 {
 		t.Error("chain.key is not 0600")
 	}
 	if _, err := chainArgs(t, c.env, validRestoreParams("restore_chain")); err != nil {
@@ -170,7 +170,7 @@ func TestAKeyBoxOpensOnlyWithTheKeyItIsSealedTo(t *testing.T) {
 	if err := st.KeyBox.Open(random, c.recoveryPub); err == nil {
 		t.Error("a value that is not the recovery key's opened the box")
 	}
-	if _, err := os.Stat(filepath.Join(c.work, chainKeyFile)); !os.IsNotExist(err) {
+	if _, err := os.Stat(chainKeyPath(c.env, "chain-20260807_231507")); !os.IsNotExist(err) {
 		t.Error("a refused answer left a key behind")
 	}
 }

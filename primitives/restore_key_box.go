@@ -23,6 +23,7 @@ package primitives
 // agent, never through the plane, and it opens this box and nothing else.
 
 import (
+	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
@@ -38,9 +39,8 @@ import (
 // chainKeyBox is the approval's key box for a staged chain with no key: its
 // manifest's box sealed to the recovery key. Nil when the workspace holds the
 // chain's key already (staged with this machine's own key).
-func chainKeyBox(work string) (*ApprovalKeyBox, error) {
-	keyPath := filepath.Join(work, chainKeyFile)
-	if info, err := os.Stat(keyPath); err == nil && info.Mode().IsRegular() {
+func chainKeyBox(ctx context.Context, env *ExecEnv, chainID, work string) (*ApprovalKeyBox, error) {
+	if haveChainKey(env, chainID) || workspaceHasKey(ctx, env, chainID) {
 		return nil, nil
 	}
 	body, err := os.ReadFile(filepath.Join(work, chainManifestFile))
@@ -91,7 +91,7 @@ func chainKeyBox(work string) (*ApprovalKeyBox, error) {
 				if len(dataKey) == 0 || len(dataKey) > 1024 || strings.ContainsAny(string(dataKey), "\n\r") {
 					return errors.New("what the recovery key opened is not a chain key")
 				}
-				if err := writeFileAtomic(keyPath, dataKey, 0o600); err != nil {
+				if err := writeChainKey(ctx, env, chainID, dataKey); err != nil {
 					return fmt.Errorf("could not keep the chain's key: %w", err)
 				}
 				return nil

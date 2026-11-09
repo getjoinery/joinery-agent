@@ -2,7 +2,6 @@ package primitives
 
 import (
 	"context"
-	"path/filepath"
 	"regexp"
 	"time"
 )
@@ -111,10 +110,13 @@ func restoreChainArgs(ctx context.Context, env *ExecEnv, params Params) ([]strin
 	// names what is missing instead of arriving as restore_chain.sh's
 	// "--key-file is required" — which is true, and tells an operator nothing
 	// about why.
-	if err := requireStagedChain(env, work); err != nil {
+	if err := requireStagedChain(ctx, env, chainID, work); err != nil {
 		return nil, err
 	}
-	key := filepath.Join(work, chainKeyFile)
+	key, err := restoreKeyFile(ctx, env, chainID)
+	if err != nil {
+		return nil, refusedf("chain %s's data key could not be taken into root's keeping: %v", chainID, err)
+	}
 
 	// This machine's own project, cross-checked against the one the job names.
 	// See restoreChainProject: the value is a database name as well as a

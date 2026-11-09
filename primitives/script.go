@@ -18,6 +18,7 @@ import (
 	"os/exec"
 	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -87,6 +88,13 @@ type ScriptSpec struct {
 	// element it returns goes to the kernel as a list element. There is still
 	// no shell, and script.go is still the only file that may start a process.
 	ArgsFrom func(ctx context.Context, env *ExecEnv, params Params) ([]string, error)
+
+	// AsSiteUser runs the script as the site's web user (siteUserName) instead
+	// of root. Set on a script whose whole job is writing into a folder that
+	// user owns, such as a chain download into backups/: there root would be
+	// writing where the web user can plant links, and nothing in the job needs
+	// root. On an agent not running as root (tests) it has no effect.
+	AsSiteUser bool
 
 	// Redact runs the node's redactor over this script's output before it is
 	// returned, the way site_log runs it over a log tail.
@@ -229,6 +237,15 @@ func runScriptPrimitive(ctx context.Context, env *ExecEnv, p Primitive, params P
 	// delay bounds that wait so a runaway costs the job seconds, not the
 	// primitive's whole timeout a second time.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	siteHome := ""
+	if p.Script.AsSiteUser && os.Geteuid() == 0 {
+		cred, home, err := siteUserCredential()
+		if err != nil {
+			return nil, refusedf("primitive %q runs as the site's web user, and %v", p.Name, err)
+		}
+		cmd.SysProcAttr.Credential = cred
+		siteHome = home
+	}
 	cmd.Cancel = func() error {
 		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	}
@@ -267,6 +284,10 @@ func runScriptPrimitive(ctx context.Context, env *ExecEnv, p Primitive, params P
 	// property of the account this process runs as, and nothing on the wire can
 	// influence it.
 	cmd.Env = EnvWithHome(os.Environ())
+	if siteHome != "" {
+		// A HOME the site user cannot read is a trap for anything it starts.
+		cmd.Env = withEnv(cmd.Env, "HOME", siteHome)
+	}
 
 	var out bytes.Buffer
 	cmd.Stdout = &out
@@ -421,4 +442,38 @@ func EnvWithHome(env []string) []string {
 		home = u.HomeDir
 	}
 	return append(env, "HOME="+home)
+}
+
+// siteUserName is the site's web user, the one the host converger hands the
+// site's data folders to.
+const siteUserName = "www-data"
+
+// siteUserCredential is siteUserName's uid and gid, with no other groups,
+// and its home directory.
+func siteUserCredential() (*syscall.Credential, string, error) {
+	u, err := user.Lookup(siteUserName)
+	if err != nil {
+		return nil, "", fmt.Errorf("this machine has no %s account: %v", siteUserName, err)
+	}
+	uid, err1 := strconv.ParseUint(u.Uid, 10, 32)
+	gid, err2 := strconv.ParseUint(u.Gid, 10, 32)
+	if err1 != nil || err2 != nil || uid == 0 {
+		return nil, "", fmt.Errorf("the %s account's ids (%s:%s) are not usable", siteUserName, u.Uid, u.Gid)
+	}
+	home := u.HomeDir
+	if home == "" {
+		home = "/"
+	}
+	return &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid), Groups: []uint32{}}, home, nil
+}
+
+// withEnv sets name=value in env, replacing any earlier entry.
+func withEnv(env []string, name, value string) []string {
+	out := make([]string, 0, len(env)+1)
+	for _, e := range env {
+		if !strings.HasPrefix(e, name+"=") {
+			out = append(out, e)
+		}
+	}
+	return append(out, name+"="+value)
 }
