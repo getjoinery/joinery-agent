@@ -227,6 +227,11 @@ var pinnedVocabulary = map[string]Class{
 	// Operate: it adds a quiet site, and refuses a name the host already has.
 	"site_install": ClassOperate,
 
+	// One new live site installed as a container on this host, from a verified
+	// release, its admin password on stdin (specs/starter_tier.md step 3).
+	// Operate: it adds a site, and refuses a name the host already has.
+	"site_create": ClassOperate,
+
 	// The host's half of a site container's quiet state, held from outside
 	// (specs/site_container_engine.md D9). Operate: off puts the network back,
 	// and is refused while the site says it is quiet.
