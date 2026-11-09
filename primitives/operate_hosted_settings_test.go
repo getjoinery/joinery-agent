@@ -51,20 +51,20 @@ func TestTheGeneralSettingsWriterIsGone(t *testing.T) {
 	}
 }
 
-func TestMailSettingsCarryEightValuesAndNoMore(t *testing.T) {
+func TestMailSettingsCarryNineValuesAndNoMore(t *testing.T) {
 	p, _ := Lookup("hosted_mail_settings")
 	declared := map[string]ParamSpec{}
 	for _, s := range p.Params {
 		declared[s.Name] = s
 	}
 	for _, want := range []string{"service", "host", "port", "username", "password",
-		"sender", "helo", "hostname"} {
+		"sender", "helo", "hostname", "test_recipient"} {
 		if _, ok := declared[want]; !ok {
 			t.Errorf("hosted_mail_settings should declare %q", want)
 		}
 	}
-	if len(declared) != 8 {
-		t.Errorf("it should declare exactly eight values, it declares %d", len(declared))
+	if len(declared) != 9 {
+		t.Errorf("it should declare exactly nine values, it declares %d", len(declared))
 	}
 	if p.Class != ClassOperate {
 		t.Errorf("writing settings changes state; it is operate, not %q", p.Class)
@@ -149,8 +149,8 @@ func TestEveryMailValueIsEmittedSoAnOmittedOneClears(t *testing.T) {
 	if err := json.Unmarshal([]byte(body), &decoded); err != nil {
 		t.Fatal(err)
 	}
-	if len(decoded) != 8 {
-		t.Errorf("all eight keys should be emitted every time, got %v", decoded)
+	if len(decoded) != 9 {
+		t.Errorf("all nine keys should be emitted every time, got %v", decoded)
 	}
 	for key, value := range decoded {
 		if value != "" {
@@ -161,6 +161,21 @@ func TestEveryMailValueIsEmittedSoAnOmittedOneClears(t *testing.T) {
 	// and writing it would be a configuration that looks set and is not.
 	if decoded["port"] != "" {
 		t.Errorf("an absent port should clear, not write %q", decoded["port"])
+	}
+}
+
+func TestATestSiteTrapIsAnAddressAndNothingElse(t *testing.T) {
+	for _, good := range []string{"joineryemailtests@dev.getjoinery.com", ""} {
+		if _, err := hostedParams(t, "hosted_mail_settings",
+			map[string]interface{}{"test_recipient": good}); err != nil {
+			t.Errorf("trap %q should be accepted: %v", good, err)
+		}
+	}
+	for _, bad := range []string{"not an address", "a@b.com, c@d.com", "a@b.com\nBcc: c@d.com", "<a@b.com>"} {
+		if _, err := hostedParams(t, "hosted_mail_settings",
+			map[string]interface{}{"test_recipient": bad}); err == nil {
+			t.Errorf("trap %q should be refused", bad)
+		}
 	}
 }
 

@@ -14,7 +14,7 @@ import (
 // Its operator creates a subaccount and one SMTP user inside it, and hands that
 // user's name and password to the box. These are the values that arrive.
 //
-// THE NINE SETTING NAMES ARE COMPILED INTO THE NODE-SIDE SCRIPT, NOT SENT. Same
+// THE SETTING NAMES ARE COMPILED INTO THE NODE-SIDE SCRIPT, NOT SENT. Same
 // shape as managed_domain_notice and fleet_enroll, and pinned here for a reason
 // worth stating plainly: a primitive that took a NAME and a value would let
 // whatever is on the other end of this channel write any row in stg_settings —
@@ -22,7 +22,15 @@ import (
 // outbound mail can be redirected is a site whose password-reset emails can be
 // redirected. The plane can say what this site's SMTP password is. It cannot
 // say that the value it is sending is an SMTP password rather than something
-// else, and it cannot reach a tenth setting by naming one.
+// else, and it cannot reach another setting by naming one.
+//
+// ONE VALUE IS FOR TEST SITES ONLY: test_recipient. A plane that builds sites
+// in a test cloud account to rehearse a purchase sends every one of that
+// site's emails to a mailbox of its own, through the site's email test mode,
+// instead of to the people the mail names. It reaches no power the plane did
+// not already hold: the plane names the SMTP host this site sends through.
+// Empty is the value every other site is sent, and the node-side script leaves
+// the site's own test-mode settings alone on an empty one.
 //
 // It is also why there is no general settings writer on this channel. One was
 // built and removed: with the mail values carried here and the hosting banner
@@ -36,7 +44,7 @@ func init() {
 	Register(Primitive{
 		Name:        "hosted_mail_settings",
 		Class:       ClassOperate,
-		Description: "Set this site's outbound SMTP credentials (nine fixed settings; the names are not on the wire).",
+		Description: "Set this site's outbound SMTP credentials (fixed settings; the names are not on the wire), and for a test site the mailbox its mail is trapped to.",
 		Params: []ParamSpec{
 			// Which provider the site sends through. An enum, not free text:
 			// the platform's own vocabulary, and the only value the hosted tier
@@ -59,6 +67,10 @@ func init() {
 			{Name: "sender", Type: ParamString, MaxLen: 253, Pattern: mailSenderPattern},
 			{Name: "helo", Type: ParamString, MaxLen: 253, Pattern: mailHostPattern},
 			{Name: "hostname", Type: ParamString, MaxLen: 253, Pattern: mailHostPattern},
+
+			// A test site's trap: the one address all of its mail goes to.
+			// An address or nothing.
+			{Name: "test_recipient", Type: ParamString, MaxLen: 254, Pattern: mailSenderPattern},
 		},
 		Script: &ScriptSpec{
 			Interpreter: "/usr/bin/php",
@@ -78,7 +90,7 @@ func init() {
 	})
 }
 
-// hostedMailSettingsScript owns the nine setting names.
+// hostedMailSettingsScript owns the setting names.
 const hostedMailSettingsScript = "public_html/utils/hosted_mail_settings.php"
 
 var (
@@ -92,19 +104,20 @@ var (
 	mailHostPattern = regexp.MustCompile(`^(([A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?\.)*[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)?$`)
 	// An SMTP username as providers mint them, plus the address form some use.
 	mailUserPattern = regexp.MustCompile(`^[A-Za-z0-9._@+-]*$`)
-	// A bounce address: a local part at a hostname.
+	// An address (a bounce address, a test site's trap): a local part at a hostname.
 	mailSenderPattern = regexp.MustCompile(`^([A-Za-z0-9._+-]+@[A-Za-z0-9.-]+)?$`)
 	// A password: printable, one line. Deliberately permissive about content —
 	// a provider mints what it likes — and strict about it being one value.
 	mailSecretPattern = regexp.MustCompile(`^[\x20-\x7e]*$`)
 )
 
-// hostedMailSettingsPayload renders the eight values as one object. (The site
-// writes nine settings: smtp_auth is derived there from whether a username was
-// supplied, because that is not a judgement the wire needs to carry.)
+// hostedMailSettingsPayload renders the nine values as one object. (The site
+// derives smtp_auth from whether a username was supplied, and email_test_mode
+// from whether a trap was, because neither is a judgement the wire needs to
+// carry.)
 //
 // This is the ONLY place that object is composed on this node, and it composes
-// it from a fixed set of keys: the plane cannot add a ninth by sending one. Each
+// it from a fixed set of keys: the plane cannot add a tenth by sending one. Each
 // key is emitted every time, so a value the plane stopped sending is CLEARED
 // rather than left standing — which is what makes a REPLACEMENT credential
 // fully supersede the one before it. It is not a way to hand a site back: the
@@ -120,6 +133,8 @@ func hostedMailSettingsPayload(params Params) (string, error) {
 		"sender":   params.String("sender"),
 		"helo":     params.String("helo"),
 		"hostname": params.String("hostname"),
+
+		"test_recipient": params.String("test_recipient"),
 	})
 	if err != nil {
 		return "", err
