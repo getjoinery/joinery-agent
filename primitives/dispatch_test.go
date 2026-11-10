@@ -227,10 +227,25 @@ func TestCheckStatusCollectsWithoutADatabase(t *testing.T) {
 	total := parseSize(t, result["disk_total"].(string))
 	used := parseSize(t, result["disk_used"].(string))
 	avail := parseSize(t, result["disk_available"].(string))
-	if diff := total - (used + avail); diff > total/100 || diff < -total/100 {
+	// Each figure is printed to one decimal of its own unit, so each can be
+	// off by 0.05 of that unit and the sum by all three together. A flat 1% of
+	// the total is tighter than that on a small filesystem (the 7.5G temp
+	// filesystem this test runs on: 5.0G + 2.4G against 7.5G), so the allowance
+	// is the rounding itself.
+	slack := 0.05*sizeUnit(t, result["disk_total"].(string)) +
+		0.05*sizeUnit(t, result["disk_used"].(string)) +
+		0.05*sizeUnit(t, result["disk_available"].(string))
+	slack *= 1.01 // float noise at the exact boundary
+	if diff := total - (used + avail); diff > slack || diff < -slack {
 		t.Errorf("disk_used (%v) + disk_available (%v) does not add up to disk_total (%v)",
 			result["disk_used"], result["disk_available"], result["disk_total"])
 	}
+}
+
+// sizeUnit is the unit a df-style size was printed in, in bytes.
+func sizeUnit(t *testing.T, s string) float64 {
+	t.Helper()
+	return parseSize(t, "1"+s[len(s)-1:])
 }
 
 // parseSize reads back the df-style sizes the collector emits.
