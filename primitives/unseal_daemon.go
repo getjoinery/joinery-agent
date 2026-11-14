@@ -103,7 +103,7 @@ func unsealDaemonFacts(env *ExecEnv) (string, int) {
 	if b, _ := os.ReadFile(state + "/binary"); strings.TrimSpace(string(b)) == "previous" {
 		return "previous", crashes
 	}
-	pid := unsealDaemonPid(socket)
+	pid := unsealDaemonPid(socket, "/var/lib/joinery-unseal/"+key+"/active")
 	if pid == "" {
 		if lastEvent >= now-60 && recent < 3 {
 			return "restarting", crashes
@@ -117,15 +117,25 @@ func unsealDaemonFacts(env *ExecEnv) (string, int) {
 }
 
 // unsealDaemonPid finds the process whose command line names --socket SOCKET.
-func unsealDaemonPid(socket string) string {
+// unsealDaemonPid finds the daemon by its command line: started as program
+// (its state folder's active link, under systemd and the container keepalive
+// alike) with --socket socket. In a container runuser stays alive as its
+// parent with the same arguments; matching the program name is what keeps
+// that parent, whose memory is never locked, from being read as the daemon.
+func unsealDaemonPid(socket, program string) string {
 	want := []byte("--socket\x00" + socket + "\x00")
+	prog := []byte(program + "\x00")
 	entries, _ := os.ReadDir(unsealProcRoot)
 	for _, e := range entries {
 		if _, err := strconv.Atoi(e.Name()); err != nil {
 			continue
 		}
 		cmd, err := os.ReadFile(filepath.Join(unsealProcRoot, e.Name(), "cmdline"))
-		if err == nil && bytes.Contains(append(cmd, 0), want) {
+		if err != nil {
+			continue
+		}
+		cmd = append(cmd, 0)
+		if bytes.HasPrefix(cmd, prog) && bytes.Contains(cmd, want) {
 			return e.Name()
 		}
 	}

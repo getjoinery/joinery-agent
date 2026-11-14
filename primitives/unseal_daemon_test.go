@@ -68,6 +68,13 @@ func TestUnsealDaemonReport(t *testing.T) {
 	want("unlocked")
 	os.WriteFile(proc+"/4242/status", []byte("Name:\tactive\nVmLck:\t    4096 kB\n"), 0o644)
 	want("running")
+	// A container's keepalive leaves runuser alive as the daemon's parent, with
+	// the same arguments and a lower pid; its memory is never locked, and it is
+	// not the daemon.
+	os.MkdirAll(proc+"/4241", 0o755)
+	os.WriteFile(proc+"/4241/cmdline", []byte("runuser\x00-u\x00joinery-unseal\x00--\x00/var/lib/joinery-unseal/site1/active\x00--socket\x00/run/joinery-unseal/site1/unseal.sock\x00--allow-uid\x0033\x00"), 0o644)
+	os.WriteFile(proc+"/4241/status", []byte("Name:\trunuser\nVmLck:\t       0 kB\n"), 0o644)
+	want("running")
 	if _, crashes := unsealDaemonFacts(env); crashes != 1 {
 		t.Fatalf("crashes in the last hour: %d", crashes)
 	}

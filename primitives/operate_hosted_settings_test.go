@@ -51,20 +51,20 @@ func TestTheGeneralSettingsWriterIsGone(t *testing.T) {
 	}
 }
 
-func TestMailSettingsCarryNineValuesAndNoMore(t *testing.T) {
+func TestMailSettingsCarryTenValuesAndNoMore(t *testing.T) {
 	p, _ := Lookup("hosted_mail_settings")
 	declared := map[string]ParamSpec{}
 	for _, s := range p.Params {
 		declared[s.Name] = s
 	}
 	for _, want := range []string{"service", "host", "port", "username", "password",
-		"sender", "helo", "hostname", "test_recipient"} {
+		"sender", "helo", "hostname", "test_recipient", "dkim_key_name"} {
 		if _, ok := declared[want]; !ok {
 			t.Errorf("hosted_mail_settings should declare %q", want)
 		}
 	}
-	if len(declared) != 9 {
-		t.Errorf("it should declare exactly nine values, it declares %d", len(declared))
+	if len(declared) != 10 {
+		t.Errorf("it should declare exactly ten values, it declares %d", len(declared))
 	}
 	if p.Class != ClassOperate {
 		t.Errorf("writing settings changes state; it is operate, not %q", p.Class)
@@ -149,8 +149,8 @@ func TestEveryMailValueIsEmittedSoAnOmittedOneClears(t *testing.T) {
 	if err := json.Unmarshal([]byte(body), &decoded); err != nil {
 		t.Fatal(err)
 	}
-	if len(decoded) != 9 {
-		t.Errorf("all nine keys should be emitted every time, got %v", decoded)
+	if len(decoded) != 10 {
+		t.Errorf("all ten keys should be emitted every time, got %v", decoded)
 	}
 	for key, value := range decoded {
 		if value != "" {
@@ -175,6 +175,21 @@ func TestATestSiteTrapIsAnAddressAndNothingElse(t *testing.T) {
 		if _, err := hostedParams(t, "hosted_mail_settings",
 			map[string]interface{}{"test_recipient": bad}); err == nil {
 			t.Errorf("trap %q should be refused", bad)
+		}
+	}
+}
+
+func TestADkimKeyNameIsOneLabelAndNothingElse(t *testing.T) {
+	for _, good := range []string{"s1217236", "mx-2026", ""} {
+		if _, err := hostedParams(t, "hosted_mail_settings",
+			map[string]interface{}{"dkim_key_name": good}); err != nil {
+			t.Errorf("key name %q should be accepted: %v", good, err)
+		}
+	}
+	for _, bad := range []string{"s1._domainkey", "a b", "-x", "x\ny", "x.example.com"} {
+		if _, err := hostedParams(t, "hosted_mail_settings",
+			map[string]interface{}{"dkim_key_name": bad}); err == nil {
+			t.Errorf("key name %q should be refused", bad)
 		}
 	}
 }

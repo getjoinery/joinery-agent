@@ -71,6 +71,10 @@ func init() {
 			// A test site's trap: the one address all of its mail goes to.
 			// An address or nothing.
 			{Name: "test_recipient", Type: ParamString, MaxLen: 254, Pattern: mailSenderPattern},
+
+			// The DKIM key name (selector) the provider signs this site's mail
+			// with, for the site's mail check: one DNS label, or nothing.
+			{Name: "dkim_key_name", Type: ParamString, MaxLen: 63, Pattern: mailKeyNamePattern},
 		},
 		Script: &ScriptSpec{
 			Interpreter: "/usr/bin/php",
@@ -84,7 +88,7 @@ func init() {
 
 			StdinFrom: hostedMailSettingsPayload,
 		},
-		// Nine upserts. A minute is a ceiling on a wedged process; well under
+		// Ten upserts. A minute is a ceiling on a wedged process; well under
 		// the plane's claim floor, so no PRIMITIVE_CLAIM_BUDGETS entry.
 		Timeout: 1 * time.Minute,
 	})
@@ -106,18 +110,20 @@ var (
 	mailUserPattern = regexp.MustCompile(`^[A-Za-z0-9._@+-]*$`)
 	// An address (a bounce address, a test site's trap): a local part at a hostname.
 	mailSenderPattern = regexp.MustCompile(`^([A-Za-z0-9._+-]+@[A-Za-z0-9.-]+)?$`)
+	// A DKIM key name: one DNS label, or nothing.
+	mailKeyNamePattern = regexp.MustCompile(`^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)?$`)
 	// A password: printable, one line. Deliberately permissive about content —
 	// a provider mints what it likes — and strict about it being one value.
 	mailSecretPattern = regexp.MustCompile(`^[\x20-\x7e]*$`)
 )
 
-// hostedMailSettingsPayload renders the nine values as one object. (The site
+// hostedMailSettingsPayload renders the ten values as one object. (The site
 // derives smtp_auth from whether a username was supplied, and email_test_mode
 // from whether a trap was, because neither is a judgement the wire needs to
 // carry.)
 //
 // This is the ONLY place that object is composed on this node, and it composes
-// it from a fixed set of keys: the plane cannot add a tenth by sending one. Each
+// it from a fixed set of keys: the plane cannot add an eleventh by sending one. Each
 // key is emitted every time, so a value the plane stopped sending is CLEARED
 // rather than left standing — which is what makes a REPLACEMENT credential
 // fully supersede the one before it. It is not a way to hand a site back: the
@@ -135,6 +141,7 @@ func hostedMailSettingsPayload(params Params) (string, error) {
 		"hostname": params.String("hostname"),
 
 		"test_recipient": params.String("test_recipient"),
+		"dkim_key_name":  params.String("dkim_key_name"),
 	})
 	if err != nil {
 		return "", err
