@@ -9,14 +9,14 @@ import (
 )
 
 // The four words of specs/agent_recipes_and_vocabulary.md's running list
-// (listening_sockets, reboot_machine, spam_learning_status,
+// (listening_sockets, reboot_machine, mailbox_status,
 // container_inventory), relay_status, and check_status's
 // plugin list. Each review rests on the same things: the word cannot be
 // pointed anywhere, it runs the one script it names, and its class is the one
 // the review argued for.
 
 func TestRunningListWordsAskForNothing(t *testing.T) {
-	for _, name := range []string{"listening_sockets", "reboot_machine", "spam_learning_status", "container_inventory", "relay_status"} {
+	for _, name := range []string{"listening_sockets", "reboot_machine", "container_inventory", "relay_status"} {
 		p, ok := Lookup(name)
 		if !ok {
 			t.Fatalf("%s should be registered", name)
@@ -57,7 +57,7 @@ func TestRunningListWordsRunTheirOwnScripts(t *testing.T) {
 		"listening_sockets":    {listeningSocketsScript, "/bin/bash", ClassObserve, true},
 		"container_inventory":  {containerInventoryScript, "/bin/bash", ClassObserve, true},
 		"reboot_machine":       {rebootMachineScript, "/bin/bash", ClassOperate, true},
-		"spam_learning_status": {spamLearningStatusScript, "/usr/bin/php", ClassObserve, false},
+		"mailbox_status":       {mailboxStatusScript, "/usr/bin/php", ClassObserve, false},
 		"relay_status":         {relayStatusScript, "/usr/bin/php", ClassObserve, false},
 	} {
 		p, _ := Lookup(name)
@@ -191,5 +191,71 @@ func TestWebWorkersPassesOnlyTheSitesOwnHostName(t *testing.T) {
 	}
 	if got, _ := webWorkersArgs(ctx, nil, Params{}); len(got) != 0 {
 		t.Errorf("no environment, no argument; got %q", got)
+	}
+}
+
+// mailbox_status takes one parameter, a domain of the site's own, and nothing
+// else: the shape is checked here, the hosted-domain check is the script's.
+func TestMailboxStatusTakesOnlyADomain(t *testing.T) {
+	p, ok := Lookup("mailbox_status")
+	if !ok {
+		t.Fatal("mailbox_status should be registered")
+	}
+	if len(p.Params) != 1 || p.Params[0].Name != "domain" || p.Params[0].Required {
+		t.Fatalf("mailbox_status declares %+v; want one optional domain", p.Params)
+	}
+	if _, err := Validate(p.Params, nil); err != nil {
+		t.Errorf("no domain is the spam-learning answer: %v", err)
+	}
+	if _, err := Validate(p.Params, map[string]interface{}{"domain": "example.com"}); err != nil {
+		t.Errorf("a domain name is accepted: %v", err)
+	}
+	for _, bad := range []string{"Example.com", "example", "-rf /", "a.b.c/../x", "example.com; id", "example.com\nx"} {
+		if _, err := Validate(p.Params, map[string]interface{}{"domain": bad}); err == nil {
+			t.Errorf("domain %q must be refused", bad)
+		}
+	}
+	if _, err := Validate(p.Params, map[string]interface{}{"domain": "example.com", "path": "/etc"}); err == nil {
+		t.Error("a job carrying anything beside the domain must be refused")
+	}
+	if !p.Script.AsSiteUser {
+		t.Error("mailbox_status runs as the web user, so file-readability rows match the Setup tab")
+	}
+	if len(p.Script.Args) != 1 || p.Script.Args[0] != "{domain}" || p.Script.ArgsFrom != nil || p.Script.StdinFrom != nil {
+		t.Error("the domain is the one argument; no stdin")
+	}
+	if p.RequiresLogAccess {
+		t.Error("mailbox_status reads no log; it must not sit behind the owner's log switch")
+	}
+}
+
+// mail_test_send takes one required domain and nothing else, runs as the web
+// user, and is an operate word: it sends mail.
+func TestMailTestSendTakesOnlyADomain(t *testing.T) {
+	p, ok := Lookup("mail_test_send")
+	if !ok {
+		t.Fatal("mail_test_send should be registered")
+	}
+	if p.Class != ClassOperate {
+		t.Errorf("mail_test_send is %q; it sends mail, so it is operate", p.Class)
+	}
+	if len(p.Params) != 1 || p.Params[0].Name != "domain" || !p.Params[0].Required {
+		t.Fatalf("mail_test_send declares %+v; want one required domain", p.Params)
+	}
+	if _, err := Validate(p.Params, nil); err == nil {
+		t.Error("a job with no domain must be refused")
+	}
+	for _, bad := range []string{"Example.com", "a@example.com", "example.com -x", "x"} {
+		if _, err := Validate(p.Params, map[string]interface{}{"domain": bad}); err == nil {
+			t.Errorf("domain %q must be refused", bad)
+		}
+	}
+	for _, key := range []string{"to", "from", "subject", "body"} {
+		if _, err := Validate(p.Params, map[string]interface{}{"domain": "example.com", key: "x"}); err == nil {
+			t.Errorf("a job carrying %q must be refused: the message is compiled", key)
+		}
+	}
+	if p.Script == nil || p.Script.ScriptPath != mailTestSendScript || !p.Script.AsSiteUser || p.Script.StdinFrom != nil {
+		t.Error("mail_test_send runs its one script as the web user, with no stdin")
 	}
 }

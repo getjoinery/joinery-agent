@@ -140,3 +140,115 @@ func TestSiteLogCountParsesApacheTimes(t *testing.T) {
 		t.Error("a trace line has no time")
 	}
 }
+
+func cronLine(t time.Time, msg string) string {
+	return "[" + t.UTC().Format("2006-01-02 15:04:05") + "] " + msg + "\n"
+}
+
+// A send or a DNS publish run from cron writes its error_log() line to the
+// runner's stderr, which the cron entry appends to cron_scheduled_tasks.log,
+// bare and untimed. Those lines count, at the time of the runner line before
+// them, and a cron log that does not reach since makes the answer uncovered.
+func TestSiteLogCountReadsTheScheduledTaskLog(t *testing.T) {
+	env := siteLogEnv(t, "on")
+	loc := time.UTC
+	since := time.Date(2026, 11, 14, 17, 0, 0, 0, loc)
+	writeLog(t, env, "error.log", apacheLine(since.Add(-time.Minute), "x")+
+		apacheLine(since.Add(time.Minute), "PHP message: AuthoritativeDns: fallback to system resolver for example.com: CNAME answer"))
+	writeLog(t, env, "cron_scheduled_tasks.log",
+		cronLine(since.Add(-2*time.Minute), "Running task: Send queued campaigns (SendCampaigns)")+
+			"MailboxDkimSigner: relay-fronted send for example.com leaving UNSIGNED — DKIM key missing\n"+
+			cronLine(since.Add(2*time.Minute), "Running task: Send queued campaigns (SendCampaigns)")+
+			"MailboxDkimSigner: relay-fronted send for example.com leaving UNSIGNED — DKIM key missing\n"+
+			"DnsReconciler: record failed: create TXT _dmarc.example.com in example.com (RuntimeException)\n")
+
+	res, err := siteLogCount(context.Background(), env, since, loc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res["covers_since"] != true {
+		t.Fatalf("both logs reach before since: %v", res["not_covered"])
+	}
+	if c := marker(res, "dkim_unsigned")["count"]; c != 1 {
+		t.Errorf("only the unsigned line after since counts, at its runner line's time; got %v", c)
+	}
+	if c := marker(res, "dns_reconciler_failed")["count"]; c != 1 {
+		t.Errorf("the reconciler's failed record counts from the cron log, got %v", c)
+	}
+	if c := marker(res, "authoritative_dns_fallback")["count"]; c != 1 {
+		t.Errorf("the fallback line in the error log counts, got %v", c)
+	}
+	files := strings.Join(res["files_read"].([]string), ",")
+	if !strings.Contains(files, "error.log") || !strings.Contains(files, "cron_scheduled_tasks.log") {
+		t.Errorf("both logs are read, got %v", files)
+	}
+	logs := res["logs"].(map[string]interface{})
+	if logs["cron_scheduled_tasks"].(map[string]interface{})["covers_since"] != true {
+		t.Error("the cron log's own coverage is reported")
+	}
+
+	// A cron log whose oldest stamped line is after since: the whole answer
+	// is uncovered and says which log fell short.
+	writeLog(t, env, "cron_scheduled_tasks.log", cronLine(since.Add(5*time.Minute), "Running task: x"))
+	res, err = siteLogCount(context.Background(), env, since, loc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res["covers_since"] != false {
+		t.Fatal("a cron log starting after since must make the answer uncovered")
+	}
+	if nc, _ := res["not_covered"].(string); !strings.Contains(nc, "cron_scheduled_tasks.log") {
+		t.Errorf("the reason names the cron log, got %q", nc)
+	}
+}
+
+// A site with no scheduled-task log has run nothing from cron: the error log
+// alone decides coverage.
+func TestSiteLogCountWithNoCronLog(t *testing.T) {
+	env := siteLogEnv(t, "on")
+	since := time.Date(2026, 11, 14, 17, 0, 0, 0, time.UTC)
+	writeLog(t, env, "error.log", apacheLine(since.Add(-time.Minute), "x"))
+	res, err := siteLogCount(context.Background(), env, since, time.UTC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res["covers_since"] != true {
+		t.Fatalf("no cron log is nothing missed: %v", res["not_covered"])
+	}
+	if res["logs"].(map[string]interface{})["cron_scheduled_tasks"].(map[string]interface{})["present"] != false {
+		t.Error("the absent cron log is reported absent")
+	}
+}
+
+func TestSiteLogCountParsesCronTimes(t *testing.T) {
+	got, ok := cronLineTime("[2026-11-14 17:34:02] Running task: x")
+	if !ok || !got.Equal(time.Date(2026, 11, 14, 17, 34, 2, 0, time.UTC)) {
+		t.Errorf("a runner line's time is UTC, got %v %v", got, ok)
+	}
+	if _, ok := cronLineTime("MailboxDkimSigner: leaving UNSIGNED"); ok {
+		t.Error("a bare stderr line has no time")
+	}
+}
+
+// The three markers match the platform's own log prefixes exactly.
+func TestSiteLogCountMailAndDnsMarkers(t *testing.T) {
+	want := map[string]string{
+		"dkim_unsigned":              "MailboxDkimSigner: relay-fronted send for a.example leaving UNSIGNED — DKIM key missing",
+		"authoritative_dns_fallback": "AuthoritativeDns: fallback to system resolver for a.example: reply truncated",
+		"dns_reconciler_failed":      "DnsReconciler: record failed: update MX a.example in a.example (Exception)",
+	}
+	for name, line := range want {
+		found := false
+		for _, m := range siteLogMarkers {
+			if m.Name == name {
+				found = true
+				if !lineHasAll(line, m.All) {
+					t.Errorf("%s does not match the platform's line %q", name, line)
+				}
+			}
+		}
+		if !found {
+			t.Errorf("marker %s is missing", name)
+		}
+	}
+}

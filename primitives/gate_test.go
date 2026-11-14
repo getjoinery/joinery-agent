@@ -134,10 +134,16 @@ var pinnedVocabulary = map[string]Class{
 	// PARAMETERS: never a container's environment or a bind's source.
 	"container_inventory": ClassObserve,
 
-	// Whether members' spam corrections reach the filter (the running list,
-	// 2026-10-03). Observe, NO PARAMETERS, counts only: never a subject, a
-	// sender or a row.
-	"spam_learning_status": ClassObserve,
+	// The site's mailbox (the running list, 2026-10-03 and 2026-11-14):
+	// spam-learning counts, or one hosted domain's Setup rows, flags and DNS.
+	// Observe, one optional domain of the site's own: never a subject, a
+	// sender, a row or a key.
+	"mailbox_status": ClassObserve,
+
+	// One fixed test message from one of the site's ordinary mail domains
+	// to the one probe mailbox (the running list, 2026-11-14). Operate: it
+	// sends mail. One domain; everything else compiled into the script.
+	"mail_test_send": ClassOperate,
 
 	// This site's view of its mail relay (the running list, 2026-11-01).
 	// Observe, NO PARAMETERS: versions, times, counts and the transport key's

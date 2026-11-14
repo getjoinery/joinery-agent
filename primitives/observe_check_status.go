@@ -37,7 +37,7 @@ func init() {
 		Name:        "check_status",
 		Class:       ClassObserve,
 		Machine:     true,
-		Description: "The site's web root and domain, disk, memory, load, uptime, PostgreSQL liveness, Joinery version, database list, whether Server Manager is active, the site's plugins with their versions, the site's recorded plugin checks, the release keys the agent and the site trust, the PHP packages installed and whether each php-fpm runs the binary installed, the packages a package run left half done, and the state of the site's unseal daemon.",
+		Description: "The site's web root and domain, disk, memory, load, uptime, PostgreSQL liveness, Joinery version, database list, whether Server Manager is active, the site's plugins with their versions and what each plugin's host installer did here, the site's themes with their versions and which is active, the site's recorded plugin checks, the release keys the agent and the site trust, the PHP packages installed and whether each php-fpm runs the binary installed, the packages a package run left half done, and the state of the site's unseal daemon.",
 		Params:      nil, // takes none, so any param at all is refused
 		Run:         runCheckStatus,
 	})
@@ -347,7 +347,16 @@ func collectDatabase(ctx context.Context, env *ExecEnv, result map[string]interf
 	// switched on or not, and the lifecycle note. Read, not guessed from an
 	// apply's transcript (the running list, 2026-09-17).
 	if plugins, ok := collectPlugins(ctx, db); ok {
+		// And, for a plugin with a host installer, what that installer did
+		// here (observe_check_status_installers.go).
+		addInstallerStates(env.SiteRoot, plugins)
 		result["plugins"] = plugins
+	}
+
+	// The site's themes from its own registry, as its plugins
+	// (observe_check_status_themes.go).
+	if themes, ok := collectThemes(ctx, db); ok {
+		result["themes"] = themes
 	}
 
 	// The site's unseal daemon: the poll's word, and its crashes in the last
