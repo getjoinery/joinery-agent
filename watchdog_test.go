@@ -175,8 +175,12 @@ func TestATrialThatRunsItsCourseIsConfirmed(t *testing.T) {
 	u.CheckFailedBoot()
 
 	u.startTrialAfter(10 * time.Millisecond)
+	// ConfirmHealthy clears the trial marker first and the backup after it (a
+	// crash between the two must never leave a trial with nothing to roll back
+	// to), so the wait is for both, not for the marker alone.
+	backupGone := func() bool { _, err := os.Stat(u.bakPath()); return os.IsNotExist(err) }
 	deadline := time.Now().Add(2 * time.Second)
-	for u.OnTrial() && time.Now().Before(deadline) {
+	for (u.OnTrial() || !backupGone()) && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	if u.OnTrial() {

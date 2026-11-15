@@ -245,6 +245,12 @@ func runScriptPrimitive(ctx context.Context, env *ExecEnv, p Primitive, params P
 		}
 		cmd.SysProcAttr.Credential = cred
 		siteHome = home
+		// The agent's own working directory is /root, which the site user
+		// cannot enter. A child left there fails anything that needs its
+		// starting directory back: find exits 1 with "Failed to restore
+		// initial working directory", which failed every incremental backup
+		// on a Starter host at its code-tree check. It starts in its own home.
+		cmd.Dir = home
 	}
 	cmd.Cancel = func() error {
 		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
