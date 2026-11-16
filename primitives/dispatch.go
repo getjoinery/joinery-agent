@@ -141,6 +141,12 @@ type ExecEnv struct {
 	// siteless machine, nil everywhere else.
 	MovedSiteProof func(ctx context.Context, site string) (ApprovalStatement, ApprovalGate, func(), error)
 
+	// HeldSiteProof builds the gate for decommission_held_site: instead of
+	// the victim's approval, this host's own hold on the container, standing
+	// at least HeldSiteMinAge, with the container not running
+	// (specs/hosting_paid_launch.md B1). Host posture only, as MovedSiteProof.
+	HeldSiteProof func(ctx context.Context, site string) (ApprovalStatement, ApprovalGate, func(), error)
+
 	// Siteless is true on a machine with no Joinery site of its own (a
 	// container host). It decides one thing here: whose leave a machine word
 	// that reads a log needs (log_access.go). It grants nothing else.

@@ -24,7 +24,7 @@ import (
 // must stay ABOVE 1.1.0 forever - install_agent.sh's downgrade guard sorts
 // with sort -V and refuses to replace a "newer" binary, so anything below
 // 1.1.0 strands those agents permanently.
-var version = "1.121.0"
+var version = "1.123.0"
 
 // How often the idle loop looks at the shipped agent_dist manifest. Update
 // checks never run while a job is executing.
@@ -346,6 +346,10 @@ func execEnvFor(cfg *Config, db *DB) *primitives.ExecEnv {
 		// (decommission_moved_site). Host posture only, as above; see
 		// moved_site.go.
 		MovedSiteProof: movedSiteProofFor(cfg),
+		// How a HOST answers for a site it has held stopped long enough that
+		// its hosting is over (decommission_held_site; held_site.go). Host
+		// posture only.
+		HeldSiteProof: heldSiteProofFor(cfg),
 		// A machine with no site has no page to move from; its management
 		// node asks instead (move_to_plane). Every posture: a site may move
 		// this way too, and its page stays the owner's own way.

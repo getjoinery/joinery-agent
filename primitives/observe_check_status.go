@@ -64,6 +64,9 @@ func runCheckStatus(ctx context.Context, env *ExecEnv, _ Params) (map[string]int
 	}
 	if target != "" {
 		collectDisk(target, result)
+		if env.SiteRoot != "" {
+			collectDiskAllowance(env.SiteRoot, result)
+		}
 	}
 	collectMemory(result)
 	collectLoad(result)
@@ -94,6 +97,48 @@ func runCheckStatus(ctx context.Context, env *ExecEnv, _ Params) (map[string]int
 		return nil, fmt.Errorf("nothing could be collected on this node")
 	}
 	return result, nil
+}
+
+// diskAllowanceInForce: a site whose limit is in force sees its allowance plus
+// 10% as its disk; one far bigger than that is the pool, seen because the
+// limit is gone (DiskAllowance::IN_FORCE_FACTOR, the same rule).
+const diskAllowanceInForce = 1.25
+
+// collectDiskAllowance measures a site on a shared host against its own disk
+// allowance, the way the management API's stats endpoint does (DiskAllowance):
+// the host writes the allowance to {site root}/config/disk_allowance, and the
+// disk the site's uploads folder shows is its XFS project, whose size is the
+// hard limit (allowance plus 10%). Against that limit a full site reads 91%;
+// against the allowance, where the site stops taking uploads and stored
+// mail, it reads 100%. No file, an unreadable one, or a limit not in force
+// leaves the web root's figures as they are.
+func collectDiskAllowance(siteRoot string, result map[string]interface{}) {
+	raw, err := os.ReadFile(filepath.Join(siteRoot, "config", "disk_allowance"))
+	if err != nil {
+		return
+	}
+	allowance, err := strconv.ParseUint(strings.TrimSpace(string(raw)), 10, 64)
+	if err != nil || allowance == 0 {
+		return
+	}
+	var fs syscall.Statfs_t
+	if err := syscall.Statfs(filepath.Join(siteRoot, "uploads"), &fs); err != nil {
+		return
+	}
+	blockSize := uint64(fs.Bsize)
+	total := fs.Blocks * blockSize
+	if total == 0 || float64(total) > float64(allowance)*diskAllowanceInForce {
+		return
+	}
+	used := total - fs.Bavail*blockSize
+	free := uint64(0)
+	if used < allowance {
+		free = allowance - used
+	}
+	result["disk_usage_percent"] = int(((used * 100) + allowance/2) / allowance)
+	result["disk_total"] = formatSize(allowance)
+	result["disk_used"] = formatSize(used)
+	result["disk_available"] = formatSize(free)
 }
 
 // collectDisk reports the filesystem holding the web root, which is what a site

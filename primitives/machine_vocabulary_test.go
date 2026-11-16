@@ -23,6 +23,7 @@ var pinnedMachineWords = []string{
 	"data_root_provider_layer",
 	"data_root_recipient",
 	"data_root_rekey",
+	"decommission_held_site",
 	"decommission_moved_site",
 	"decommission_site",
 	"disable_root_login",

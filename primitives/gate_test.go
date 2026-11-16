@@ -415,6 +415,7 @@ var pinnedVocabulary = map[string]Class{
 	// Execute still runs no destructive job without a gate answering.
 	"decommission_site":       ClassDestructive,
 	"decommission_moved_site": ClassDestructive,
+	"decommission_held_site":  ClassDestructive,
 
 	// The source's export (specs/site_copy.md WP4): seal the chain key,
 	// certificate and DKIM keys to the copy's agent key. Destructive for what
@@ -745,6 +746,11 @@ func TestPrimitiveExecutionEnvIsExplicit(t *testing.T) {
 		// approval after a switch-over (specs/site_copy.md WP14). Host posture
 		// only, like VictimCeremony.
 		"MovedSiteProof": true,
+
+		// decommission_held_site's gate: the host's own hold on a container,
+		// standing at least HeldSiteMinAge, with the container stopped
+		// (specs/hosting_paid_launch.md B1). Host posture only.
+		"HeldSiteProof": true,
 
 		// The same proof, reported instead of enforced, for
 		// moved_site_check. Host posture only.

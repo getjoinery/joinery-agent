@@ -38,7 +38,8 @@ const (
 	// hands every secret a site has to another machine (copy_export). Never
 	// run unattended anywhere, own fleet included (A2): each one waits for
 	// the approving operator's recovery key — except decommission_moved_site,
-	// whose gate is the host's proof that the site's domain has left it.
+	// whose gate is the host's proof that the site's domain has left it, and
+	// decommission_held_site, whose gate is the host's own long-standing hold.
 	ClassDestructive Class = "destructive"
 )
 
