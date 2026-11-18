@@ -26,7 +26,10 @@ import (
 // credentials are NOT here but in hosted_mail_settings, and why the general
 // settings writer that briefly carried both was removed rather than gated.
 //
-// STATE IS AN ENUM OVER THE BILLING STATES PLUS EMPTY. Sending suspension and a
+// STATE IS AN ENUM OVER THE BILLING STATES PLUS EMPTY. "services" is the standing
+// of a site that hosts itself and rents email and backup storage: the platform
+// sends it, the node's script takes it, and without it here every such push was
+// refused at this gate, so those sites never showed what they pay for. Sending suspension and a
 // paused backup shelf are not among them: they are independent of whether the
 // customer is paying, and folding them in would lose one fact to say the other.
 // They arrive as the notice sentence.
@@ -39,7 +42,7 @@ func init() {
 			// Where the hosting stands. Empty is a real value and is what
 			// returns a box to silence.
 			{Name: "state", Type: ParamEnum, Values: []string{
-				"trial", "subscribed", "grace", "shutdown", "",
+				"trial", "subscribed", "grace", "shutdown", "services", "",
 			}},
 
 			// The date the current state runs to. The shape the platform

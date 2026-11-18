@@ -195,7 +195,7 @@ func TestADkimKeyNameIsOneLabelAndNothingElse(t *testing.T) {
 }
 
 func TestTheBannerRendersBillingStatesOnly(t *testing.T) {
-	for _, good := range []string{"trial", "subscribed", "grace", "shutdown", ""} {
+	for _, good := range []string{"trial", "subscribed", "grace", "shutdown", "services", ""} {
 		if _, err := hostedParams(t, "hosted_plan_notice",
 			map[string]interface{}{"state": good}); err != nil {
 			t.Errorf("state %q should be accepted: %v", good, err)
