@@ -12,13 +12,19 @@ package primitives
 //
 //	absent      no install record: the installer has not run here
 //	held        the sentinel's hold is on: no Private vault opens until root lifts it
+//	swap_refused  a site container that cannot lock memory, on swap that can reach a
+//	            disk: the launcher does not start the daemon until swap is RAM-only
+//	            (its swap_refused file), so no Private vault opens through it
 //	previous    the launcher moved to the previous build after four starts with no run lasting five minutes
 //	restarting  not running, it started or stopped within the last minute, and
 //	            fewer than three crashes in the last ten minutes
 //	down        not running, and nothing has happened for a minute, or three
 //	            crashes in ten minutes (a crash loop with no previous build)
-//	unlocked    running, with no locked memory
-//	running     running on the current build with its memory locked
+//	unlocked    running, with no locked memory, on swap that can reach a disk
+//	running     running on the current build with its memory locked, or
+//	            unlocked on swap that never reaches a disk (a site container,
+//	            which cannot raise its memory-lock limit: the daemon serves
+//	            there only while that holds, and exits when it stops)
 
 import (
 	"bufio"
@@ -100,6 +106,9 @@ func unsealDaemonFacts(env *ExecEnv) (string, int) {
 	if _, err := os.Stat(unsealFSRoot + "/run/joinery-unseal/" + key + ".hold"); err == nil {
 		return "held", crashes
 	}
+	if _, err := os.Stat(state + "/swap_refused"); err == nil {
+		return "swap_refused", crashes
+	}
 	if b, _ := os.ReadFile(state + "/binary"); strings.TrimSpace(string(b)) == "previous" {
 		return "previous", crashes
 	}
@@ -111,6 +120,9 @@ func unsealDaemonFacts(env *ExecEnv) (string, int) {
 		return "down", crashes
 	}
 	if unsealVmLckKB(pid) <= 0 {
+		if unsealSwapRAMOnly(unsealProcRoot+"/swaps", unsealFSRoot+"/sys/block") {
+			return "running", crashes
+		}
 		return "unlocked", crashes
 	}
 	return "running", crashes
@@ -160,4 +172,74 @@ func unsealVmLckKB(pid string) int64 {
 func UnsealDaemonReport(env *ExecEnv) string {
 	word, _ := unsealDaemonFacts(env)
 	return word
+}
+
+// unsealSwapRAMOnly is the daemon's own rule (joinery_unseal/swap_linux.go,
+// VaultHealth::checkSwapSafe): every active swap device is a block device the
+// kernel lists (Type partition) that sysfs has, and is zram with no backing
+// device or dm-crypt; no swap at all counts. Anything else (a swap file, a
+// name sysfs does not know, anything unreadable) can reach a disk. In a
+// container /proc/swaps names the host's devices, which /dev there does not
+// have, so a device is found in sysfs by name, and a device-mapper one by its
+// dm/name. swap_rule_cases_test.json is the platform's corpus for this
+// rule, kept byte-identical to joinery_unseal/testdata/swap_rule_cases.json
+// (the platform's vault_health test compares them).
+func unsealSwapRAMOnly(procSwaps, sysBlock string) bool {
+	body, err := os.ReadFile(procSwaps)
+	if err != nil {
+		return false
+	}
+	isDir := func(p string) bool {
+		st, err := os.Stat(p)
+		return err == nil && st.IsDir()
+	}
+	lines := strings.Split(strings.TrimSpace(string(body)), "\n")
+	for _, line := range lines[1:] {
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		path := strings.ReplaceAll(fields[0], `\040`, " ")
+		if len(fields) < 2 || fields[1] != "partition" {
+			return false
+		}
+		name := filepath.Base(path)
+		if real, err := filepath.EvalSymlinks(path); err == nil {
+			name = filepath.Base(real)
+		}
+		if !isDir(filepath.Join(sysBlock, name)) {
+			mapped := ""
+			dirs, _ := filepath.Glob(filepath.Join(sysBlock, "dm-*"))
+			for _, dir := range dirs {
+				if b, err := os.ReadFile(filepath.Join(dir, "dm", "name")); err == nil && strings.TrimSpace(string(b)) == filepath.Base(path) {
+					mapped = filepath.Base(dir)
+				}
+			}
+			if mapped == "" {
+				return false
+			}
+			name = mapped
+		}
+		switch {
+		case strings.HasPrefix(name, "zram"):
+			backing, err := os.ReadFile(filepath.Join(sysBlock, name, "backing_dev"))
+			if err != nil {
+				if os.IsNotExist(err) {
+					continue // in sysfs, on a kernel without zram writeback
+				}
+				return false
+			}
+			if b := strings.TrimSpace(string(backing)); b != "" && b != "none" {
+				return false
+			}
+		case strings.HasPrefix(name, "dm-"):
+			uuid, err := os.ReadFile(filepath.Join(sysBlock, name, "dm", "uuid"))
+			if err != nil || !strings.HasPrefix(strings.TrimSpace(string(uuid)), "CRYPT-") {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
 }
