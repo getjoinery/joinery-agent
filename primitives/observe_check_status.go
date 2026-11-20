@@ -410,6 +410,10 @@ func collectDatabase(ctx context.Context, env *ExecEnv, result map[string]interf
 		result["unseal_daemon"] = map[string]interface{}{"state": word, "crashes_last_hour": crashes}
 	}
 
+	// The parser jail's launcher: fenced, deny_list, not_setuid or absent,
+	// its interface number and whether the jail user exists (parser_jail.go).
+	result["parser_jail"] = parserJailFacts()
+
 	// Whether this site is a management node, as a boolean either way; an
 	// absent key is an agent that predates the fact, and the plane reads that
 	// as "not a management node". The same answer rides every poll as
