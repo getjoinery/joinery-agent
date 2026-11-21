@@ -37,7 +37,7 @@ func init() {
 		Name:        "check_status",
 		Class:       ClassObserve,
 		Machine:     true,
-		Description: "The site's web root and domain, disk, memory, load, uptime, PostgreSQL liveness, Joinery version, database list, whether Server Manager is active, the site's plugins with their versions and what each plugin's host installer did here, the site's themes with their versions and which is active, the site's recorded plugin checks, the release keys the agent and the site trust, the PHP packages installed and whether each php-fpm runs the binary installed, the packages a package run left half done, and the state of the site's unseal daemon.",
+		Description: "The site's web root and domain, disk, memory, load, uptime, PostgreSQL liveness, Joinery version, database list, whether Server Manager is active, the site's plugins with their versions and what each plugin's host installer did here, the site's themes with their versions and which is active, how many script policy refusals, database errors and exceptions its error table took in the last day, the site's recorded plugin checks, the release keys the agent and the site trust, the PHP packages installed and whether each php-fpm runs the binary installed, the packages a package run left half done, and the state of the site's unseal daemon.",
 		Params:      nil, // takes none, so any param at all is refused
 		Run:         runCheckStatus,
 	})
@@ -402,6 +402,12 @@ func collectDatabase(ctx context.Context, env *ExecEnv, result map[string]interf
 	// (observe_check_status_themes.go).
 	if themes, ok := collectThemes(ctx, db); ok {
 		result["themes"] = themes
+	}
+
+	// How many rows of each kind the site's error table took in the last day
+	// (observe_check_status_errors.go).
+	if counts, ok := collectErrorCounts(ctx, db); ok {
+		result["errors_24h"] = counts
 	}
 
 	// The site's unseal daemon: the poll's word, and its crashes in the last

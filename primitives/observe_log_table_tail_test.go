@@ -50,6 +50,7 @@ func TestLogTableQueriesAreCompiledAndExcludeWhatTheSpecLeavesOut(t *testing.T) 
 		"events":      {"evl_event_log_id", "evl_event", "evl_usr_user_id", "evl_create_time", "evl_was_success", "evl_note"},
 		"form_errors": {"lfe_log_form_error_id", "lfe_error", "lfe_usr_user_id", "lfe_log_time", "lfe_page", "lfe_url", "lfe_context"},
 		"webhooks":    {"wbh_webhook_log_id", "wbh_provider", "wbh_event_type", "wbh_event_id", "wbh_processed", "wbh_error_message", "wbh_create_time"},
+		"errors":      {"err_general_error_id", "err_create_time", "err_level", "err_code", "err_message", "err_file", "err_line", "err_path", "err_usr_user_id"},
 	}
 	for _, word := range logTableNames {
 		query, spec, ok := logTableQuery(word)
@@ -286,5 +287,84 @@ func TestLogTableTailEventRead(t *testing.T) {
 	if _, err := runLogTableTail(context.Background(), env, mustValidate(t, "log_table_tail",
 		map[string]interface{}{"table": "logins", "event": "vault_windows"})); err == nil || !Refused(err) {
 		t.Errorf("an event on another table must be refused, got %v", err)
+	}
+}
+
+// table=errors and kind (specs/agent_recipes_and_vocabulary.md, 2026-11-21).
+
+func TestLogTableTailErrorKindsAreClosed(t *testing.T) {
+	p, _ := Lookup("log_table_tail")
+	for _, bad := range []interface{}{"csp", "Exception", "script_policy' OR 1=1 --", ""} {
+		if _, err := Validate(p.Params, map[string]interface{}{"table": "errors", "kind": bad}); err == nil {
+			t.Errorf("kind=%v must be refused by the enum", bad)
+		}
+	}
+	if len(logKindNames) != len(logKinds) {
+		t.Fatalf("kind enum has %d words, map has %d", len(logKindNames), len(logKinds))
+	}
+	for _, kind := range logKindNames {
+		for _, hours := range []bool{false, true} {
+			query, _, ok := logTableQueryNarrowed("errors", "", kind, hours)
+			if !ok {
+				t.Fatalf("no query for kind %s", kind)
+			}
+			if !strings.Contains(query, " WHERE "+logKinds[kind]) {
+				t.Errorf("%s query does not carry its condition: %s", kind, query)
+			}
+			want := 1
+			if hours {
+				want = 2
+			}
+			if strings.Count(query, "$") != want || !strings.HasSuffix(query, "LIMIT $1") {
+				t.Errorf("%s (hours %v) must carry %d placeholders, the limit last: %s", kind, hours, want, query)
+			}
+			if !strings.Contains(query, "left(err_message, 500) AS err_message") {
+				t.Errorf("the message must be cut on the node: %s", query)
+			}
+			for _, excluded := range logTableExcludedColumns {
+				if strings.Contains(query, excluded) {
+					t.Errorf("%s query names excluded column %s", kind, excluded)
+				}
+			}
+		}
+	}
+	if _, _, ok := logTableQueryNarrowed("logins", "", "script_policy", false); ok {
+		t.Error("a kind narrows table=errors only")
+	}
+	if _, _, ok := logTableQueryNarrowed("errors", "vault_windows", "", false); ok {
+		t.Error("an event does not narrow table=errors")
+	}
+}
+
+func TestLogTableTailErrorRead(t *testing.T) {
+	when := time.Date(2026, 11, 18, 1, 1, 0, 0, time.UTC)
+	env := logTableEnv(t, "1", map[string]fakeRows{
+		"err_file LIKE 'csp:%'": {columns: logTables["errors"].columns, rows: [][]driver.Value{
+			{int64(91), when, "Warning", "0", "Strict script policy would refuse an inline script on /page/install: (()=>{var e={}",
+				"csp:/page/install script-src-elem", "1", nil, nil},
+		}},
+	})
+	res, err := runLogTableTail(context.Background(), env, mustValidate(t, "log_table_tail",
+		map[string]interface{}{"table": "errors", "kind": "script_policy", "hours": 168}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res["rows_returned"] != 1 || res["kind"] != "script_policy" || res["hours"] != int64(168) {
+		t.Fatalf("one refusal, kind and hours echoed: %v", res)
+	}
+	row := res["rows"].([]interface{})[0].(map[string]interface{})
+	if !strings.HasPrefix(row["err_message"].(string), "Strict script policy would refuse") || row["err_file"] != "csp:/page/install script-src-elem" {
+		t.Errorf("the refusal must read as recorded: %v", row)
+	}
+	if _, err := runLogTableTail(context.Background(), env, mustValidate(t, "log_table_tail",
+		map[string]interface{}{"table": "events", "kind": "script_policy"})); err == nil || !Refused(err) {
+		t.Errorf("a kind on another table must be refused, got %v", err)
+	}
+	// The owner's switch covers the error table like every other.
+	off := logTableEnv(t, "", nil)
+	_, err = Execute(context.Background(), off, ShippedPolicy(),
+		Request{Primitive: "log_table_tail", Params: map[string]interface{}{"table": "errors"}})
+	if err == nil || !Refused(err) {
+		t.Errorf("errors must be refused while log access is off, got %v", err)
 	}
 }

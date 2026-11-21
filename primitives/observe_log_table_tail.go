@@ -19,19 +19,21 @@ import (
 //
 // What is the worst a compromised management node can do with this word? Read,
 // on a node whose owner has left the switch on, the newest 200 rows of one of
-// five log tables — with the members' addresses, the webhook payloads and the
-// submitted forms never selected, and every text column masked. That is the
-// "redacted log excerpts" cell of the accepted-limits table, no wider.
+// six log tables — with the members' addresses, the webhook payloads, the
+// submitted forms and an error's stack trace never selected, and every text
+// column masked. That is the "redacted log excerpts" cell of the
+// accepted-limits table, no wider.
 //
 // What it cannot do:
 //
-//   - Name a table, a column, or a query. `table` is an ENUM of five words
+//   - Name a table, a column, or a query. `table` is an ENUM of six words
 //     compiled here, each bound to ONE query string in this file with ONE
 //     placeholder, the row limit. No SQL, no fragment, no column name, no
 //     ORDER BY travels from the plane; a job carrying any other field is
 //     refused before this code runs.
 //   - See what the column lists leave out: log_ip, rql_ip_address,
-//     lfe_user_agent, lfe_form, wbh_payload. Not masked — never selected. A
+//     lfe_user_agent, lfe_form, wbh_payload, err_context, err_description,
+//     err_error. Not masked — never selected. A
 //     test pins that none of those names appears in any query here.
 //   - Read without the owner's leave. The switch is checked FIRST; this word
 //     needs the database, so it reads the setting and nothing else.
@@ -51,15 +53,26 @@ import (
 // field is a truncated one-way digest). One SELECT; observe, and a policy that accepts only
 //
 //	observe words can trust that.
+//
+// `table: errors` and `kind` (specs/agent_recipes_and_vocabulary.md, the
+// 2026-11-21 entry). The site's own error table: when, level, code, the
+// message cut to 500 characters, the file and line it names, the page. The
+// stack trace (err_context) holds call arguments and is never selected. `kind`
+// narrows table=errors to one compiled condition, a literal in the query:
+// what visitors' browsers said the script policy refused, database errors, or
+// exceptions. The worst the plane reads is 200 redacted error messages of a
+// site whose owner allows log access: the same cell as the error LOG FILE
+// site_log already returns.
 func init() {
 	Register(Primitive{
 		Name:        "log_table_tail",
 		Class:       ClassObserve,
-		Description: "The newest rows of one of the site's own log tables (logins, requests, events, form_errors, webhooks) from a compiled column list, redacted on the node, optionally only the last hours and, for events, only one compiled kind of event (the vault's window rows); refused unless the site's owner allows log access.",
+		Description: "The newest rows of one of the site's own log tables (logins, requests, events, form_errors, webhooks, errors) from a compiled column list, redacted on the node, optionally only the last hours, for events only one compiled kind of event (the vault's window rows), and for errors only one compiled kind of error (script policy refusals, database errors, exceptions); refused unless the site's owner allows log access.",
 		Params: []ParamSpec{
 			{Name: "table", Type: ParamEnum, Required: true, Values: logTableNames},
 			{Name: "rows", Type: ParamInt, Min: 1, Max: logEventMaxRows},
 			{Name: "event", Type: ParamEnum, Values: logEventNames},
+			{Name: "kind", Type: ParamEnum, Values: logKindNames},
 			{Name: "hours", Type: ParamInt, Min: 1, Max: logTableMaxHours},
 		},
 		RequiresLogAccess: true,
@@ -94,12 +107,26 @@ var logEvents = map[string][]string{
 // logEventNames is the enum, in a fixed order.
 var logEventNames = []string{"vault_window_opened", "vault_window_closed", "vault_windows"}
 
+// logKinds is the closed list of `kind` words for table=errors, each one
+// compiled condition. Nothing in a condition comes from the wire.
+var logKinds = map[string]string{
+	// CspReport records a refusal with the page and directive as the "file".
+	"script_policy": "err_file LIKE 'csp:%'",
+	"database":      "err_level = 'Database Error'",
+	"exceptions":    "err_level = 'Exception'",
+}
+
+// logKindNames is the enum, in a fixed order.
+var logKindNames = []string{"script_policy", "database", "exceptions"}
+
 // logTable is one entry of the compiled list: the enum word, the columns
-// returned in order, and the time column the tail is ordered by.
+// returned in order, and the time column the tail is ordered by. selects
+// holds the expression for a column that is not selected as it stands.
 type logTable struct {
 	table      string
 	columns    []string
 	timeColumn string
+	selects    map[string]string
 }
 
 // logTables is the closed list. The "left out" columns of the spec's table are
@@ -132,19 +159,30 @@ var logTables = map[string]logTable{
 		columns:    []string{"wbh_webhook_log_id", "wbh_provider", "wbh_event_type", "wbh_event_id", "wbh_processed", "wbh_error_message", "wbh_create_time"},
 		timeColumn: "wbh_create_time",
 	},
+	"errors": {
+		table: "err_general_errors",
+		columns: []string{"err_general_error_id", "err_create_time", "err_level", "err_code", "err_message",
+			"err_file", "err_line", "err_path", "err_usr_user_id"},
+		timeColumn: "err_create_time",
+		// A message can carry a whole query or a page of script; the start says which error it is.
+		selects: map[string]string{"err_message": "left(err_message, 500) AS err_message"},
+	},
 }
 
 // logTableNames is the enum, in a fixed order.
-var logTableNames = []string{"logins", "requests", "events", "form_errors", "webhooks"}
+var logTableNames = []string{"logins", "requests", "events", "form_errors", "webhooks", "errors"}
 
 // logTableExcludedColumns are the columns the spec leaves out and why; the
 // gate is that none appears in any query this file builds.
 var logTableExcludedColumns = []string{
-	"log_ip",         // a member's address is not needed to see that logins stopped
-	"rql_ip_address", // likewise
-	"lfe_user_agent", // the member's browser
-	"lfe_form",       // the member's submitted data
-	"wbh_payload",    // the provider's raw body: card and customer detail
+	"log_ip",          // a member's address is not needed to see that logins stopped
+	"rql_ip_address",  // likewise
+	"lfe_user_agent",  // the member's browser
+	"lfe_form",        // the member's submitted data
+	"wbh_payload",     // the provider's raw body: card and customer detail
+	"err_context",     // the stack trace, with the arguments each call was given
+	"err_description", // free text a caller attached to the error
+	"err_error",       // the serialized error
 }
 
 // logTableQuery is the one query string per enum word. The only placeholder is
@@ -157,11 +195,24 @@ func logTableQuery(word string) (string, logTable, bool) {
 // events only) and to the last hours when withHours: $1 is the limit, $2 the
 // hours. Every name in it is compiled; only the two ints are bound.
 func logTableQueryFor(word, event string, withHours bool) (string, logTable, bool) {
+	return logTableQueryNarrowed(word, event, "", withHours)
+}
+
+// logTableQueryNarrowed is logTableQueryFor with a kind word as well (table
+// errors only): one more compiled condition.
+func logTableQueryNarrowed(word, event, kind string, withHours bool) (string, logTable, bool) {
 	t, ok := logTables[word]
 	if !ok {
 		return "", logTable{}, false
 	}
 	var where []string
+	if kind != "" {
+		condition, ok := logKinds[kind]
+		if !ok || word != "errors" {
+			return "", logTable{}, false
+		}
+		where = append(where, condition)
+	}
 	if event != "" {
 		names, ok := logEvents[event]
 		if !ok || word != "events" {
@@ -180,8 +231,15 @@ func logTableQueryFor(word, event string, withHours bool) (string, logTable, boo
 	if len(where) > 0 {
 		clause = " WHERE " + strings.Join(where, " AND ")
 	}
+	selected := make([]string, len(t.columns))
+	for i, column := range t.columns {
+		selected[i] = column
+		if expression, ok := t.selects[column]; ok {
+			selected[i] = expression
+		}
+	}
 	return fmt.Sprintf("SELECT %s FROM %s%s ORDER BY %s DESC LIMIT $1",
-		strings.Join(t.columns, ", "), t.table, clause, t.timeColumn), t, true
+		strings.Join(selected, ", "), t.table, clause, t.timeColumn), t, true
 }
 
 func runLogTableTail(ctx context.Context, env *ExecEnv, p Params) (map[string]interface{}, error) {
@@ -197,10 +255,17 @@ func runLogTableTail(ctx context.Context, env *ExecEnv, p Params) (map[string]in
 			return nil, refusedf("event narrows table=events only, not %s", word)
 		}
 	}
+	kind := ""
+	if p.Has("kind") {
+		kind = p.String("kind")
+		if word != "errors" {
+			return nil, refusedf("kind narrows table=errors only, not %s", word)
+		}
+	}
 	if event == "" && limit > logTableMaxRows {
 		return nil, refusedf("rows above %d need an event: an unfiltered read stops at %d", logTableMaxRows, logTableMaxRows)
 	}
-	query, spec, ok := logTableQueryFor(word, event, p.Has("hours"))
+	query, spec, ok := logTableQueryNarrowed(word, event, kind, p.Has("hours"))
 	if !ok {
 		// Validate already refused anything outside the enums; this is a
 		// build mistake, not a bad job.
@@ -240,6 +305,9 @@ func runLogTableTail(ctx context.Context, env *ExecEnv, p Params) (map[string]in
 	}
 	if event != "" {
 		result["event"] = event
+	}
+	if kind != "" {
+		result["kind"] = kind
 	}
 	if p.Has("hours") {
 		result["hours"] = p.Int("hours")
