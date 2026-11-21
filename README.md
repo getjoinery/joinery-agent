@@ -167,6 +167,7 @@ joinery-agent/
   victim.go        A host asking a site for consent to its own removal
   join.go          Node-initiated enrollment
   leave.go         Ending a pairing from this side
+  disowned.go      Reporting that the management node no longer knows this machine
   stagedwatch.go   Finishing a CLI join once the management node approves
   identity.go      This node's Ed25519 identity
   update.go        Signed self-update, with a watchdog rollback

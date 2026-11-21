@@ -130,6 +130,12 @@ type RemoteSource struct {
 	// warned suppresses repeat logging of a steady-state complaint.
 	warned map[string]bool
 
+	// planeAnswered is told what each claim's answer says of this machine:
+	// the management node's words when it does not know it, "" when it
+	// answered as usual. Not called when it gave no answer of its own (no
+	// network, a 5xx). Nil on a machine with no site to report to.
+	planeAnswered func(disownedWords string)
+
 	// refusedFields are the claim fields a plane refused by name as
 	// undeclared; they are left off every later claim to that plane.
 	//
@@ -362,8 +368,14 @@ func (r *RemoteSource) pollOnce(ctx context.Context) {
 
 	job, err := r.claim(ctx)
 	if err != nil {
+		if words := planeDisowns(err); words != "" && r.planeAnswered != nil {
+			r.planeAnswered(words)
+		}
 		r.noteFailure(err)
 		return
+	}
+	if r.planeAnswered != nil {
+		r.planeAnswered("")
 	}
 	r.backoff = 0
 	if job == nil {

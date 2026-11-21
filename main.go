@@ -24,7 +24,7 @@ import (
 // must stay ABOVE 1.1.0 forever - install_agent.sh's downgrade guard sorts
 // with sort -V and refuses to replace a "newer" binary, so anything below
 // 1.1.0 strands those agents permanently.
-var version = "1.127.0"
+var version = "1.128.0"
 
 // How often the idle loop looks at the shipped agent_dist manifest. Update
 // checks never run while a job is executing.
@@ -153,10 +153,17 @@ func connectionState(identity *NodeIdentity) map[string]interface{} {
 	if raw, err := base64.StdEncoding.DecodeString(identity.PublicKey); err == nil {
 		fingerprint = Fingerprint(raw)
 	}
-	return map[string]interface{}{
+	state := map[string]interface{}{
 		"status": "connected", "url": identity.PlaneURL, "fingerprint": fingerprint,
 		"node_id": identity.NodeID, "node_slug": identity.NodeSlug, "updated_time": gmNow(),
 	}
+	// The management node answers that it does not know this machine
+	// (disowned.go): reported with the connection, which the agent keeps.
+	if since, reason := disownedNow(); since != "" {
+		state["disowned_time"] = since
+		state["disowned_reason"] = reason
+	}
+	return state
 }
 
 func startConnectedWatchers(ctx context.Context, cfg *Config, db *DB, jobLock *sync.Mutex, agentVersion string, identity *NodeIdentity) {
@@ -195,6 +202,9 @@ func startRemoteSource(cfg *Config, db *DB, jobLock *sync.Mutex, agentVersion st
 	env := execEnvFor(cfg, db)
 
 	source := NewRemoteSource(identity, policy, env, jobLock, agentVersion)
+	if !cfg.Siteless && db != nil {
+		source.planeAnswered = func(disownedWords string) { reportDisowned(db, identity, disownedWords) }
+	}
 	go source.Run(context.Background())
 	remoteStart.source = source
 	return source
