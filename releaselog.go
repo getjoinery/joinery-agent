@@ -899,6 +899,26 @@ func (p statementPayload) artifact(name string) string {
 	return v
 }
 
+// recordsValue reports whether value is one of the hashes the statement
+// records, under any name: PackageSignature::checkLogged's in_array over the
+// artifacts' values, compared as the same exact string.
+func (p statementPayload) recordsValue(value string) bool {
+	var values []json.RawMessage
+	if artifacts, ok := jsonObject(field(p.raw, "artifacts")); ok {
+		for _, raw := range artifacts {
+			values = append(values, raw)
+		}
+	} else {
+		values, _ = jsonArray(field(p.raw, "artifacts")) // a PHP array either way
+	}
+	for _, raw := range values {
+		if v, ok := jsonString(raw); ok && v == value {
+			return true
+		}
+	}
+	return false
+}
+
 func (p statementPayload) keysInstalled() json.RawMessage {
 	return field(p.raw, "keys_installed")
 }
@@ -1016,6 +1036,20 @@ func verifyReleaseStatement(doc []byte, artifact, sha256Hex string, held release
 // decided once its signer is known (settle). It reads nothing and writes
 // nothing.
 func verifyReleaseStatementTrust(doc []byte, artifact, sha256Hex string, held releaseLogKeys, trust releaseTrust) (*releaseLogVerdict, error) {
+	return verifyStatementRecording(doc, held, trust, func(payload statementPayload) error {
+		recorded, rerr := hex.DecodeString(payload.artifact(artifact))
+		offered, oerr := hex.DecodeString(sha256Hex)
+		if rerr != nil || oerr != nil || len(recorded) != sha256.Size || !bytes.Equal(recorded, offered) {
+			return fmt.Errorf("the logged statement does not record this binary as %s", artifact)
+		}
+		return nil
+	})
+}
+
+// verifyStatementRecording is verifyReleaseStatementTrust with what the
+// statement must record left to records, which reads the payload of a
+// statement already shown to be logged under the walked set.
+func verifyStatementRecording(doc []byte, held releaseLogKeys, trust releaseTrust, records func(statementPayload) error) (*releaseLogVerdict, error) {
 	if len(bytes.TrimSpace(doc)) == 0 {
 		return nil, fmt.Errorf("the release carries no %s", releaseStatementName)
 	}
@@ -1059,10 +1093,8 @@ func verifyReleaseStatementTrust(doc []byte, artifact, sha256Hex string, held re
 		return nil, errors.New(why)
 	}
 	payload := decodePayload(link.env)
-	recorded, rerr := hex.DecodeString(payload.artifact(artifact))
-	offered, oerr := hex.DecodeString(sha256Hex)
-	if rerr != nil || oerr != nil || len(recorded) != sha256.Size || !bytes.Equal(recorded, offered) {
-		return nil, fmt.Errorf("the logged statement does not record this binary as %s", artifact)
+	if err := records(payload); err != nil {
+		return nil, err
 	}
 
 	verdict := &releaseLogVerdict{version: payload.version(), proven: keys.minus(held), walked: state}

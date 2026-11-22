@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
@@ -703,7 +704,11 @@ func verifySignedTree(root string, keys []ed25519.PublicKey, what string, unlist
 	for rel := range verifier.Hashes {
 		listed[rel] = true
 		if err := verifier.Verify(filepath.Join(root, filepath.FromSlash(rel))); err != nil {
-			return nil, nil, fmt.Errorf("%s does not match its own manifest: %w", what, err)
+			kind := treeFaultTampered
+			if errors.Is(err, fs.ErrNotExist) {
+				kind = treeFaultMissing
+			}
+			return nil, nil, &treeFault{kind: kind, err: fmt.Errorf("%s does not match its own manifest: %w", what, err)}
 		}
 	}
 
@@ -726,7 +731,7 @@ func verifySignedTree(root string, keys []ed25519.PublicKey, what string, unlist
 			return nil
 		}
 		if !listed[rel] && (unlisted == nil || !unlisted(rel)) {
-			return fmt.Errorf("%s carries %s, which its own manifest does not list", what, rel)
+			return &treeFault{kind: treeFaultExtra, err: fmt.Errorf("%s carries %s, which its own manifest does not list", what, rel)}
 		}
 		return nil
 	})
@@ -735,6 +740,23 @@ func verifySignedTree(root string, keys []ed25519.PublicKey, what string, unlist
 	}
 	return body, verifier.Key, nil
 }
+
+// treeFault is verifySignedTree's refusal of a tree whose files are not the
+// ones its verified manifest lists: kind says which way (a listed file
+// changed or absent, an unlisted one present). Its text is the error's.
+type treeFault struct {
+	kind string
+	err  error
+}
+
+const (
+	treeFaultTampered = "tampered"
+	treeFaultMissing  = "missing_file"
+	treeFaultExtra    = "extra_file"
+)
+
+func (f *treeFault) Error() string { return f.err.Error() }
+func (f *treeFault) Unwrap() error { return f.err }
 
 func removeTree(path string) error {
 	if err := os.RemoveAll(path); err != nil {
