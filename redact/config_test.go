@@ -17,7 +17,7 @@ var configFiles = map[string][]struct{ in, want string }{
 		{"ignoreip = 127.0.0.1/8 203.0.113.5", "ignoreip = 127.0.0.1/8 203.0.113.5"},
 		{"destemail = ops@example.com", "destemail = <email>@example.com"},
 	},
-	"apache {site}.conf / -le-ssl.conf / apache2.conf / mpm_event.conf / joinery-remoteip.conf": {
+	"apache {site}.conf / -le-ssl.conf / apache2.conf / mpm_event.conf / joinery-remoteip.conf / joinery-http2.conf": {
 		{"<VirtualHost 69.164.209.253:80>", "<VirtualHost 69.164.209.253:80>"},
 		{"        ServerName dev.getjoinery.com", "        ServerName dev.getjoinery.com"},
 		{"        SSLCertificateKeyFile /etc/letsencrypt/live/x/privkey.pem", "        SSLCertificateKeyFile /etc/letsencrypt/live/x/privkey.pem"},
@@ -25,6 +25,8 @@ var configFiles = map[string][]struct{ in, want string }{
 		{"    RemoteIPTrustedProxy 173.245.48.0/20", "    RemoteIPTrustedProxy 173.245.48.0/20"},
 		{"    SetEnv DB_PASSWORD hunter2", "    SetEnv DB_PASSWORD ********"},
 		{"    MaxRequestWorkers 150", "    MaxRequestWorkers 150"},
+		{"Protocols h2 http/1.1", "Protocols h2 http/1.1"},
+		{"H2WindowSize 1048576", "H2WindowSize 1048576"},
 		{"    ServerAdmin webmaster@example.com", "    ServerAdmin <email>@example.com"},
 		{"    ProxyPass /x http://user:hunter2@10.0.0.2/", "    ProxyPass /x http://user:********@10.0.0.2/"},
 	},

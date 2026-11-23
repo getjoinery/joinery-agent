@@ -88,6 +88,7 @@ var fileHeadFiles = map[string]fileHeadFile{
 	"apache2_conf":            {Path: "/etc/apache2/apache2.conf"},
 	"apache_mpm_event":        {Path: "/etc/apache2/mods-available/mpm_event.conf"},
 	"apache_remoteip":         {Path: "/etc/apache2/conf-available/joinery-remoteip.conf"},
+	"apache_http2":            {Path: "/etc/apache2/conf-available/joinery-http2.conf"},
 	"php_fpm_ini":             {Path: "/etc/php/{php}/fpm/php.ini", EffectiveOnly: true},
 	"journald_size_limit":     {Path: "/etc/systemd/journald.conf.d/size-limit.conf"},
 	"logrotate_site":          {Path: "/etc/logrotate.d/joinery-{site}"},
