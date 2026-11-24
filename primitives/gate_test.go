@@ -190,6 +190,10 @@ var pinnedVocabulary = map[string]Class{
 	"restart_unit":      ClassOperate,
 	"restart_container": ClassOperate,
 
+	// One fail2ban ban lifted: a jail of the machine's own and one address.
+	// Operate: it changes who fail2ban holds off, and loses nothing.
+	"unban_address": ClassOperate,
+
 	// Root SSH login turned off for good on the machine
 	// (specs/implemented/beta_break_glass_root_access.md 5.3): no parameters, one value
 	// written, nothing removed. Operate: a setting changes, nothing is lost.

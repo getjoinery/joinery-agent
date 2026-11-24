@@ -27,7 +27,7 @@ import (
 //
 // What it cannot do:
 //
-//   - Name a file. `file` is an ENUM of seven names compiled here. Six resolve
+//   - Name a file. `file` is an ENUM of eight names compiled here. Seven resolve
 //     to SiteRoot/logs/<name>.log; postgresql resolves to the newest cluster
 //     log in /var/log/postgresql, a directory and a glob both compiled here.
 //     `previous` selects a file's most recent rotation (.log.1) and nothing
@@ -43,6 +43,12 @@ import (
 //     and both are capped. It earns its place because a disk that fills, a
 //     connection that dies and a write that is refused are all the database
 //     saying so in its own words, and nothing else on this node records them.
+//
+//     follow_main is the development box's pull log (dev_tools/follow_main.sh:
+//     each pull, each library install from composer.lock, each update_database
+//     ran or FAILED). Only a box that follows git main writes it; anywhere else
+//     it is present: false. It carries commit subjects and hashes, the same
+//     public repository text any release note carries.
 //
 //     The access log is the one file NOT returned as it is written. Its lines
 //     carry every visitor's address, the page they came from, their browser,
@@ -76,7 +82,7 @@ func init() {
 	Register(Primitive{
 		Name:        "site_log",
 		Class:       ClassObserve,
-		Description: "The last lines of one of the site's own log files (error, cron, AI worker, install executor, host converger, access as a compiled shape) or of the PostgreSQL cluster log, redacted on the node; refused unless the site's owner allows log access.",
+		Description: "The last lines of one of the site's own log files (error, cron, AI worker, install executor, host converger, the dev box's follow_main pull log, access as a compiled shape) or of the PostgreSQL cluster log, redacted on the node; refused unless the site's owner allows log access.",
 		Params: []ParamSpec{
 			{Name: "file", Type: ParamEnum, Required: true, Values: siteLogFiles},
 			{Name: "previous", Type: ParamBool},
@@ -99,6 +105,7 @@ var siteLogFiles = []string{
 	"joinery_ai_worker",
 	"install_executor",
 	"host_converger",
+	"follow_main",
 	"postgresql",
 }
 

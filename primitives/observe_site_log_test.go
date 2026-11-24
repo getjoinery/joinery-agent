@@ -86,6 +86,16 @@ func TestSiteLogResolvesUnderTheLogDirectoryOnly(t *testing.T) {
 	}
 }
 
+// The dev box's pull log is one compiled name under logs/, like the others.
+func TestSiteLogFollowMainIsThePullLog(t *testing.T) {
+	if got := siteLogPath("/srv/site", "follow_main", false); got != "/srv/site/logs/follow_main.log" {
+		t.Errorf("follow_main resolved to %s", got)
+	}
+	if got := siteLogPath("/srv/site", "follow_main", true); got != "/srv/site/logs/follow_main.log.1" {
+		t.Errorf("follow_main previous resolved to %s", got)
+	}
+}
+
 func TestSiteLogRefusesWhenTheOwnerSaysNo(t *testing.T) {
 	env := siteLogEnv(t, "0")
 	writeLog(t, env, "error.log", "a secret line\n")

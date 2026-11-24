@@ -61,6 +61,7 @@ var pinnedMachineWords = []string{
 	"site_state_report",
 	"suspended_page",
 	"trust_forwarder",
+	"unban_address",
 	"unit_journal",
 	"web_workers",
 }
