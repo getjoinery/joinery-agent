@@ -70,6 +70,12 @@ func TestSiteLogResolvesUnderTheLogDirectoryOnly(t *testing.T) {
 			if name == "postgresql" {
 				wantDir = postgresLogDir + "/"
 			}
+			if name == "host_converger" {
+				wantDir = convergerLogDir + "/"
+				if RunsInContainer() {
+					wantDir = convergerStateDir + "/site/"
+				}
+			}
 			if !strings.HasPrefix(got, wantDir) {
 				t.Errorf("%s previous=%v resolved to %s, outside %s", name, previous, got, wantDir)
 			}
@@ -83,6 +89,56 @@ func TestSiteLogResolvesUnderTheLogDirectoryOnly(t *testing.T) {
 				t.Errorf("current must be the .log file, got %s", got)
 			}
 		}
+	}
+}
+
+// The converger's log is where install_host_converger.sh points its unit:
+// root's log directory on a host, the state volume in a container.
+func TestSiteLogHostConvergerIsWhereTheUnitWrites(t *testing.T) {
+	if got := convergerLogPath("/var/www/html/joinerytest", false, false); got != "/var/log/joinery/host_converger.joinerytest.log" {
+		t.Errorf("host: %s", got)
+	}
+	if got := convergerLogPath("/var/www/html/joinerytest/", true, true); got != "/var/lib/joinery/sites/joinerytest/host_converger.log.1" {
+		t.Errorf("container previous: %s", got)
+	}
+	if got := convergerLogPath("/", false, false); strings.Contains(got, "..") || !strings.HasPrefix(got, "/var/log/joinery/host_converger.") {
+		t.Errorf("an odd site root stays in the compiled directory: %s", got)
+	}
+}
+
+// A host with a data root logs the converger to the journal: the word says so
+// and reads no file, even a stale one.
+func TestSiteLogHostConvergerOnADataRootPointsAtTheJournal(t *testing.T) {
+	if RunsInContainer() {
+		t.Skip("the journal answer is a host's")
+	}
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "data_root")
+	if err := os.WriteFile(marker, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	oldMarker, oldDir := dataRootMarker, convergerLogDir
+	dataRootMarker, convergerLogDir = marker, dir
+	defer func() { dataRootMarker, convergerLogDir = oldMarker, oldDir }()
+	env := siteLogEnv(t, "1")
+	if err := os.WriteFile(filepath.Join(dir, "host_converger."+filepath.Base(env.SiteRoot)+".log"), []byte("stale\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	p := mustValidate(t, "site_log", map[string]interface{}{"file": "host_converger"})
+	res, err := runSiteLog(context.Background(), env, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res["journal"] != true || res["present"] != false || res["text"] != "" {
+		t.Errorf("want journal true, nothing read: %v", res)
+	}
+	os.Remove(marker)
+	res, err = runSiteLog(context.Background(), env, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res["present"] != true || !strings.Contains(res["text"].(string), "stale") {
+		t.Errorf("without a data root the file is read: %v", res)
 	}
 }
 

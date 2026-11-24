@@ -27,9 +27,17 @@ import (
 //
 // What it cannot do:
 //
-//   - Name a file. `file` is an ENUM of eight names compiled here. Seven resolve
+//   - Name a file. `file` is an ENUM of eight names compiled here. Six resolve
 //     to SiteRoot/logs/<name>.log; postgresql resolves to the newest cluster
-//     log in /var/log/postgresql, a directory and a glob both compiled here.
+//     log in /var/log/postgresql, a directory and a glob both compiled here;
+//     host_converger resolves to where install_host_converger.sh points the
+//     converger's unit: root's /var/log/joinery/host_converger.<site>.log, or
+//     in a site container the state volume's
+//     /var/lib/joinery/sites/<site>/host_converger.log. <site> is the
+//     basename of the agent's own configured site root, never wire text. A
+//     host with a data root logs the converger to the journal instead; there
+//     the answer is present: false with journal: true, and unit_journal
+//     joinery-host-converger reads it.
 //     `previous` selects a file's most recent rotation (.log.1) and nothing
 //     else. There is no path parameter, no wire-supplied glob, no way to reach
 //     a compressed rotation, a config file, or anything outside those two
@@ -82,7 +90,7 @@ func init() {
 	Register(Primitive{
 		Name:        "site_log",
 		Class:       ClassObserve,
-		Description: "The last lines of one of the site's own log files (error, cron, AI worker, install executor, host converger, the dev box's follow_main pull log, access as a compiled shape) or of the PostgreSQL cluster log, redacted on the node; refused unless the site's owner allows log access.",
+		Description: "The last lines of one of the site's own log files (error, cron, AI worker, install executor, host converger, the dev box's follow_main pull log, access as a compiled shape) or of the PostgreSQL cluster log, redacted on the node; refused unless the site's owner allows log access; the host converger's log is read where its unit writes it (journal: true where that is the journal).",
 		Params: []ParamSpec{
 			{Name: "file", Type: ParamEnum, Required: true, Values: siteLogFiles},
 			{Name: "previous", Type: ParamBool},
@@ -139,11 +147,47 @@ func siteLogPath(siteRoot, name string, previous bool) string {
 	if name == "postgresql" {
 		return postgresLogPath(previous)
 	}
+	if name == "host_converger" {
+		return convergerLogPath(siteRoot, RunsInContainer(), previous)
+	}
 	file := name + ".log"
 	if previous {
 		file += ".1"
 	}
 	return filepath.Join(siteRoot, "logs", file)
+}
+
+// Where install_host_converger.sh sends the converger's log. Variables only so
+// a test can point them at a scratch directory.
+var (
+	convergerLogDir   = "/var/log/joinery"
+	convergerStateDir = "/var/lib/joinery/sites"
+	// dataRootMarker: a host with a data root logs the converger to the journal.
+	dataRootMarker = "/etc/joinery/data_root"
+)
+
+// convergerLogPath is the converger's log file for this site: root's log
+// directory on a host, the site's state volume in a container. Both names are
+// compiled; the site name is the basename of the agent's configured root.
+func convergerLogPath(siteRoot string, inContainer, previous bool) string {
+	site := filepath.Base(filepath.Clean(siteRoot))
+	if !siteDirNamePattern.MatchString(site) {
+		site = "_"
+	}
+	path := filepath.Join(convergerLogDir, "host_converger."+site+".log")
+	if inContainer {
+		path = filepath.Join(convergerStateDir, site, "host_converger.log")
+	}
+	if previous {
+		path += ".1"
+	}
+	return path
+}
+
+// convergerLogsToJournal: the unit writes to the journal, not a file.
+func convergerLogsToJournal() bool {
+	_, err := os.Stat(dataRootMarker)
+	return err == nil
 }
 
 // postgresLogPath picks the newest cluster log in the compiled directory, or
@@ -187,6 +231,12 @@ func runSiteLog(ctx context.Context, env *ExecEnv, p Params) (map[string]interfa
 		return result, nil
 	}
 
+	if name == "host_converger" && !RunsInContainer() && convergerLogsToJournal() {
+		// The unit logs to the journal on a host with a data root; say so
+		// rather than read a stale file left from before it did.
+		result["journal"] = true
+		return result, nil
+	}
 	path := siteLogPath(env.SiteRoot, name, previous)
 	// logs/ is the web user's: the file is opened only as a regular file, and
 	// never through a link (openPlainFile).
