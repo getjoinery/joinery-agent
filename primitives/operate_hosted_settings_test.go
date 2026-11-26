@@ -27,7 +27,7 @@ func TestNoHostedPrimitiveAcceptsASettingName(t *testing.T) {
 	// be redirected is a site whose password-reset email can be redirected, so
 	// a primitive able to name a setting would reach every managed node's
 	// accounts through a vocabulary that looks modest.
-	for _, name := range []string{"hosted_mail_settings", "hosted_plan_notice"} {
+	for _, name := range []string{"hosted_mail_settings", "hosted_plan_notice", "hosted_ai_settings"} {
 		for _, key := range []string{
 			"setting", "settings", "setting_name", "name", "value", "key",
 			"table", "sql", "query", "statement", "column",
@@ -242,6 +242,9 @@ func TestBothScriptsReadStdinAndNothingInArgv(t *testing.T) {
 		{"hosted_plan_notice", hostedPlanNoticeScript,
 			map[string]interface{}{"state": "trial"},
 			`"state":"trial"`},
+		{"hosted_ai_settings", hostedAiSettingsScript,
+			map[string]interface{}{"api_key": "sk-test-123"},
+			`"api_key":"sk-test-123"`},
 	} {
 		root, verifier := signedScriptRoot(t, tc.script,
 			"<?php echo 'argc=', $argc-1, \"\\n\", stream_get_contents(STDIN), \"\\n\";")
@@ -261,5 +264,70 @@ func TestBothScriptsReadStdinAndNothingInArgv(t *testing.T) {
 		if !strings.Contains(output, tc.expect) {
 			t.Errorf("%s: the composed object should arrive on stdin. Output: %q", tc.primitive, output)
 		}
+	}
+}
+
+func TestAiSettingsCarryOneKeyAndNoMore(t *testing.T) {
+	p, _ := Lookup("hosted_ai_settings")
+	if len(p.Params) != 1 || p.Params[0].Name != "api_key" {
+		t.Errorf("hosted_ai_settings should declare exactly api_key, got %v", p.Params)
+	}
+	if p.Class != ClassOperate {
+		t.Errorf("writing a setting changes state; it is operate, not %q", p.Class)
+	}
+	if p.Script == nil || p.Script.ScriptPath != hostedAiSettingsScript {
+		t.Errorf("it should invoke %q", hostedAiSettingsScript)
+	}
+	if len(p.Script.Args) != 0 {
+		t.Errorf("argv should be empty, got %v — the value is a credential", p.Script.Args)
+	}
+	if owner := owningArtifact(hostedAiSettingsScript); owner != "" {
+		t.Errorf("the script resolved to artifact %q; it ships in the core archive", owner)
+	}
+	// The mail word and the AI word do not share a doorway.
+	for _, s := range p.Params {
+		switch s.Name {
+		case "password", "username", "host", "service", "state", "notice":
+			t.Errorf("hosted_ai_settings declares %q, which belongs to another word", s.Name)
+		}
+	}
+}
+
+func TestAnAiKeyIsPrintableAndOneLine(t *testing.T) {
+	for _, good := range []string{"sk-or-v1-aB3!$%^&*()_+-=", "", strings.Repeat("x", 256)} {
+		if _, err := hostedParams(t, "hosted_ai_settings",
+			map[string]interface{}{"api_key": good}); err != nil {
+			t.Errorf("api_key of length %d should be accepted: %v", len(good), err)
+		}
+	}
+	for _, bad := range []string{"two\nlines", "a\x00b", "tab\there", "del\x7f", "caf\u00e9",
+		strings.Repeat("x", 257)} {
+		if _, err := hostedParams(t, "hosted_ai_settings",
+			map[string]interface{}{"api_key": bad}); err == nil {
+			t.Errorf("api_key %q should be refused", bad)
+		}
+	}
+}
+
+func TestAnOmittedAiKeyIsEmittedEmptySoItClears(t *testing.T) {
+	// Empty is how the plane turns hosted AI off on a site.
+	p, _ := Lookup("hosted_ai_settings")
+	params, err := hostedParams(t, "hosted_ai_settings", map[string]interface{}{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := p.Script.StdinFrom(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded map[string]string
+	if err := json.Unmarshal([]byte(body), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if len(decoded) != 1 {
+		t.Errorf("exactly one key should be emitted, got %v", decoded)
+	}
+	if v, ok := decoded["api_key"]; !ok || v != "" {
+		t.Errorf("an omitted api_key should be emitted as empty so it clears, got %v", decoded)
 	}
 }

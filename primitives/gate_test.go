@@ -372,6 +372,11 @@ var pinnedVocabulary = map[string]Class{
 	"hosted_mail_settings": ClassOperate,
 	"hosted_plan_notice":   ClassOperate,
 
+	// The hosted AI credit key (specs/hosted_ai_credit.md §3.4). Same shape:
+	// one compiled setting name in the node-side script, one bounded value on
+	// stdin. A word of its own so a mail push cannot reach AI settings.
+	"hosted_ai_settings": ClassOperate,
+
 	// Bringing a backup back off the shelf, so there is something to restore
 	// FROM. Both are operate, and that classification is the load-bearing part
 	// of the pin: writing a file into a backup directory destroys nothing, so
