@@ -42,6 +42,7 @@ var pinnedMachineWords = []string{
 	"never_do_check",
 	"outbound_limits",
 	"provision_certificate",
+	"quiet_check",
 	"reboot_machine",
 	"reclaim_managed_file",
 	"recreate_site",

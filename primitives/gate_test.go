@@ -160,6 +160,11 @@ var pinnedVocabulary = map[string]Class{
 	// and it reads two loopback status pages as counts, never ?full.
 	"web_workers": ClassObserve,
 
+	// Whether anyone is busy on the machine, before a reboot when it is quiet
+	// (specs/automatic_reboot_when_quiet.md WP1). Observe, NO PARAMETERS: its
+	// one argument is the site root from the node's own config; counts only.
+	"quiet_check": ClassObserve,
+
 	// Reboot the machine twenty seconds out (the running list, 2026-10-10).
 	// Operate, NO PARAMETERS: it loses no data, and it refuses where the boot
 	// would wait for a person to type a recovery key.
