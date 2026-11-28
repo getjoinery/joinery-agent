@@ -59,6 +59,7 @@ func TestRunningListWordsRunTheirOwnScripts(t *testing.T) {
 		"reboot_machine":       {rebootMachineScript, "/bin/bash", ClassOperate, true},
 		"mailbox_status":       {mailboxStatusScript, "/usr/bin/php", ClassObserve, false},
 		"relay_status":         {relayStatusScript, "/usr/bin/php", ClassObserve, false},
+		"mail_log_summary":     {mailLogSummaryScript, "/usr/bin/php", ClassObserve, false},
 	} {
 		p, _ := Lookup(name)
 		if p.Script.ScriptPath != want.script || p.Script.Interpreter != want.interpreter {

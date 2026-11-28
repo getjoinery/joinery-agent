@@ -140,6 +140,12 @@ var pinnedVocabulary = map[string]Class{
 	// sender, a row or a key.
 	"mailbox_status": ClassObserve,
 
+	// What this machine's Postfix did with the site's mail
+	// (specs/mailbox_diagnosis_words.md WP3). Observe, one bounded hours:
+	// compiled counts and pattern-checked domains, never an address, IP or
+	// remote text; behind the owner's log switch.
+	"mail_log_summary": ClassObserve,
+
 	// One fixed test message from one of the site's ordinary mail domains
 	// to the one probe mailbox (the running list, 2026-11-14). Operate: it
 	// sends mail. One domain; everything else compiled into the script.
@@ -445,13 +451,14 @@ var pinnedVocabulary = map[string]Class{
 // log-reading word that forgets the flag reads without asking, and a word that
 // declares it by accident asks for permission it does not need.
 var pinnedLogAccessWords = map[string]bool{
-	"site_log":       true,
-	"site_log_count": true,
-	"log_table_tail": true,
-	"unit_journal":   true,
-	"site_converger": true,
-	"largest_files":  true,
-	"file_head":      true,
+	"site_log":         true,
+	"site_log_count":   true,
+	"log_table_tail":   true,
+	"unit_journal":     true,
+	"mail_log_summary": true,
+	"site_converger":   true,
+	"largest_files":    true,
+	"file_head":        true,
 }
 
 func TestLogAccessIsDeclaredNotAssumed(t *testing.T) {
